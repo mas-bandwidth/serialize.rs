@@ -231,7 +231,7 @@ impl Serialize for TestObject {
             stream.serialize_bits(item, 8)?;
         }
 
-        stream.serialize_float(&mut self.data.float_value)?;
+        stream.serialize_f32(&mut self.data.float_value)?;
 
         stream.serialize_compressed_float(
             &mut self.data.compressed_float_value,
@@ -240,7 +240,7 @@ impl Serialize for TestObject {
             0.01,
         )?;
 
-        stream.serialize_double(&mut self.data.double_value)?;
+        stream.serialize_f64(&mut self.data.double_value)?;
 
         stream.serialize_u8(&mut self.data.uint8_value)?;
         stream.serialize_u16(&mut self.data.uint16_value)?;
@@ -345,11 +345,11 @@ fn read_function<'a>(read_stream: &mut ReadStream<'a>, context: &'a TestContext)
     assert_eq!(int64_value, -50000000001);
 
     let mut float_value = 0.0f32;
-    read_stream.serialize_float(&mut float_value)?;
+    read_stream.serialize_f32(&mut float_value)?;
     assert_eq!(float_value, 100.0);
 
     let mut double_value = 0.0f64;
-    read_stream.serialize_double(&mut double_value)?;
+    read_stream.serialize_f64(&mut double_value)?;
     assert_eq!(double_value, 1000000000.0);
 
     let mut bytes = [0u8; 5];
@@ -403,8 +403,8 @@ fn test_read_write() {
         write_stream
             .serialize_int64(&mut -50000000001i64, -60000000000, 60000000000)
             .unwrap();
-        write_stream.serialize_float(&mut 100.0).unwrap();
-        write_stream.serialize_double(&mut 1000000000.0).unwrap();
+        write_stream.serialize_f32(&mut 100.0).unwrap();
+        write_stream.serialize_f64(&mut 1000000000.0).unwrap();
 
         let mut data = [1u8, 2, 3, 4, 5];
         write_stream.serialize_bytes(&mut data).unwrap();
@@ -868,9 +868,9 @@ fn golden_wire_serialize<S: Stream>(stream: &mut S, data: &mut GoldenWireData) -
     stream.serialize_int(&mut data.int_small, -100, 100)?;
     stream.serialize_int(&mut data.int_full, i32::MIN, i32::MAX)?;
     stream.serialize_bool(&mut data.flag)?;
-    stream.serialize_float(&mut data.float_value)?;
+    stream.serialize_f32(&mut data.float_value)?;
     stream.serialize_compressed_float(&mut data.compressed_float_value, 0.0, 10.0, 0.01)?;
-    stream.serialize_double(&mut data.double_value)?;
+    stream.serialize_f64(&mut data.double_value)?;
     stream.serialize_u8(&mut data.uint8_value)?;
     stream.serialize_u16(&mut data.uint16_value)?;
     stream.serialize_u32(&mut data.uint32_value)?;

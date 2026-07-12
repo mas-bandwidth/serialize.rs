@@ -13,10 +13,19 @@ use crate::write_stream::string_length;
 /// alignment to byte boundaries the measurement is an estimate, not exact: every align counts
 /// as the worst case 7 bits, so the estimate is guaranteed to be conservative — a buffer sized
 /// from a measurement always fits the real write.
-#[derive(Default)]
+#[derive(Default, Clone)]
 pub struct MeasureStream<'a> {
     bits_written: u64,
     context: Option<&'a dyn Any>,
+}
+
+impl core::fmt::Debug for MeasureStream<'_> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("MeasureStream")
+            .field("bits_written", &self.bits_written)
+            .field("has_context", &self.context.is_some())
+            .finish()
+    }
 }
 
 impl<'a> MeasureStream<'a> {

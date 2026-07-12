@@ -21,6 +21,17 @@ pub struct BitWriter<'a> {
     scratch_bits: u32,
 }
 
+impl core::fmt::Debug for BitWriter<'_> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        // counters only: the buffer may be hundreds of megabytes, and dumping it into a log
+        // line helps nobody
+        f.debug_struct("BitWriter")
+            .field("bits_written", &self.bits_written)
+            .field("num_bits", &self.num_bits)
+            .finish_non_exhaustive()
+    }
+}
+
 impl<'a> BitWriter<'a> {
     /// Creates a bit writer that writes to `data`.
     ///
@@ -203,10 +214,22 @@ impl<'a> BitWriter<'a> {
 /// extends at least 8 bytes past the packet data, every window load stays on the fast path.
 /// Bytes past the packet data are loaded but never interpreted. If the buffer has no slack,
 /// loads near the end fall back to a guarded copy.
+/// Cloning a reader snapshots its position: clone before a speculative read, and drop the
+/// clone (or keep reading from it) depending on what you find.
+#[derive(Clone)]
 pub struct BitReader<'a> {
     data: &'a [u8],
     num_bits: u64,
     bits_read: u64,
+}
+
+impl core::fmt::Debug for BitReader<'_> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("BitReader")
+            .field("bits_read", &self.bits_read)
+            .field("num_bits", &self.num_bits)
+            .finish_non_exhaustive()
+    }
 }
 
 impl<'a> BitReader<'a> {
@@ -236,10 +259,14 @@ impl<'a> BitReader<'a> {
 
     #[inline]
     fn load_window(&self, byte_index: usize) -> u64 {
-        if let Some(window) = self.data.get(byte_index..byte_index + 8) {
+        if let Some(window) = self
+            .data
+            .get(byte_index..)
+            .and_then(|tail| tail.first_chunk())
+        {
             // the allocation extends past the data being read: branchless fast path.
             // little endian load matches the writer's little endian store on every platform.
-            u64::from_le_bytes(window.try_into().unwrap())
+            u64::from_le_bytes(*window)
         } else {
             // no slack in the buffer: guarded load of whatever bytes remain, zero padded
             let mut window = [0u8; 8];

@@ -33,7 +33,7 @@ zero unsafe, BSD-3.
 - `src/bitpacker.rs` — `BitWriter` (64 bit scratch, LE qword stores), `BitReader` (branchless
   windows, `read_byte_slice` returns borrowed subslices for zero-copy strings)
 - `src/stream.rs` — `Stream` trait: required primitives per stream (bits/bytes/align/strings)
-  plus default methods for everything derivable (int/int64/bits64/bool/u8-u64/float/double/
+  plus default methods for everything derivable (int/int64/bits64/bool/u8-u64/f32/f64/
   compressed float/int relative). `IS_WRITING`/`IS_READING` are associated consts, so the
   branches monomorphize away. `Serialize` trait for objects.
 - `src/write_stream.rs` / `src/read_stream.rs` / `src/measure_stream.rs` — the three streams.
@@ -50,6 +50,41 @@ zero unsafe, BSD-3.
 - `cargo clippy --all-targets -- -D warnings` and `cargo fmt --check` — CI enforces both
 - CI (.github/workflows/ci.yml): 3-OS test matrix (debug + release), lint job, and a
   big-endian s390x job (cross + qemu) proving the wire format is endian independent
+
+## API review decisions (red/blue review, 2026-07-12 — do not relitigate without new evidence)
+
+Accepted: `serialize_f32`/`serialize_f64` naming (type-name consistency with
+`serialize_u8..u64`; `serialize_compressed_float` keeps its name — it's an algorithm, not a
+type mapping); `Debug` on all public types (counters only, never buffer contents); `Clone` on
+`BitReader`/`ReadStream`/`MeasureStream` (position snapshot for speculative reads);
+`first_chunk` instead of `try_into().unwrap()` in the window load.
+
+Rejected, with reasons — do not propose again:
+- **serde-style split read/write traits or `-> Result<Self>` construction.** The unified
+  serialize function IS the library: one function means read and write can never drift apart,
+  which is the bug class this design eliminates. Monomorphized `IS_WRITING` branches make it
+  zero-cost. serde solves format-agnostic data modeling; this is a wire-exact bitpacker.
+- **Const-generic / newtype `bits` parameters, no-panic API.** Bit counts are usually computed
+  at runtime from ranges (`bits_required`), so compile-time bits fits only a minority of call
+  sites while splitting the API in two. Panic-on-misuse follows std precedent (slice indexing,
+  RefCell): errors are reserved for data-dependent failures so `?` stays meaningful at the
+  trust boundary.
+- **Masking out-of-range values on write.** The debug assert catches the bug loudly; a release
+  mask would hide it silently. Trusted-write GIGO is the family trust model.
+- **Replacing the `&dyn Any` context with generics or removing it.** A generic context
+  parameter infects `Serialize` and every implementor; most users don't need context at all,
+  and `&dyn Any` is zero-cost when unused. It exists to port C++/Go serialize code faithfully.
+- **`no_std`.** Blocked on `floor`/`ceil` (std-only in stable core); hand-rolled replacements
+  touch wire-format-critical quantization for zero current users. Revisit if core float math
+  stabilizes or real demand appears.
+- **thiserror / criterion / proptest dependencies.** Zero dependencies is an invariant of the
+  library family; the deterministic seeded tests cover the fuzz role on stable.
+- **`std::io::Read`/`Write` impls.** Byte-oriented traits on a bit-oriented stream mislead;
+  the flush/slack contracts don't map.
+- **Owning or `AsMut` buffers.** Zero allocation on serialization paths is invariant #4; game
+  netcode writes into pooled and stack buffers, which borrowed slices express exactly.
+- **dyn-safe `Serialize`.** Generic-method monomorphization is the point (same property as the
+  C++ templates); packet dispatch happens on a packet-id enum before serialize is called.
 
 ## Portability notes
 

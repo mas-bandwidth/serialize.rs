@@ -227,7 +227,7 @@ pub trait Stream {
     }
 
     /// Serialize a float value, as its 32 bit pattern.
-    fn serialize_float(&mut self, value: &mut f32) -> Result {
+    fn serialize_f32(&mut self, value: &mut f32) -> Result {
         let mut int_value = if Self::IS_WRITING { value.to_bits() } else { 0 };
         self.serialize_bits(&mut int_value, 32)?;
         if Self::IS_READING {
@@ -237,7 +237,7 @@ pub trait Stream {
     }
 
     /// Serialize a double precision float value, as its 64 bit pattern.
-    fn serialize_double(&mut self, value: &mut f64) -> Result {
+    fn serialize_f64(&mut self, value: &mut f64) -> Result {
         let mut int_value = if Self::IS_WRITING { value.to_bits() } else { 0 };
         self.serialize_bits64(&mut int_value, 64)?;
         if Self::IS_READING {

@@ -14,9 +14,21 @@ use crate::{Error, Result};
 /// panicking. On a failed read the destination value is left unmodified (strings are the
 /// exception: an error part way through a wide string leaves it partially rebuilt — the whole
 /// read aborts either way).
+/// Cloning a read stream snapshots its position: clone before a speculative read, and drop
+/// the clone (or keep reading from it) depending on what you find.
+#[derive(Clone)]
 pub struct ReadStream<'a> {
     reader: BitReader<'a>,
     context: Option<&'a dyn Any>,
+}
+
+impl core::fmt::Debug for ReadStream<'_> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("ReadStream")
+            .field("reader", &self.reader)
+            .field("has_context", &self.context.is_some())
+            .finish()
+    }
 }
 
 impl<'a> ReadStream<'a> {

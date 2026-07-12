@@ -18,6 +18,15 @@ pub struct WriteStream<'a> {
     context: Option<&'a dyn Any>,
 }
 
+impl core::fmt::Debug for WriteStream<'_> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("WriteStream")
+            .field("writer", &self.writer)
+            .field("has_context", &self.context.is_some())
+            .finish()
+    }
+}
+
 impl<'a> WriteStream<'a> {
     /// Creates a write stream that writes to `buffer`.
     ///
