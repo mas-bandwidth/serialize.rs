@@ -111,6 +111,22 @@ Rejected, with reasons — do not propose again:
 - **dyn-safe `Serialize`.** Generic-method monomorphization is the point (same property as the
   C++ templates); packet dispatch happens on a packet-id enum before serialize is called.
 
+## Releases
+
+v1.0.0 released 2026-07-12 (opened at 1.0.0 deliberately — the wire format is a decade old
+and frozen, like the Go port). Release process: bump `version` in Cargo.toml, refresh both
+lockfiles (`cargo update -p serialize` at the root and in fuzz/), verify
+`cargo publish --dry-run`, push, wait for CI fully green, then `git tag -a vX.Y.Z` +
+`gh release create` on that commit. New exported API = minor bump; any wire format change is
+forbidden (see invariant 1), not a version discussion. The cargo-semver-checks CI job flags
+accidental API breaks on PRs.
+
+Glenn does two things himself, in this order: flip repo visibility
+(`gh repo edit mas-bandwidth/serialize.rs --visibility public
+--accept-visibility-change-consequences`) and `cargo publish` (crates.io token via
+`cargo login`; the `serialize` crate name was confirmed available 2026-07-12). docs.rs builds
+automatically on publish.
+
 ## Portability notes
 
 - Endianness is handled entirely by `to_le_bytes`/`from_le_bytes`; there is no byte-swap
