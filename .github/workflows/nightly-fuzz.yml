@@ -19,7 +19,7 @@ jobs:
       matrix:
         target: [hostile_read, round_trip]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@nightly
       - uses: taiki-e/install-action@v2
         with:
