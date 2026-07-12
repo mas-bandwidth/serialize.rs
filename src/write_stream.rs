@@ -84,8 +84,7 @@ impl Stream for WriteStream<'_> {
     }
 
     fn serialize_string(&mut self, value: &mut String, buffer_size: usize) -> Result {
-        let length = string_length(value.len(), buffer_size)?;
-        let mut length = length;
+        let mut length = string_length(value.len(), buffer_size)?;
         self.serialize_int(&mut length, 0, buffer_size as i32 - 1)?;
         self.serialize_align()?;
         self.writer.write_bytes(value.as_bytes());

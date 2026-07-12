@@ -7,7 +7,9 @@ A simple bitpacking serializer for Rust.
 This is a port of the C++ [serialize](https://github.com/mas-bandwidth/serialize) library,
 **bit-for-bit wire compatible** with it and with the Go port
 ([goserialize](https://github.com/mas-bandwidth/goserialize)): a golden wire format test pins
-the exact bytes, copied verbatim from the C++ test suite. Packets written by any of the three
+the exact bytes, copied verbatim from the C++ test suite, and on every push and pull request
+CI builds the real C++ library and verifies head-to-head that both implementations write
+byte-identical data and decode each other's output. Packets written by any of the three
 libraries decode in the others. Zero dependencies, no unsafe code, BSD-3.
 
 Values are packed with exactly the number of bits they need: a bool takes 1 bit, an integer in

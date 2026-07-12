@@ -11,9 +11,10 @@ use crate::{Error, Result};
 /// A wrapper around [`BitReader`] implementing the unified [`Stream`] interface. This is the
 /// trust boundary: packet data comes from the network and may be malicious, so every operation
 /// bounds checks before reading and range checks after, returning an [`Error`] instead of
-/// panicking. On a failed read the destination value is left unmodified (strings are the
-/// exception: an error part way through a wide string leaves it partially rebuilt — the whole
+/// panicking. On a failed read the destination value is left unmodified (wide strings are the
+/// one exception: an error part way through leaves the string partially rebuilt — the whole
 /// read aborts either way).
+///
 /// Cloning a read stream snapshots its position: clone before a speculative read, and drop
 /// the clone (or keep reading from it) depending on what you find.
 #[derive(Clone)]

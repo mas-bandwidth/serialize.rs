@@ -89,6 +89,30 @@ jobs:
           name: fuzz-artifacts
           path: fuzz/artifacts
 
+  cpp-interop:
+    name: C++ wire compatibility
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check out the C++ serialize library (pinned release)
+        uses: actions/checkout@v4
+        with:
+          repository: mas-bandwidth/serialize
+          ref: v1.4.3
+          path: cpp-serialize
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Build the C++ golden harness against the real library
+        run: g++ -O2 -std=c++17 -I cpp-serialize interop/golden.cpp -o cpp_golden
+      - name: Both implementations write byte-identical wire data
+        run: |
+          ./cpp_golden write cpp.bin
+          cargo run --release --example wire_interop -- write rust.bin
+          cmp cpp.bin rust.bin
+      - name: Each implementation decodes the other's bytes
+        run: |
+          cargo run --release --example wire_interop -- read cpp.bin
+          ./cpp_golden read rust.bin
+
   big-endian:
     name: big endian (s390x)
     runs-on: ubuntu-latest

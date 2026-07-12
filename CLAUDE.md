@@ -7,7 +7,11 @@ zero unsafe, BSD-3.
 ## Invariants — never break these
 
 1. **The wire format is frozen and bit-identical to the C++ library.**
-   `test_golden_wire_format` pins 72 golden bytes copied verbatim from the C++ test suite.
+   `test_golden_wire_format` pins 72 golden bytes copied verbatim from the C++ test suite,
+   and the `cpp-interop` CI job proves it against the real thing on every push and PR: it
+   builds interop/golden.cpp against the actual C++ library (pinned at its release tag),
+   both implementations write the golden data, the bytes are compared with `cmp`, and each
+   implementation decodes the other's file (examples/wire_interop.rs is the Rust half).
    Never change any encoding without coordinating with the C++ library. When adding
    serialization features, port them from serialize.h and mirror its tests. Note the golden
    float is the literal `3.1415926` (bit pattern 0x40490FDA) — NOT `f32::consts::PI`, which

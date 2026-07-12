@@ -213,6 +213,12 @@ pub trait Stream {
             (1..=64).contains(&bits),
             "bits must be in [1,64] (got {bits})"
         );
+        if Self::IS_WRITING {
+            // catch out-of-range values before the u32 truncation below can hide them; the
+            // C++ macro truncates silently, but a loud debug assert fits the trust model
+            // better and matches write_bits
+            debug_assert!(u128::from(*value) < (1u128 << bits));
+        }
         if bits <= 32 {
             let mut lo = *value as u32;
             self.serialize_bits(&mut lo, bits)?;
