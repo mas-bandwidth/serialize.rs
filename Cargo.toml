@@ -8,6 +8,9 @@ repository = "https://github.com/mas-bandwidth/serialize.rs"
 license = "BSD-3-Clause"
 keywords = ["serialization", "bitpacking", "networking", "gamedev"]
 categories = ["game-development", "network-programming", "encoding"]
+# repo infrastructure that does not belong in the crates.io package; the fuzz/ crate is
+# excluded automatically as a nested package
+exclude = [".github/", "interop/", "CLAUDE.md"]
 
 [dependencies]
 
