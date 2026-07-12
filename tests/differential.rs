@@ -1,7 +1,7 @@
 //! Deterministic differential and hostile-read tests, modeled on the C++ library's fuzz
 //! harness (fuzz.cpp): a write→read round trip that fails on any write/read asymmetry and
-//! checks MeasureStream never under-measures, plus a hostile read of arbitrary bytes through
-//! every ReadStream primitive that must fail cleanly, never panic.
+//! checks `MeasureStream` never under-measures, plus a hostile read of arbitrary bytes through
+//! every `ReadStream` primitive that must fail cleanly, never panic.
 
 use serialize::{MeasureStream, ReadStream, Stream, WriteStream};
 
@@ -181,11 +181,16 @@ fn matches(written: &Value, read: &Value) -> bool {
     }
 }
 
+// Miri runs these interpreters ~100x slower, so trim the seed counts while keeping every op
+// kind exercised; the full counts run everywhere else, including CI
+const ROUND_TRIP_SEEDS: u64 = if cfg!(miri) { 8 } else { 500 };
+const HOSTILE_SEEDS: u64 = if cfg!(miri) { 16 } else { 2000 };
+
 #[test]
 fn test_differential_round_trip() {
     // write a random value sequence, then a read of the same sequence must return exactly the
     // written values, and the measure stream must never under-measure the write
-    for seed in 0..500u64 {
+    for seed in 0..ROUND_TRIP_SEEDS {
         let mut rng = Rng(seed);
         let num_values = rng.range(30) as usize + 1;
         let mut values: Vec<Value> = (0..num_values).map(|_| random_value(&mut rng)).collect();
@@ -227,7 +232,7 @@ fn test_differential_round_trip() {
 fn test_hostile_read() {
     // arbitrary bytes driven through every ReadStream primitive must fail cleanly with an
     // error, never panic. mirrors the hostile pass of the C++ fuzz harness.
-    for seed in 0..2000u64 {
+    for seed in 0..HOSTILE_SEEDS {
         let mut rng = Rng(!seed);
 
         let len = rng.range(64) as usize;

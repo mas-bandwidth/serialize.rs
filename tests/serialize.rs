@@ -1,12 +1,17 @@
 //! The C++ serialize library's test suite, ported. Test names and structure mirror
 //! serialize.h so the suites can be diffed against each other.
 
+// exact float comparison is the contract under test: floats serialize as bit patterns and
+// must round trip bit-identically
+#![allow(clippy::float_cmp)]
+
 use serialize::{
     BitReader, BitWriter, Error, MeasureStream, ReadStream, Result, Serialize, Stream, WriteStream,
     bits_required, bits_required64, signed_to_unsigned, unsigned_to_signed,
 };
 
 #[test]
+#[allow(clippy::many_single_char_names)] // a..g mirror the C++ test verbatim
 fn test_bitpacker() {
     const BUFFER_SIZE: usize = 256;
 
@@ -306,7 +311,10 @@ fn test_measure() {
     assert!(measure_stream.bytes_processed() >= write_stream.bytes_processed());
 }
 
-// the Rust equivalent of the C++ suite's ReadFunction: reads each value and checks it
+// the Rust equivalent of the C++ suite's ReadFunction: reads each value and checks it.
+// context must be a reference with the caller's lifetime: it is handed to set_context, which
+// stores it on the stream (so pass-by-value would not borrow-check, pedantic clippy aside)
+#[allow(clippy::trivially_copy_pass_by_ref)]
 fn read_function<'a>(read_stream: &mut ReadStream<'a>, context: &'a TestContext) -> Result {
     // IMPORTANT: You wouldn't normally write a read function like this, but I'm just checking
     // each value as it's read in. The only requirement on a read function is that it aborts

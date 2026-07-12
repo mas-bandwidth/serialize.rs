@@ -1,5 +1,7 @@
 # serialize.rs
 
+[![ci](https://github.com/mas-bandwidth/serialize.rs/actions/workflows/ci.yml/badge.svg)](https://github.com/mas-bandwidth/serialize.rs/actions/workflows/ci.yml)
+
 A simple bitpacking serializer for Rust.
 
 This is a port of the C++ [serialize](https://github.com/mas-bandwidth/serialize) library,
@@ -80,14 +82,22 @@ that is not a multiple of 8 bytes.
 ```
 cargo test                                   # the C++ suite, ported, plus differential tests
 cargo test --release -- --include-ignored    # includes the 320 MB large buffer test
-cargo clippy --all-targets -- -D warnings
+cargo clippy --all-targets -- -D warnings    # pedantic, configured via [lints] in Cargo.toml
 cargo fmt --check
+cargo +nightly miri test                     # the whole suite under Miri
+cargo +nightly fuzz run hostile_read         # libFuzzer (also: round_trip)
 ```
 
 The test suite mirrors serialize.h test-for-test, including the adversarial cases
 (out-of-range values smuggled into bit headroom, full-range integers, NaN handling, >2^31
 relative gaps) and the golden wire format test. `tests/differential.rs` adds a deterministic
-differential write→read round trip and a hostile read pass, modeled on the C++ fuzz harness.
+differential write→read round trip and a hostile read pass, and `fuzz/` carries the same two
+passes as real libFuzzer targets, mirroring the C++ library's fuzz harness.
+
+CI runs the test matrix on Linux/macOS/Windows (debug and release), pedantic clippy, rustfmt,
+rustdoc, an MSRV (1.85) check, the whole suite under Miri, 60 seconds of each fuzz target, a
+zero-dependency guard, a big-endian s390x run under qemu, and `cargo semver-checks` on pull
+requests. The crate is `#![forbid(unsafe_code)]`, enforced by the compiler.
 
 ## License
 

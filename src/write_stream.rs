@@ -124,7 +124,7 @@ impl Stream for WriteStream<'_> {
 /// cheap to catch exactly, so it fails with an error rather than corrupting the stream.
 pub(crate) fn string_length(length: usize, buffer_size: usize) -> Result<i32> {
     assert!(
-        buffer_size >= 2 && buffer_size <= i32::MAX as usize,
+        buffer_size >= 2 && i32::try_from(buffer_size).is_ok(),
         "string buffer_size must be in [2,i32::MAX] (got {buffer_size})"
     );
     if length >= buffer_size {

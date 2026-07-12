@@ -8,6 +8,10 @@ use crate::{Error, Result, bits_required, bits_required64};
 /// convention that objects have a templated `Serialize` method.
 pub trait Serialize {
     /// Serialize this object to the stream (write, read or measure, depending on the stream).
+    ///
+    /// # Errors
+    ///
+    /// Whatever the serialize implementation propagates — see the [`Stream`] methods it calls.
     fn serialize<S: Stream>(&mut self, stream: &mut S) -> Result;
 }
 
@@ -35,15 +39,30 @@ pub trait Stream {
     /// # Panics
     ///
     /// Panics if `bits` is not in `[1,32]`.
+    ///
+    /// # Errors
+    ///
+    /// On read, [`Error::Overflow`] if the read would pass the end of the buffer. Writes and
+    /// measures do not error.
     fn serialize_bits(&mut self, value: &mut u32, bits: u32) -> Result;
 
     /// Serialize an array of bytes. Aligns the stream to the next byte boundary first, then
     /// block copies the data for speed. On write the slice is the source; on read it is
     /// filled in.
+    ///
+    /// # Errors
+    ///
+    /// On read, [`Error::Overflow`] if the read would pass the end of the buffer, or
+    /// [`Error::Align`] if the alignment padding contains nonzero bits.
     fn serialize_bytes(&mut self, data: &mut [u8]) -> Result;
 
     /// Serialize an alignment to the next byte boundary, padding with zero bits. On read, the
     /// padding is validated: nonzero padding fails with [`Error::Align`].
+    ///
+    /// # Errors
+    ///
+    /// On read, [`Error::Overflow`] if the read would pass the end of the buffer, or
+    /// [`Error::Align`] if the padding bits are nonzero.
     fn serialize_align(&mut self) -> Result;
 
     /// Serialize a string of fewer than `buffer_size` bytes. The wire format is the length in
@@ -51,12 +70,24 @@ pub trait Stream {
     /// between write and read. On read the bytes are validated as UTF-8, failing with
     /// [`Error::InvalidString`] — the C++ library's strings are raw bytes, so only strings
     /// that are valid UTF-8 interoperate.
+    ///
+    /// # Errors
+    ///
+    /// On read, [`Error::Overflow`], [`Error::Align`] or [`Error::InvalidString`] on truncated,
+    /// misaligned or non-UTF-8 data. On write or measure, [`Error::ValueOutOfRange`] if the
+    /// string does not fit in `buffer_size - 1` bytes.
     fn serialize_string(&mut self, value: &mut String, buffer_size: usize) -> Result;
 
     /// Serialize a string as 32 bits per code point, matching the C++ library's `wchar_t`
     /// wire format (which is 32 bits per character on every platform). `buffer_size` bounds
     /// the length in code points and must match between write and read. On read each code
     /// point is validated, failing with [`Error::InvalidString`] if it is not a valid char.
+    ///
+    /// # Errors
+    ///
+    /// On read, [`Error::Overflow`] or [`Error::InvalidString`] on truncated data or an invalid
+    /// code point. On write or measure, [`Error::ValueOutOfRange`] if the string does not fit
+    /// in `buffer_size - 1` code points.
     fn serialize_wide_string(&mut self, value: &mut String, buffer_size: usize) -> Result;
 
     /// If we were to serialize an align right now, how many bits would be required? Result in
@@ -90,6 +121,11 @@ pub trait Stream {
     /// # Panics
     ///
     /// Panics if `min >= max`.
+    ///
+    /// # Errors
+    ///
+    /// On read, [`Error::Overflow`] if the read would pass the end of the buffer, or
+    /// [`Error::ValueOutOfRange`] if the decoded value is outside `[min,max]`.
     fn serialize_int(&mut self, value: &mut i32, min: i32, max: i32) -> Result {
         assert!(
             min < max,
@@ -121,6 +157,11 @@ pub trait Stream {
     /// # Panics
     ///
     /// Panics if `min >= max`.
+    ///
+    /// # Errors
+    ///
+    /// On read, [`Error::Overflow`] if the read would pass the end of the buffer, or
+    /// [`Error::ValueOutOfRange`] if the decoded value is outside `[min,max]`.
     fn serialize_int64(&mut self, value: &mut i64, min: i64, max: i64) -> Result {
         assert!(
             min < max,
@@ -163,6 +204,10 @@ pub trait Stream {
     /// # Panics
     ///
     /// Panics if `bits` is not in `[1,64]`.
+    ///
+    /// # Errors
+    ///
+    /// On read, [`Error::Overflow`] if the read would pass the end of the buffer.
     fn serialize_bits64(&mut self, value: &mut u64, bits: u32) -> Result {
         assert!(
             (1..=64).contains(&bits),
@@ -187,6 +232,10 @@ pub trait Stream {
     }
 
     /// Serialize a boolean value, using 1 bit.
+    ///
+    /// # Errors
+    ///
+    /// On read, [`Error::Overflow`] if the read would pass the end of the buffer.
     fn serialize_bool(&mut self, value: &mut bool) -> Result {
         let mut unsigned_value = u32::from(Self::IS_WRITING && *value);
         self.serialize_bits(&mut unsigned_value, 1)?;
@@ -197,6 +246,10 @@ pub trait Stream {
     }
 
     /// Serialize an unsigned 8 bit integer, using 8 bits.
+    ///
+    /// # Errors
+    ///
+    /// On read, [`Error::Overflow`] if the read would pass the end of the buffer.
     fn serialize_u8(&mut self, value: &mut u8) -> Result {
         let mut unsigned_value = u32::from(*value);
         self.serialize_bits(&mut unsigned_value, 8)?;
@@ -207,6 +260,10 @@ pub trait Stream {
     }
 
     /// Serialize an unsigned 16 bit integer, using 16 bits.
+    ///
+    /// # Errors
+    ///
+    /// On read, [`Error::Overflow`] if the read would pass the end of the buffer.
     fn serialize_u16(&mut self, value: &mut u16) -> Result {
         let mut unsigned_value = u32::from(*value);
         self.serialize_bits(&mut unsigned_value, 16)?;
@@ -217,16 +274,28 @@ pub trait Stream {
     }
 
     /// Serialize an unsigned 32 bit integer, using 32 bits.
+    ///
+    /// # Errors
+    ///
+    /// On read, [`Error::Overflow`] if the read would pass the end of the buffer.
     fn serialize_u32(&mut self, value: &mut u32) -> Result {
         self.serialize_bits(value, 32)
     }
 
     /// Serialize an unsigned 64 bit integer, using 64 bits.
+    ///
+    /// # Errors
+    ///
+    /// On read, [`Error::Overflow`] if the read would pass the end of the buffer.
     fn serialize_u64(&mut self, value: &mut u64) -> Result {
         self.serialize_bits64(value, 64)
     }
 
     /// Serialize a float value, as its 32 bit pattern.
+    ///
+    /// # Errors
+    ///
+    /// On read, [`Error::Overflow`] if the read would pass the end of the buffer.
     fn serialize_f32(&mut self, value: &mut f32) -> Result {
         let mut int_value = if Self::IS_WRITING { value.to_bits() } else { 0 };
         self.serialize_bits(&mut int_value, 32)?;
@@ -237,6 +306,10 @@ pub trait Stream {
     }
 
     /// Serialize a double precision float value, as its 64 bit pattern.
+    ///
+    /// # Errors
+    ///
+    /// On read, [`Error::Overflow`] if the read would pass the end of the buffer.
     fn serialize_f64(&mut self, value: &mut f64) -> Result {
         let mut int_value = if Self::IS_WRITING { value.to_bits() } else { 0 };
         self.serialize_bits64(&mut int_value, 64)?;
@@ -254,6 +327,11 @@ pub trait Stream {
     /// # Panics
     ///
     /// Panics if `min >= max` or `resolution <= 0`.
+    ///
+    /// # Errors
+    ///
+    /// On read, [`Error::Overflow`] if the read would pass the end of the buffer, or
+    /// [`Error::ValueOutOfRange`] if the quantized integer is above the maximum for the range.
     fn serialize_compressed_float(
         &mut self,
         value: &mut f32,
@@ -312,7 +390,22 @@ pub trait Stream {
     /// `current` must be strictly greater than `previous` — this is for strictly increasing
     /// sequences. On read, a decoded value that is not greater than `previous` fails with
     /// [`Error::ValueOutOfRange`].
+    ///
+    /// # Errors
+    ///
+    /// On read, [`Error::Overflow`] if the read would pass the end of the buffer, or
+    /// [`Error::ValueOutOfRange`] if the decoded value is not greater than `previous`.
     fn serialize_int_relative(&mut self, previous: i32, current: &mut i32) -> Result {
+        // the buckets after the one-bit fast path: [2,6], [7,23], [24,280], [281,4377],
+        // [4378,69914], then full 32 bits
+        const BUCKETS: [(u32, i32, i32); 5] = [
+            (6, 2, 6),
+            (23, 7, 23),
+            (280, 24, 280),
+            (4377, 281, 4377),
+            (69914, 4378, 69914),
+        ];
+
         let mut difference = 0u32;
         if Self::IS_WRITING {
             debug_assert!(previous < *current);
@@ -334,15 +427,6 @@ pub trait Stream {
             }
             return Ok(());
         }
-
-        // the buckets: [2,6], [7,23], [24,280], [281,4377], [4378,69914], then full 32 bits
-        const BUCKETS: [(u32, i32, i32); 5] = [
-            (6, 2, 6),
-            (23, 7, 23),
-            (280, 24, 280),
-            (4377, 281, 4377),
-            (69914, 4378, 69914),
-        ];
 
         for (threshold, bucket_min, bucket_max) in BUCKETS {
             let mut in_bucket = false;

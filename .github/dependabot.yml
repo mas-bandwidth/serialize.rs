@@ -1,0 +1,11 @@
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+  # the library has zero dependencies (CI enforces it); this covers the fuzz harness only
+  - package-ecosystem: cargo
+    directory: /fuzz
+    schedule:
+      interval: weekly

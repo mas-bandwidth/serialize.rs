@@ -47,9 +47,19 @@ zero unsafe, BSD-3.
 
 - `cargo test` — full suite except the 320 MB test
 - `cargo test --release -- --include-ignored` — everything
-- `cargo clippy --all-targets -- -D warnings` and `cargo fmt --check` — CI enforces both
-- CI (.github/workflows/ci.yml): 3-OS test matrix (debug + release), lint job, and a
-  big-endian s390x job (cross + qemu) proving the wire format is endian independent
+- `cargo clippy --all-targets -- -D warnings` and `cargo fmt --check` — CI enforces both;
+  clippy runs at pedantic via `[lints]` in Cargo.toml, with each allow justified by a comment
+  there or at the site (C++-mirroring literals, exact float round trips, deliberate casts)
+- `cargo +nightly miri test` — differential seed counts drop automatically under `cfg(miri)`
+- `cargo +nightly fuzz run hostile_read` / `round_trip` — libFuzzer targets in `fuzz/`
+  (libfuzzer-sys is a dependency of the fuzz crate only, NOT the library — the zero-dependency
+  invariant applies to `[dependencies]` of the `serialize` package, which CI guards)
+- Local toolchains on Glenn's Mac: homebrew rustup at `/opt/homebrew/opt/rustup/bin` (not on
+  default PATH), with `1.85` (MSRV) and `nightly` (+miri) installed; cargo-fuzz in ~/.cargo/bin
+- CI (.github/workflows/ci.yml): 3-OS test matrix (debug + release + example), lint
+  (pedantic clippy / fmt / rustdoc / zero-dependency guard), MSRV 1.85 check, Miri, 60s fuzz
+  smoke per target (uploads crash reproducers on failure), big-endian s390x (cross + qemu),
+  and cargo-semver-checks against main on PRs. `#![forbid(unsafe_code)]` via `[lints]`.
 
 ## API review decisions (red/blue review, 2026-07-12 — do not relitigate without new evidence)
 
@@ -78,7 +88,9 @@ Rejected, with reasons — do not propose again:
   touch wire-format-critical quantization for zero current users. Revisit if core float math
   stabilizes or real demand appears.
 - **thiserror / criterion / proptest dependencies.** Zero dependencies is an invariant of the
-  library family; the deterministic seeded tests cover the fuzz role on stable.
+  library family; the deterministic seeded tests cover the fuzz role on stable. (Real
+  libFuzzer fuzzing was added later in `fuzz/` — a separate crate outside the library's
+  dependency graph, the same relationship fuzz.cpp has to the C++ library.)
 - **`std::io::Read`/`Write` impls.** Byte-oriented traits on a bit-oriented stream mislead;
   the flush/slack contracts don't map.
 - **Owning or `AsMut` buffers.** Zero allocation on serialization paths is invariant #4; game

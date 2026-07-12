@@ -36,7 +36,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy, rustfmt
-      - name: Clippy
+      - name: Clippy (pedantic, via [lints] in Cargo.toml)
         run: cargo clippy --all-targets -- -D warnings
       - name: Format
         run: cargo fmt --check
@@ -44,6 +44,48 @@ jobs:
         run: cargo doc --no-deps
         env:
           RUSTDOCFLAGS: -D warnings
+      - name: Zero dependencies
+        run: test "$(cargo tree --edges normal --prefix none | wc -l)" -eq 1
+
+  msrv:
+    name: msrv (1.85)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.85
+      - name: Check with the minimum supported Rust version
+        run: cargo check --all-targets
+
+  miri:
+    name: miri
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@nightly
+        with:
+          components: miri
+      - name: Test under Miri (differential seeds reduced via cfg(miri))
+        run: cargo miri test
+
+  fuzz:
+    name: fuzz smoke (60s per target)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@nightly
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-fuzz
+      - name: Fuzz hostile_read
+        run: cargo +nightly fuzz run hostile_read -- -max_total_time=60
+      - name: Fuzz round_trip
+        run: cargo +nightly fuzz run round_trip -- -max_total_time=60
+      - name: Upload crash reproducers
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fuzz-artifacts
+          path: fuzz/artifacts
 
   big-endian:
     name: big endian (s390x)
@@ -56,3 +98,18 @@ jobs:
           tool: cross
       - name: Test on s390x under qemu
         run: cross test --release --target s390x-unknown-linux-gnu
+
+  semver:
+    name: semver (API compatibility vs main)
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-semver-checks
+      - name: Check API compatibility against main
+        run: cargo semver-checks check-release --baseline-rev origin/main

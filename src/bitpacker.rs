@@ -103,7 +103,7 @@ impl<'a> BitWriter<'a> {
         let remainder_bits = (self.bits_written % 8) as u32;
         if remainder_bits != 0 {
             self.write_bits(0, 8 - remainder_bits);
-            debug_assert!(self.bits_written % 8 == 0);
+            debug_assert_eq!(self.bits_written % 8, 0);
         }
     }
 
@@ -114,9 +114,9 @@ impl<'a> BitWriter<'a> {
     /// aligned when this is called (write an align first — the streams do this for you).
     pub fn write_bytes(&mut self, data: &[u8]) {
         let bytes = data.len();
-        debug_assert!(self.align_bits() == 0);
+        debug_assert_eq!(self.align_bits(), 0);
         debug_assert!(self.bits_written + bytes as u64 * 8 <= self.num_bits);
-        debug_assert!(self.bits_written % 8 == 0);
+        debug_assert_eq!(self.bits_written % 8, 0);
 
         // head bytes: bitpack up to the next word boundary
         let mut head_bytes = ((8 - (self.bits_written % 64) / 8) % 8) as usize;
@@ -150,7 +150,7 @@ impl<'a> BitWriter<'a> {
             self.write_bits(u32::from(byte), 8);
         }
 
-        debug_assert!(self.align_bits() == 0);
+        debug_assert_eq!(self.align_bits(), 0);
     }
 
     /// Flush any remaining bits to memory.
@@ -319,7 +319,7 @@ impl<'a> BitReader<'a> {
         let remainder_bits = (self.bits_read % 8) as u32;
         if remainder_bits != 0 {
             let value = self.read_bits(8 - remainder_bits);
-            debug_assert!(self.bits_read % 8 == 0);
+            debug_assert_eq!(self.bits_read % 8, 0);
             if value != 0 {
                 return false;
             }
@@ -341,7 +341,7 @@ impl<'a> BitReader<'a> {
     /// Panics (via the slice bounds check) if the read passes the end of the buffer; the
     /// higher level [`crate::ReadStream`] bounds checks before calling.
     pub fn read_byte_slice(&mut self, bytes: usize) -> &'a [u8] {
-        debug_assert!(self.align_bits() == 0);
+        debug_assert_eq!(self.align_bits(), 0);
         debug_assert!(self.bits_read + bytes as u64 * 8 <= self.num_bits);
 
         // the bit index is byte aligned here (see the align debug assert)
