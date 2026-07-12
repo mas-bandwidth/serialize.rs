@@ -76,10 +76,12 @@ jobs:
       - uses: taiki-e/install-action@v2
         with:
           tool: cargo-fuzz
+      # the prebuilt cargo-fuzz is musl-static and would default the fuzz build to the musl
+      # target, where the address sanitizer cannot link — pin the real host triple
       - name: Fuzz hostile_read
-        run: cargo +nightly fuzz run hostile_read -- -max_total_time=60
+        run: cargo +nightly fuzz run hostile_read --target x86_64-unknown-linux-gnu -- -max_total_time=60
       - name: Fuzz round_trip
-        run: cargo +nightly fuzz run round_trip -- -max_total_time=60
+        run: cargo +nightly fuzz run round_trip --target x86_64-unknown-linux-gnu -- -max_total_time=60
       - name: Upload crash reproducers
         if: failure()
         uses: actions/upload-artifact@v4
