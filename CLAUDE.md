@@ -58,12 +58,21 @@ zero unsafe, BSD-3.
 - `cargo +nightly fuzz run hostile_read` / `round_trip` — libFuzzer targets in `fuzz/`
   (libfuzzer-sys is a dependency of the fuzz crate only, NOT the library — the zero-dependency
   invariant applies to `[dependencies]` of the `serialize` package, which CI guards)
+- `cargo bench` — benches/throughput.rs, a direct port of the C++ bench.cpp (same widths
+  table, same packet, same LCG). Update the README numbers only from fresh runs on the stated
+  hardware (Apple M3 Ultra) next to a fresh C++ run (clang -O3 of the C++ repo's bench.cpp).
+- **`#[inline]` on the bitpacker and stream methods is load-bearing.** They are non-generic
+  and called cross-crate: without the attribute nothing inlines outside this crate (no LTO by
+  default) and throughput drops 2-8x (measured — the stream read went from 410 to 38 M
+  packets/s). Do not strip them.
 - Local toolchains on Glenn's Mac: homebrew rustup at `/opt/homebrew/opt/rustup/bin` (not on
   default PATH), with `1.85` (MSRV) and `nightly` (+miri) installed; cargo-fuzz in ~/.cargo/bin
 - CI (.github/workflows/ci.yml): 3-OS test matrix (debug + release + example), lint
   (pedantic clippy / fmt / rustdoc / zero-dependency guard), MSRV 1.85 check, Miri, 60s fuzz
-  smoke per target (uploads crash reproducers on failure), big-endian s390x (cross + qemu),
-  and cargo-semver-checks against main on PRs. `#![forbid(unsafe_code)]` via `[lints]`.
+  smoke per target (uploads crash reproducers on failure), C++ wire interop, cross matrix
+  (big-endian s390x + 32 bit i686 under qemu), wasm32 build check, and cargo-semver-checks
+  against main on PRs. `#![forbid(unsafe_code)]` via `[lints]`. nightly-fuzz.yml runs 30 min
+  per fuzz target daily with a cumulative cached corpus (bills minutes while private).
 
 ## API review decisions (red/blue review, 2026-07-12 — do not relitigate without new evidence)
 

@@ -31,6 +31,7 @@ impl core::fmt::Debug for MeasureStream<'_> {
 impl<'a> MeasureStream<'a> {
     /// Creates a measure stream.
     #[must_use]
+    #[inline]
     pub fn new() -> Self {
         MeasureStream {
             bits_written: 0,
@@ -40,6 +41,7 @@ impl<'a> MeasureStream<'a> {
 
     /// Set a context on the stream, retrievable inside serialize functions with
     /// [`Stream::context`].
+    #[inline]
     pub fn set_context(&mut self, context: &'a dyn Any) {
         self.context = Some(context);
     }
@@ -49,26 +51,30 @@ impl Stream for MeasureStream<'_> {
     const IS_WRITING: bool = true;
     const IS_READING: bool = false;
 
+    #[inline]
     fn serialize_bits(&mut self, _value: &mut u32, bits: u32) -> Result {
         assert!(
-            (1..=32).contains(&bits),
+            bits.wrapping_sub(1) < 32,
             "bits must be in [1,32] (got {bits})"
         );
         self.bits_written += u64::from(bits);
         Ok(())
     }
 
+    #[inline]
     fn serialize_bytes(&mut self, data: &mut [u8]) -> Result {
         self.serialize_align()?;
         self.bits_written += data.len() as u64 * 8;
         Ok(())
     }
 
+    #[inline]
     fn serialize_align(&mut self) -> Result {
         self.bits_written += u64::from(self.align_bits());
         Ok(())
     }
 
+    #[inline]
     fn serialize_string(&mut self, value: &mut String, buffer_size: usize) -> Result {
         let mut length = string_length(value.len(), buffer_size)?;
         self.serialize_int(&mut length, 0, buffer_size as i32 - 1)?;
@@ -77,6 +83,7 @@ impl Stream for MeasureStream<'_> {
         Ok(())
     }
 
+    #[inline]
     fn serialize_wide_string(&mut self, value: &mut String, buffer_size: usize) -> Result {
         let count = value.chars().count();
         let mut length = string_length(count, buffer_size)?;
@@ -87,18 +94,22 @@ impl Stream for MeasureStream<'_> {
 
     /// Always the worst case 7 bits: the bits an align really takes depend on where the object
     /// lands in the final stream, which a measurement cannot know.
+    #[inline]
     fn align_bits(&self) -> u32 {
         7
     }
 
+    #[inline]
     fn bits_processed(&self) -> u64 {
         self.bits_written
     }
 
+    #[inline]
     fn bytes_processed(&self) -> u64 {
         self.bits_written.div_ceil(8)
     }
 
+    #[inline]
     fn context(&self) -> Option<&dyn Any> {
         self.context
     }

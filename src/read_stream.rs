@@ -42,6 +42,7 @@ impl<'a> ReadStream<'a> {
     ///
     /// Panics if `bytes` exceeds the buffer length.
     #[must_use]
+    #[inline]
     pub fn new(buffer: &'a [u8], bytes: usize) -> Self {
         ReadStream {
             reader: BitReader::new(buffer, bytes),
@@ -51,6 +52,7 @@ impl<'a> ReadStream<'a> {
 
     /// Set a context on the stream, retrievable inside serialize functions with
     /// [`Stream::context`].
+    #[inline]
     pub fn set_context(&mut self, context: &'a dyn Any) {
         self.context = Some(context);
     }
@@ -60,9 +62,10 @@ impl Stream for ReadStream<'_> {
     const IS_WRITING: bool = false;
     const IS_READING: bool = true;
 
+    #[inline]
     fn serialize_bits(&mut self, value: &mut u32, bits: u32) -> Result {
         assert!(
-            (1..=32).contains(&bits),
+            bits.wrapping_sub(1) < 32,
             "bits must be in [1,32] (got {bits})"
         );
         if self.reader.would_read_past_end(bits) {
@@ -72,6 +75,7 @@ impl Stream for ReadStream<'_> {
         Ok(())
     }
 
+    #[inline]
     fn serialize_bytes(&mut self, data: &mut [u8]) -> Result {
         self.serialize_align()?;
         // compare in bytes rather than bits, consistent with the 64 bit bookkeeping
@@ -82,6 +86,7 @@ impl Stream for ReadStream<'_> {
         Ok(())
     }
 
+    #[inline]
     fn serialize_align(&mut self) -> Result {
         let align_bits = self.reader.align_bits();
         if self.reader.would_read_past_end(align_bits) {
@@ -93,6 +98,7 @@ impl Stream for ReadStream<'_> {
         Ok(())
     }
 
+    #[inline]
     fn serialize_string(&mut self, value: &mut String, buffer_size: usize) -> Result {
         assert!(
             buffer_size >= 2 && i32::try_from(buffer_size).is_ok(),
@@ -114,6 +120,7 @@ impl Stream for ReadStream<'_> {
         Ok(())
     }
 
+    #[inline]
     fn serialize_wide_string(&mut self, value: &mut String, buffer_size: usize) -> Result {
         assert!(
             buffer_size >= 2 && i32::try_from(buffer_size).is_ok(),
@@ -131,18 +138,22 @@ impl Stream for ReadStream<'_> {
         Ok(())
     }
 
+    #[inline]
     fn align_bits(&self) -> u32 {
         self.reader.align_bits()
     }
 
+    #[inline]
     fn bits_processed(&self) -> u64 {
         self.reader.bits_read()
     }
 
+    #[inline]
     fn bytes_processed(&self) -> u64 {
         self.reader.bits_read().div_ceil(8)
     }
 
+    #[inline]
     fn context(&self) -> Option<&dyn Any> {
         self.context
     }

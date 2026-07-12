@@ -79,6 +79,30 @@ that is not a multiple of 8 bytes.
 - Buffer sizes and bit counts are `u64` internally, matching the C++ library's 64 bit
   bookkeeping (buffers past 256 MB round trip; the test suite proves it).
 
+## Performance
+
+`cargo bench` runs [benches/throughput.rs](benches/throughput.rs), a direct port of the C++
+library's bench.cpp with identical methodology (same mixed bit-width table, same packet, same
+LCG-varied fields, escape barriers, best of five trials). Apple M3 Ultra, single core, Rust
+1.97 vs clang -O3:
+
+|                       | serialize.rs             | C++ serialize             |
+|-----------------------|--------------------------|---------------------------|
+| bitpacker write       |  2.4 GB/s                |  5.8 GB/s                 |
+| bitpacker read        |  2.6 GB/s                |  7.9 GB/s                 |
+| stream write          |  4.2 GB/s (92 M pkt/s)   |  2.1 GB/s (47 M pkt/s)    |
+| stream read           | 18.7 GB/s (410 M pkt/s)  |  6.5 GB/s (144 M pkt/s)   |
+| stream measure        | 1352 M pkt/s             |  805 M pkt/s              |
+
+The stream rows are the numbers that matter — that is the API. With the serialize function
+monomorphized, every field's bit width is a compile-time constant, the asserts and masks fold
+away, and the branchless reader's no-dependency design lets the CPU overlap the whole decode:
+the Rust stream path comes out 2-3x faster than the C++ build on the same machine. The raw
+bitpacker rows use runtime-variable bit widths from a table — the worst case for the safe
+path, where the per-call validation and bounds-checked loads that replace the C++ library's
+unchecked memory access cost about 2.5x (this crate is `forbid(unsafe_code)`; that's the
+trade, measured).
+
 ## Tests
 
 ```

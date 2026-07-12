@@ -113,17 +113,34 @@ jobs:
           cargo run --release --example wire_interop -- read cpp.bin
           ./cpp_golden read rust.bin
 
-  big-endian:
-    name: big endian (s390x)
+  cross-targets:
+    # s390x is big endian (proves the wire format is endian independent); i686 is 32 bit
+    # (covers the usize arithmetic the way the Go port's linux/386 job covers 32 bit int)
+    name: cross (${{ matrix.target }})
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        target: [s390x-unknown-linux-gnu, i686-unknown-linux-gnu]
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: taiki-e/install-action@v2
         with:
           tool: cross
-      - name: Test on s390x under qemu
-        run: cross test --release --target s390x-unknown-linux-gnu
+      - name: Test under qemu
+        run: cross test --release --target ${{ matrix.target }}
+
+  wasm:
+    name: wasm build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+      - name: Check the library builds for wasm
+        run: cargo check --target wasm32-unknown-unknown
 
   semver:
     name: semver (API compatibility vs main)

@@ -35,6 +35,7 @@ impl<'a> WriteStream<'a> {
     /// Panics if the buffer size is not a multiple of 8 bytes (the bit writer stores 64 bit
     /// words to memory).
     #[must_use]
+    #[inline]
     pub fn new(buffer: &'a mut [u8]) -> Self {
         WriteStream {
             writer: BitWriter::new(buffer),
@@ -44,6 +45,7 @@ impl<'a> WriteStream<'a> {
 
     /// Set a context on the stream, retrievable inside serialize functions with
     /// [`Stream::context`].
+    #[inline]
     pub fn set_context(&mut self, context: &'a dyn Any) {
         self.context = Some(context);
     }
@@ -52,12 +54,14 @@ impl<'a> WriteStream<'a> {
     ///
     /// Always call this after you finish writing, before you call [`WriteStream::data`] or
     /// send the buffer, or you'll potentially truncate the last word of data you wrote.
+    #[inline]
     pub fn flush(&mut self) {
         self.writer.flush_bits();
     }
 
     /// The data written by the stream. Call [`WriteStream::flush`] first.
     #[must_use]
+    #[inline]
     pub fn data(&self) -> &[u8] {
         self.writer.data()
     }
@@ -67,22 +71,26 @@ impl Stream for WriteStream<'_> {
     const IS_WRITING: bool = true;
     const IS_READING: bool = false;
 
+    #[inline]
     fn serialize_bits(&mut self, value: &mut u32, bits: u32) -> Result {
         self.writer.write_bits(*value, bits);
         Ok(())
     }
 
+    #[inline]
     fn serialize_bytes(&mut self, data: &mut [u8]) -> Result {
         self.serialize_align()?;
         self.writer.write_bytes(data);
         Ok(())
     }
 
+    #[inline]
     fn serialize_align(&mut self) -> Result {
         self.writer.write_align();
         Ok(())
     }
 
+    #[inline]
     fn serialize_string(&mut self, value: &mut String, buffer_size: usize) -> Result {
         let mut length = string_length(value.len(), buffer_size)?;
         self.serialize_int(&mut length, 0, buffer_size as i32 - 1)?;
@@ -91,6 +99,7 @@ impl Stream for WriteStream<'_> {
         Ok(())
     }
 
+    #[inline]
     fn serialize_wide_string(&mut self, value: &mut String, buffer_size: usize) -> Result {
         let mut length = string_length(value.chars().count(), buffer_size)?;
         self.serialize_int(&mut length, 0, buffer_size as i32 - 1)?;
@@ -101,18 +110,22 @@ impl Stream for WriteStream<'_> {
         Ok(())
     }
 
+    #[inline]
     fn align_bits(&self) -> u32 {
         self.writer.align_bits()
     }
 
+    #[inline]
     fn bits_processed(&self) -> u64 {
         self.writer.bits_written()
     }
 
+    #[inline]
     fn bytes_processed(&self) -> u64 {
         self.writer.bytes_written()
     }
 
+    #[inline]
     fn context(&self) -> Option<&dyn Any> {
         self.context
     }

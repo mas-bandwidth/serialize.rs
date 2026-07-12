@@ -39,6 +39,7 @@ impl<'a> BitWriter<'a> {
     ///
     /// Panics if the buffer size is not a multiple of 8 bytes.
     #[must_use]
+    #[inline]
     pub fn new(data: &'a mut [u8]) -> Self {
         assert!(
             data.len() % 8 == 0,
@@ -70,9 +71,10 @@ impl<'a> BitWriter<'a> {
     ///
     /// Panics if `bits` is not in `[1,32]`, or (via the slice bounds check) if the write passes
     /// the end of the buffer.
+    #[inline]
     pub fn write_bits(&mut self, value: u32, bits: u32) {
         assert!(
-            (1..=32).contains(&bits),
+            bits.wrapping_sub(1) < 32,
             "bits must be in [1,32] (got {bits})"
         );
         debug_assert!(self.bits_written + u64::from(bits) <= self.num_bits);
@@ -99,6 +101,7 @@ impl<'a> BitWriter<'a> {
 
     /// Write an alignment to the bit stream, padding zeros so the bit index becomes a multiple
     /// of 8. If the current bit index is already a multiple of 8, nothing is written.
+    #[inline]
     pub fn write_align(&mut self) {
         let remainder_bits = (self.bits_written % 8) as u32;
         if remainder_bits != 0 {
@@ -112,6 +115,7 @@ impl<'a> BitWriter<'a> {
     /// Faster than writing each byte with [`BitWriter::write_bits`], because after reaching a
     /// word boundary it copies into the buffer without bitpacking. The stream must be byte
     /// aligned when this is called (write an align first — the streams do this for you).
+    #[inline]
     pub fn write_bytes(&mut self, data: &[u8]) {
         let bytes = data.len();
         debug_assert_eq!(self.align_bits(), 0);
@@ -158,6 +162,7 @@ impl<'a> BitWriter<'a> {
     /// Call this once after you finish writing bits, otherwise the last word of scratch is
     /// never stored. Stores a full qword: the buffer size is a multiple of 8 so this stays in
     /// bounds, and bytes past the written data are zeros.
+    #[inline]
     pub fn flush_bits(&mut self) {
         if self.scratch_bits != 0 {
             debug_assert!(self.scratch_bits < 64);
@@ -172,18 +177,21 @@ impl<'a> BitWriter<'a> {
     /// How many align bits would be written, if we were to write an align right now?
     /// Result in `[0,7]`.
     #[must_use]
+    #[inline]
     pub fn align_bits(&self) -> u32 {
         ((8 - (self.bits_written % 8)) % 8) as u32
     }
 
     /// How many bits have we written so far?
     #[must_use]
+    #[inline]
     pub fn bits_written(&self) -> u64 {
         self.bits_written
     }
 
     /// How many bits are still available to write?
     #[must_use]
+    #[inline]
     pub fn bits_available(&self) -> u64 {
         self.num_bits - self.bits_written
     }
@@ -191,12 +199,14 @@ impl<'a> BitWriter<'a> {
     /// The number of bytes flushed to memory. This is effectively the size of the packet you
     /// should send after you finish writing. Call [`BitWriter::flush_bits`] first.
     #[must_use]
+    #[inline]
     pub fn bytes_written(&self) -> u64 {
         self.bits_written.div_ceil(8)
     }
 
     /// The data written so far, as a byte slice. Call [`BitWriter::flush_bits`] first.
     #[must_use]
+    #[inline]
     pub fn data(&self) -> &[u8] {
         &self.data[..self.bytes_written() as usize]
     }
@@ -244,6 +254,7 @@ impl<'a> BitReader<'a> {
     ///
     /// Panics if `bytes` exceeds the buffer length.
     #[must_use]
+    #[inline]
     pub fn new(buffer: &'a [u8], bytes: usize) -> Self {
         assert!(
             bytes <= buffer.len(),
@@ -259,13 +270,14 @@ impl<'a> BitReader<'a> {
 
     #[inline]
     fn load_window(&self, byte_index: usize) -> u64 {
+        // fast path: the allocation extends past the data being read (measured equivalent to
+        // a manual length comparison — LLVM fuses the two checks into one).
+        // little endian load matches the writer's little endian store on every platform.
         if let Some(window) = self
             .data
             .get(byte_index..)
             .and_then(|tail| tail.first_chunk())
         {
-            // the allocation extends past the data being read: branchless fast path.
-            // little endian load matches the writer's little endian store on every platform.
             u64::from_le_bytes(*window)
         } else {
             // no slack in the buffer: guarded load of whatever bytes remain, zero padded
@@ -280,6 +292,7 @@ impl<'a> BitReader<'a> {
 
     /// Would the bit reader read past the end of the buffer if it read this many bits?
     #[must_use]
+    #[inline]
     pub fn would_read_past_end(&self, bits: u32) -> bool {
         self.bits_read + u64::from(bits) > self.num_bits
     }
@@ -293,9 +306,10 @@ impl<'a> BitReader<'a> {
     /// # Panics
     ///
     /// Panics if `bits` is not in `[1,32]`.
+    #[inline]
     pub fn read_bits(&mut self, bits: u32) -> u32 {
         assert!(
-            (1..=32).contains(&bits),
+            bits.wrapping_sub(1) < 32,
             "bits must be in [1,32] (got {bits})"
         );
         debug_assert!(self.bits_read + u64::from(bits) <= self.num_bits);
@@ -315,6 +329,7 @@ impl<'a> BitReader<'a> {
     /// ahead to the next byte boundary, verifying that the padding bits are zero. Returns
     /// false if the padding is nonzero, which should abort the packet read.
     #[must_use]
+    #[inline]
     pub fn read_align(&mut self) -> bool {
         let remainder_bits = (self.bits_read % 8) as u32;
         if remainder_bits != 0 {
@@ -329,6 +344,7 @@ impl<'a> BitReader<'a> {
 
     /// Read bytes from the bitpacked data into `dest`. The stream must be byte aligned when
     /// this is called (read an align first — the streams do this for you).
+    #[inline]
     pub fn read_bytes(&mut self, dest: &mut [u8]) {
         dest.copy_from_slice(self.read_byte_slice(dest.len()));
     }
@@ -340,6 +356,7 @@ impl<'a> BitReader<'a> {
     ///
     /// Panics (via the slice bounds check) if the read passes the end of the buffer; the
     /// higher level [`crate::ReadStream`] bounds checks before calling.
+    #[inline]
     pub fn read_byte_slice(&mut self, bytes: usize) -> &'a [u8] {
         debug_assert_eq!(self.align_bits(), 0);
         debug_assert!(self.bits_read + bytes as u64 * 8 <= self.num_bits);
@@ -353,18 +370,21 @@ impl<'a> BitReader<'a> {
     /// How many align bits would be read, if we were to read an align right now?
     /// Result in `[0,7]`.
     #[must_use]
+    #[inline]
     pub fn align_bits(&self) -> u32 {
         ((8 - self.bits_read % 8) % 8) as u32
     }
 
     /// How many bits have we read so far?
     #[must_use]
+    #[inline]
     pub fn bits_read(&self) -> u64 {
         self.bits_read
     }
 
     /// How many bits are still available to read?
     #[must_use]
+    #[inline]
     pub fn bits_remaining(&self) -> u64 {
         self.num_bits - self.bits_read
     }
