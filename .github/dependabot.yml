@@ -4,6 +4,11 @@ updates:
     directory: /
     schedule:
       interval: weekly
+    ignore:
+      # the msrv CI job pins dtolnay/rust-toolchain@1.85 as the MSRV under test —
+      # "bumping" it would make the job test a newer toolchain instead of enforcing
+      # 1.85. Only change this pin when the MSRV itself deliberately changes.
+      - dependency-name: dtolnay/rust-toolchain
   # the library has zero dependencies (CI enforces it); this covers the fuzz harness only
   - package-ecosystem: cargo
     directory: /fuzz
