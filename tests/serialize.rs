@@ -1047,3 +1047,120 @@ fn test_large_buffer() {
         assert!(read_stream.bits_processed() > 1u64 << 31);
     }
 }
+
+#[test]
+fn test_read_bits_group() {
+    // group reads must be bit-for-bit identical to sequential read_bits calls, at every
+    // bit alignment, with and without buffer slack, including the oversized-group and
+    // end-of-buffer fallback paths
+    const BUFFER_SIZE: usize = 256;
+    const WIDTHS: [u32; 16] = [1, 32, 7, 13, 3, 25, 8, 19, 4, 28, 11, 16, 2, 30, 6, 22];
+
+    let mut buffer = [0u8; BUFFER_SIZE + 8];
+
+    // deterministic values, LCG-derived, masked to width
+    let mut rng: u64 = 0x9E3779B97F4A7C15;
+    let mut values = Vec::new();
+    {
+        let mut writer = BitWriter::new(&mut buffer[..BUFFER_SIZE]);
+        for align in 0..8u32 {
+            if align > 0 {
+                writer.write_bits(0, align); // shift the group off byte alignment
+            }
+            for width in WIDTHS {
+                rng = rng
+                    .wrapping_mul(6364136223846793005)
+                    .wrapping_add(1442695040888963407);
+                let mask = if width == 32 {
+                    u32::MAX
+                } else {
+                    (1u32 << width) - 1
+                };
+                let value = (rng >> 16) as u32 & mask;
+                values.push(value);
+                writer.write_bits(value, width);
+            }
+        }
+        writer.flush_bits();
+    }
+    let bytes_written = ((8 * (0..8u32).sum::<u32>() as u64 / 8) + 8 * 227).div_ceil(8) as usize;
+
+    // with slack: fast path
+    {
+        let mut group_reader = BitReader::new(&buffer, bytes_written);
+        let mut single_reader = BitReader::new(&buffer, bytes_written);
+        let mut expected = values.iter().copied();
+        for align in 0..8u32 {
+            if align > 0 {
+                assert_eq!(group_reader.read_bits(align), 0);
+                assert_eq!(single_reader.read_bits(align), 0);
+            }
+            let group = group_reader.read_bits_group(&WIDTHS);
+            for (i, width) in WIDTHS.into_iter().enumerate() {
+                let value = single_reader.read_bits(width);
+                assert_eq!(group[i], value);
+                assert_eq!(group[i], expected.next().unwrap());
+            }
+            assert_eq!(group_reader.bits_read(), single_reader.bits_read());
+        }
+    }
+
+    // without slack: exact-length buffer forces the guarded fallback near the end
+    {
+        let exact = &buffer[..bytes_written];
+        let mut group_reader = BitReader::new(exact, bytes_written);
+        let mut single_reader = BitReader::new(exact, bytes_written);
+        for align in 0..8u32 {
+            if align > 0 {
+                assert_eq!(group_reader.read_bits(align), 0);
+                assert_eq!(single_reader.read_bits(align), 0);
+            }
+            let group = group_reader.read_bits_group(&WIDTHS);
+            for (i, width) in WIDTHS.into_iter().enumerate() {
+                assert_eq!(group[i], single_reader.read_bits(width));
+            }
+        }
+    }
+
+    // oversized group (> 248 bits) falls back and still matches
+    {
+        let widths_big = [31u32; 9]; // 279 bits
+        let mut buffer2 = [0u8; 48];
+        {
+            let mut writer = BitWriter::new(&mut buffer2);
+            for (i, &w) in widths_big.iter().enumerate() {
+                writer.write_bits(0x7FFF_FFFF - i as u32, w);
+            }
+            writer.flush_bits();
+        }
+        let mut group_reader = BitReader::new(&buffer2, 35);
+        let group = group_reader.read_bits_group(&widths_big);
+        for (i, value) in group.into_iter().enumerate() {
+            assert_eq!(value, 0x7FFF_FFFF - i as u32);
+        }
+    }
+
+    // empty group is a no-op
+    {
+        let mut reader = BitReader::new(&buffer, bytes_written);
+        let empty: [u32; 0] = reader.read_bits_group(&[]);
+        assert_eq!(empty.len(), 0);
+        assert_eq!(reader.bits_read(), 0);
+    }
+}
+
+#[test]
+#[should_panic(expected = "all widths must be in [1,32]")]
+fn test_read_bits_group_validates_widths() {
+    let buffer = [0u8; 16];
+    let mut reader = BitReader::new(&buffer, 16);
+    let _ = reader.read_bits_group(&[8, 0, 8]);
+}
+
+#[test]
+#[should_panic(expected = "all widths must be in [1,32]")]
+fn test_read_bits_group_validates_wide_widths() {
+    let buffer = [0u8; 16];
+    let mut reader = BitReader::new(&buffer, 16);
+    let _ = reader.read_bits_group(&[8, 33]);
+}

@@ -81,10 +81,26 @@ fn bench_bitpacker(buffer: &mut [u8]) {
         }
     });
 
+    // same workload through the group API: one validation and one bounds check per
+    // 16-value group instead of per read
+    let best_read_group = best_of(|| {
+        for _ in 0..BITPACKER_NUM_PASSES {
+            let mut reader = BitReader::new(buffer, BITPACKER_BUFFER_SIZE);
+            let mut sum = 0u64;
+            while reader.bits_remaining() >= 256 {
+                for value in reader.read_bits_group(&BENCH_WIDTHS) {
+                    sum += u64::from(value);
+                }
+            }
+            black_box(sum);
+        }
+    });
+
     let total_mb = bytes_per_pass as f64 * BITPACKER_NUM_PASSES as f64 / (1024.0 * 1024.0);
 
     println!("bitpacker write:  {:8.1} MB/s", total_mb / best_write);
     println!("bitpacker read:   {:8.1} MB/s", total_mb / best_read);
+    println!("bitpacker group:  {:8.1} MB/s", total_mb / best_read_group);
 }
 
 // ------------------------------------------------------------------------------------------
