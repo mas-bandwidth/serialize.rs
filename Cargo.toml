@@ -1,11 +1,11 @@
 [package]
 name = "serialize"
-version = "1.1.0"
+version = "1.2.0"
 edition = "2024"
 rust-version = "1.85"
 description = "A simple bitpacking serializer for Rust, wire compatible with the C++ serialize library"
 repository = "https://github.com/mas-bandwidth/serialize.rs"
-license = "BSD-3-Clause"
+license-file = "LICENSE"
 keywords = ["serialization", "bitpacking", "networking", "gamedev"]
 categories = ["game-development", "network-programming", "encoding"]
 # repo infrastructure that does not belong in the crates.io package; the fuzz/ crate is

@@ -128,3 +128,14 @@ requests. The crate is `#![forbid(unsafe_code)]`, enforced by the compiler.
 ## License
 
 [BSD 3-Clause](LICENSE), same as the C++ library.
+
+## Crediting
+
+This library is licensed under the [Más Bandwidth Source License (MBSL)](LICENSE),
+which is BSD 3-Clause plus one clause: products that incorporate it must include
+this credit in their product credits, or in their documentation:
+
+> **Más Bandwidth LLC**
+> serialize.rs by Glenn Fiedler
+
+Free to use, source open, credit required. Fair credit keeps open source honest.
