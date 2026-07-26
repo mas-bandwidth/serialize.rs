@@ -1,3 +1,27 @@
+<!-- HOT:BEGIN -->
+## HOT — read before touching this repo
+
+WHAT: Rust port of mas-bandwidth/serialize, the C bitpacking library.
+NOT mas-bandwidth/serialize (the C reference), NOT serialize.modern (the C++23 one).
+
+NAME: the crate is `serialize` and as of 2026-07-26 that name is STILL FREE on crates.io
+— unpublished, unclaimed. Unlike netcode (where `netcode` was taken in 2017 by an
+unrelated project, forcing the `netcode-official` crate name), there is no name trap here
+yet. Publishing sooner rather than later is what keeps it that way.
+
+PUBLISHING (crates.io) — the token is NOT on this bench
+The crates.io token lives at /Users/glenn/.cargo/credentials.toml on GLENN'S personal
+macOS account: mode 0600, owned by glenn, unreadable from the mas account. `cargo publish`
+here fails with "no token found". That is NOT a missing credential and NOT a reason to
+mint a new one — it is the wrong machine account. Either Glenn publishes from his own
+account, or he moves the token into the mas keychain with the prompting form
+(`security add-generic-password -U -a rowan -s crates-io-token -w`, no value after -w).
+
+STATE as verified 2026-07-26: Cargo.toml is at 1.2.2, `cargo publish --dry-run` packages
+and compiles clean, and the crate has never been published. This is a publish-NEW, so a
+token needs the `publish-new` scope — the other two Rust ports are publish-UPDATE.
+<!-- HOT:END -->
+
 # serialize.rs
 
 Rust port of the C++ serialize library (github.com/mas-bandwidth/serialize). Crate name
