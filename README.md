@@ -39,6 +39,38 @@ impl Packet {
 See [examples/packet.rs](examples/packet.rs) for a fuller example with nested objects,
 variable length arrays and measuring.
 
+Fixed point values serialize exactly — unlike compressed floats there is no quantization
+step — and 128 bit integers are first class, using Rust's native `i128`/`u128`:
+
+```rust
+use serialize::{Stream, Result};
+
+struct Player {
+    position_x: i64,     // Q48.16 fixed point, in ±8192 whole units
+    position_y: i64,
+    position_z: i64,
+    entity_id: u128,     // 128 bit globally unique id
+    sector_offset: i128, // ranged 128 bit integer
+}
+
+impl Player {
+    fn serialize<S: Stream>(&mut self, stream: &mut S) -> Result {
+        stream.serialize_fixed(&mut self.position_x, 48, 16, -8192, 8192)?;
+        stream.serialize_fixed(&mut self.position_y, 48, 16, -8192, 8192)?;
+        stream.serialize_fixed(&mut self.position_z, 48, 16, -8192, 8192)?;
+        stream.serialize_u128(&mut self.entity_id)?;
+        stream.serialize_int128(&mut self.sector_offset, -(1 << 70), 1 << 70)?;
+        Ok(())
+    }
+}
+```
+
+`serialize_u128` is a raw 128 bit field and always costs 128 bits. `serialize_int128` is
+the ranged form: it costs only the bits its range needs, and where that range fits 64 bits
+the bytes are identical to `serialize_int64`. Both are byte compatible with the C++
+library's `serialize_uint128`/`serialize_int128`, whether the C++ side uses native
+`__int128` or its emulated pair.
+
 ## Reading untrusted data
 
 The read path is the trust boundary. Every read is bounds checked and range validated at
@@ -76,6 +108,14 @@ that is not a multiple of 8 bytes.
   wire format (32 bits per code point) and validates code points on read.
 - The stream context is `&dyn Any` instead of `void*`. There is no allocator pointer — Rust
   serialize functions can carry whatever state they need.
+- 128 bit values use Rust's native `i128`/`u128` on every platform; there is no equivalent
+  of the C++ library's emulated 128 bit pair, and none is needed. The wire is identical.
+- `serialize_fixed` takes its Q format and bounds as runtime arguments checked by panics
+  (the storage type is generic over `FixedPointStorage`, so `stream.serialize_fixed(&mut
+  value, 48, 16, min, max)` mirrors the C++ call shape); the C++ library checks the same
+  constraints at compile time with `static_assert`s. The wire is identical, and the C++
+  contract notes about 128 bit division do not apply: the codec never divides in either
+  implementation.
 - Buffer sizes and bit counts are `u64` internally, matching the C++ library's 64 bit
   bookkeeping (buffers past 256 MB round trip; the test suite proves it).
 

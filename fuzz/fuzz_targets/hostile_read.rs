@@ -27,7 +27,7 @@ fuzz_target!(|data: &[u8]| {
         let op = chunk[0];
         let a = *chunk.get(1).unwrap_or(&0);
         let b = *chunk.get(2).unwrap_or(&0);
-        let _ = match op % 13 {
+        let _ = match op % 16 {
             0 => stream.serialize_bits(&mut 0, u32::from(a) % 32 + 1),
             1 => stream.serialize_bits64(&mut 0, u32::from(a) % 64 + 1),
             2 => stream.serialize_int(&mut 0, -i32::from(a) - 1, i32::from(b) + 1),
@@ -40,6 +40,27 @@ fuzz_target!(|data: &[u8]| {
             9 => stream.serialize_f32(&mut 0.0),
             10 => stream.serialize_f64(&mut 0.0),
             11 => stream.serialize_align(),
+            12 => stream.serialize_u128(&mut 0),
+            13 => {
+                // the bound width walks every group structure: one group, two, three and four
+                let bound = 1i128 << (20 + u32::from(a) % 100);
+                stream.serialize_int128(&mut 0, -bound, bound)
+            }
+            14 => match a % 4 {
+                // fixed point configurations are constants of the call site, so the ones the
+                // C++ fuzz harness pins are driven here: values read off hostile bytes must
+                // decode within the raw bounds or fail the read
+                0 => stream.serialize_fixed(&mut 0i32, 16, 16, -1000, 1000),
+                1 => stream.serialize_fixed(&mut 0i64, 48, 16, -100000000000, 100000000000),
+                2 => stream.serialize_fixed(
+                    &mut 0i128,
+                    112,
+                    16,
+                    -1152921504606846976,
+                    1152921504606846976,
+                ),
+                _ => stream.serialize_int128(&mut 0, i128::MIN, i128::MAX),
+            },
             _ => match a % 5 {
                 0 => {
                     let len = (b as usize) % buffer.len();
