@@ -122,6 +122,7 @@ pub type Result<T = ()> = core::result::Result<T, Error>;
 /// Usable in const contexts, which covers the C++ library's compile time `BitsRequired<min,max>`
 /// template as well as its runtime `bits_required` function.
 #[must_use]
+#[inline]
 pub const fn bits_required(min: u32, max: u32) -> u32 {
     if min == max {
         0
@@ -135,6 +136,7 @@ pub const fn bits_required(min: u32, max: u32) -> u32 {
 /// The subtraction is done in the unsigned domain so ranges wider than 2^63 work. Returns a
 /// value in `[0,64]`.
 #[must_use]
+#[inline]
 pub const fn bits_required64(min: u64, max: u64) -> u32 {
     if min == max {
         0
