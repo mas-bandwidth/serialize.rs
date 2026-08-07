@@ -65,6 +65,27 @@ impl<'a> WriteStream<'a> {
     pub fn data(&self) -> &[u8] {
         self.writer.data()
     }
+
+    /// Write bytes from a shared slice: the write-path twin of [`Stream::serialize_bytes`],
+    /// producing identical wire (align to the next byte boundary, then block copy the data).
+    ///
+    /// The unified trait signature takes `&mut [u8]` because the read side fills the slice
+    /// in — which forces a write-side caller holding only shared data (say, a fixed array
+    /// behind `&T`) to copy it somewhere mutable first, paying the whole array even when
+    /// only a short prefix goes to the wire. The write side never mutates the data, so this
+    /// method takes `&[u8]` and skips that copy.
+    ///
+    /// # Errors
+    ///
+    /// None today — the write path is trusted and does not error (writing past the end of
+    /// the buffer panics, as with every write). Returns [`Result`] so call sites compose
+    /// with `?` exactly like [`Stream::serialize_bytes`].
+    #[inline]
+    pub fn write_bytes(&mut self, data: &[u8]) -> Result {
+        self.writer.write_align();
+        self.writer.write_bytes(data);
+        Ok(())
+    }
 }
 
 impl Stream for WriteStream<'_> {
