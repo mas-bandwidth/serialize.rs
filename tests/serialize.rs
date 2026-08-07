@@ -642,6 +642,46 @@ fn test_serialize_bytes_validation() {
 }
 
 #[test]
+fn test_write_bytes_wire_identical() {
+    // WriteStream::write_bytes is the write-path twin of serialize_bytes over a shared
+    // slice: byte-identical wire, including the alignment step, from an unaligned start.
+    let payload = [0xDEu8, 0xAD, 0xBE, 0xEF, 0x01, 0x02, 0x03];
+
+    let mut via_trait = [0u8; 24];
+    let trait_bytes = {
+        let mut write_stream = WriteStream::new(&mut via_trait);
+        let mut bits = 5u32;
+        write_stream.serialize_bits(&mut bits, 3).unwrap(); // leave the stream unaligned
+        let mut data = payload;
+        write_stream.serialize_bytes(&mut data).unwrap();
+        write_stream.flush();
+        write_stream.bytes_processed() as usize
+    };
+
+    let mut via_write = [0u8; 24];
+    let write_bytes = {
+        let mut write_stream = WriteStream::new(&mut via_write);
+        let mut bits = 5u32;
+        write_stream.serialize_bits(&mut bits, 3).unwrap();
+        write_stream.write_bytes(&payload).unwrap(); // no mutable copy of the source
+        write_stream.flush();
+        write_stream.bytes_processed() as usize
+    };
+
+    assert_eq!(trait_bytes, write_bytes);
+    assert_eq!(via_trait, via_write);
+
+    // and the read side round trips it
+    let mut read_stream = ReadStream::new(&via_write, write_bytes);
+    let mut bits = 0u32;
+    read_stream.serialize_bits(&mut bits, 3).unwrap();
+    let mut read_back = [0u8; 7];
+    read_stream.serialize_bytes(&mut read_back).unwrap();
+    assert_eq!(bits, 5);
+    assert_eq!(read_back, payload);
+}
+
+#[test]
 fn test_int_relative_validation() {
     // the 32 bit fallback must reject values that violate the previous < current contract
     {
