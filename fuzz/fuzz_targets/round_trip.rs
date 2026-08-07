@@ -38,6 +38,12 @@ impl Cursor<'_> {
         self.pos += 8;
         Some(u64::from_le_bytes(bytes.try_into().unwrap()))
     }
+
+    fn u128(&mut self) -> Option<u128> {
+        let bytes = self.data.get(self.pos..self.pos + 16)?;
+        self.pos += 16;
+        Some(u128::from_le_bytes(bytes.try_into().unwrap()))
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -54,7 +60,18 @@ enum Value {
     Align,
     String(String),
     IntRelative { previous: i32, current: i32 },
+    U128(u128),
+    Int128 { value: i128, min: i128, max: i128 },
+    // raw values for fixed configurations mirroring the C++ fuzz harness: Q48.16 in
+    // [-1e11,+1e11] whole units, and the wide Q112.16 in ±2^60 whole units
+    Fixed48 { raw: i64 },
+    Fixed112 { raw: i128 },
 }
+
+const FIXED48_MIN_UNITS: i64 = -100000000000;
+const FIXED48_MAX_UNITS: i64 = 100000000000;
+const FIXED112_MIN_UNITS: i64 = -1152921504606846976;
+const FIXED112_MAX_UNITS: i64 = 1152921504606846976;
 
 fn ordered_i32(a: i32, b: i32) -> (i32, i32) {
     match a.cmp(&b) {
@@ -74,9 +91,18 @@ fn ordered_i64(a: i64, b: i64) -> (i64, i64) {
     }
 }
 
+fn ordered_i128(a: i128, b: i128) -> (i128, i128) {
+    match a.cmp(&b) {
+        core::cmp::Ordering::Less => (a, b),
+        core::cmp::Ordering::Greater => (b, a),
+        core::cmp::Ordering::Equal if a == i128::MAX => (a - 1, a),
+        core::cmp::Ordering::Equal => (a, a + 1),
+    }
+}
+
 fn parse(cursor: &mut Cursor) -> Option<Value> {
     let op = cursor.u8()?;
-    Some(match op % 12 {
+    Some(match op % 16 {
         0 => {
             let bits = u32::from(cursor.u8()?) % 32 + 1;
             let value = cursor.u32()? & (((1u64 << bits) - 1) as u32);
@@ -91,15 +117,22 @@ fn parse(cursor: &mut Cursor) -> Option<Value> {
             let (min, max) = ordered_i32(cursor.u32()? as i32, cursor.u32()? as i32);
             // pick a value in [min,max] in the unsigned domain so wide ranges cannot overflow
             let range = (max as u32).wrapping_sub(min as u32);
-            let offset =
-                if range == u32::MAX { cursor.u32()? } else { cursor.u32()? % (range + 1) };
+            let offset = if range == u32::MAX {
+                cursor.u32()?
+            } else {
+                cursor.u32()? % (range + 1)
+            };
             let value = (min as u32).wrapping_add(offset) as i32;
             Value::Int { value, min, max }
         }
         3 => {
             let (min, max) = ordered_i64(cursor.u64()? as i64, cursor.u64()? as i64);
             let span = (max as u64).wrapping_sub(min as u64).wrapping_add(1);
-            let offset = if span == 0 { cursor.u64()? } else { cursor.u64()? % span };
+            let offset = if span == 0 {
+                cursor.u64()?
+            } else {
+                cursor.u64()? % span
+            };
             let value = (min as u64).wrapping_add(offset) as i64;
             Value::Int64 { value, min, max }
         }
@@ -124,7 +157,7 @@ fn parse(cursor: &mut Cursor) -> Option<Value> {
             }
             Value::String(string)
         }
-        _ => {
+        11 => {
             let previous = cursor.u32()? as i32;
             let gap = cursor.u32()? % (1 << 20) + 1;
             // int relative requires previous < current in the signed domain on the write side;
@@ -133,8 +166,36 @@ fn parse(cursor: &mut Cursor) -> Option<Value> {
             if previous < current {
                 Value::IntRelative { previous, current }
             } else {
-                Value::IntRelative { previous: 0, current: gap as i32 }
+                Value::IntRelative {
+                    previous: 0,
+                    current: gap as i32,
+                }
             }
+        }
+        12 => Value::U128(cursor.u128()?),
+        13 => {
+            let (min, max) = ordered_i128(cursor.u128()? as i128, cursor.u128()? as i128);
+            // pick a value in [min,max] in the unsigned domain so wide ranges cannot overflow
+            let span = (max as u128).wrapping_sub(min as u128).wrapping_add(1);
+            let offset = if span == 0 {
+                cursor.u128()?
+            } else {
+                cursor.u128()? % span
+            };
+            let value = (min as u128).wrapping_add(offset) as i128;
+            Value::Int128 { value, min, max }
+        }
+        14 => {
+            let raw_min = FIXED48_MIN_UNITS << 16;
+            let raw_range = ((FIXED48_MAX_UNITS - FIXED48_MIN_UNITS) as u64) << 16;
+            let raw = (raw_min as u64).wrapping_add(cursor.u64()? % (raw_range + 1)) as i64;
+            Value::Fixed48 { raw }
+        }
+        _ => {
+            let raw_min = i128::from(FIXED112_MIN_UNITS) << 16;
+            let raw_range = ((FIXED112_MAX_UNITS - FIXED112_MIN_UNITS) as u128) << 16;
+            let raw = (raw_min as u128).wrapping_add(cursor.u128()? % (raw_range + 1)) as i128;
+            Value::Fixed112 { raw }
         }
     })
 }
@@ -160,15 +221,37 @@ fn serialize_value<S: Stream>(stream: &mut S, value: &mut Value) -> Result {
         Value::IntRelative { previous, current } => {
             stream.serialize_int_relative(*previous, current)
         }
+        Value::U128(value) => stream.serialize_u128(value),
+        Value::Int128 { value, min, max } => stream.serialize_int128(value, *min, *max),
+        Value::Fixed48 { raw } => {
+            stream.serialize_fixed(raw, 48, 16, FIXED48_MIN_UNITS, FIXED48_MAX_UNITS)
+        }
+        Value::Fixed112 { raw } => {
+            stream.serialize_fixed(raw, 112, 16, FIXED112_MIN_UNITS, FIXED112_MAX_UNITS)
+        }
     }
 }
 
 fn blank(value: &Value) -> Value {
     match value {
-        Value::Bits { bits, .. } => Value::Bits { value: 0, bits: *bits },
-        Value::Bits64 { bits, .. } => Value::Bits64 { value: 0, bits: *bits },
-        Value::Int { min, max, .. } => Value::Int { value: *min, min: *min, max: *max },
-        Value::Int64 { min, max, .. } => Value::Int64 { value: *min, min: *min, max: *max },
+        Value::Bits { bits, .. } => Value::Bits {
+            value: 0,
+            bits: *bits,
+        },
+        Value::Bits64 { bits, .. } => Value::Bits64 {
+            value: 0,
+            bits: *bits,
+        },
+        Value::Int { min, max, .. } => Value::Int {
+            value: *min,
+            min: *min,
+            max: *max,
+        },
+        Value::Int64 { min, max, .. } => Value::Int64 {
+            value: *min,
+            min: *min,
+            max: *max,
+        },
         Value::Bool(_) => Value::Bool(false),
         Value::Float(_) => Value::Float(0.0),
         Value::Double(_) => Value::Double(0.0),
@@ -176,9 +259,22 @@ fn blank(value: &Value) -> Value {
         Value::Bytes(data) => Value::Bytes(vec![0; data.len()]),
         Value::Align => Value::Align,
         Value::String(_) => Value::String(String::new()),
-        Value::IntRelative { previous, .. } => {
-            Value::IntRelative { previous: *previous, current: 0 }
-        }
+        Value::IntRelative { previous, .. } => Value::IntRelative {
+            previous: *previous,
+            current: 0,
+        },
+        Value::U128(_) => Value::U128(0),
+        Value::Int128 { min, max, .. } => Value::Int128 {
+            value: *min,
+            min: *min,
+            max: *max,
+        },
+        Value::Fixed48 { .. } => Value::Fixed48 {
+            raw: FIXED48_MIN_UNITS << 16,
+        },
+        Value::Fixed112 { .. } => Value::Fixed112 {
+            raw: i128::from(FIXED112_MIN_UNITS) << 16,
+        },
     }
 }
 

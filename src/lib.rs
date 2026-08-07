@@ -77,7 +77,7 @@ mod write_stream;
 pub use bitpacker::{BitReader, BitWriter};
 pub use measure_stream::MeasureStream;
 pub use read_stream::ReadStream;
-pub use stream::{Serialize, Stream};
+pub use stream::{FixedPointStorage, Serialize, Stream};
 pub use write_stream::WriteStream;
 
 /// The error type for stream reads that fail.
@@ -142,6 +142,21 @@ pub const fn bits_required64(min: u64, max: u64) -> u32 {
         0
     } else {
         64 - max.wrapping_sub(min).leading_zeros()
+    }
+}
+
+/// Calculates the number of bits required to serialize a 128 bit integer in range `[min,max]`.
+///
+/// The subtraction is done in the unsigned domain so ranges wider than 2^127 work. Returns a
+/// value in `[0,128]`. Where the range fits 64 bits or fewer the result equals
+/// [`bits_required64`] over the same range — the guarantee that lets a field widen from 64 to
+/// 128 bits without changing the wire.
+#[must_use]
+pub const fn bits_required128(min: u128, max: u128) -> u32 {
+    if min == max {
+        0
+    } else {
+        128 - max.wrapping_sub(min).leading_zeros()
     }
 }
 

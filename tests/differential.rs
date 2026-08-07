@@ -20,6 +20,10 @@ impl Rng {
     fn range(&mut self, bound: u64) -> u64 {
         self.next() % bound
     }
+
+    fn next128(&mut self) -> u128 {
+        (u128::from(self.next()) << 64) | u128::from(self.next())
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -35,10 +39,24 @@ enum Value {
     Align,
     String(String),
     IntRelative { previous: i32, current: i32 },
+    U128(u128),
+    Int128 { value: i128, min: i128, max: i128 },
+    // raw values for fixed configurations mirroring the C++ fuzz harness: Q48.16 in
+    // [-1e11,+1e11] whole units, and the wide Q112.16 in ±2^60 whole units
+    Fixed48 { raw: i64 },
+    Fixed112 { raw: i128 },
 }
 
+const FIXED48_MIN_UNITS: i64 = -100000000000;
+const FIXED48_MAX_UNITS: i64 = 100000000000;
+const FIXED112_MIN_UNITS: i64 = -1152921504606846976;
+const FIXED112_MAX_UNITS: i64 = 1152921504606846976;
+
+// one match arm per op kind, mirroring the C++ fuzz harness's op table; splitting it would
+// separate the ops from the distribution that drives them
+#[allow(clippy::too_many_lines)]
 fn random_value(rng: &mut Rng) -> Value {
-    match rng.range(11) {
+    match rng.range(15) {
         0 => {
             let bits = rng.range(32) as u32 + 1;
             let value = (rng.next() as u32) & (((1u64 << bits) - 1) as u32);
@@ -103,7 +121,7 @@ fn random_value(rng: &mut Rng) -> Value {
                     .collect(),
             )
         }
-        _ => {
+        10 => {
             let previous = rng.next() as u32 as i32;
             let gap = rng.range(1 << 20) as u32 + 1;
             let current = (previous as u32).wrapping_add(gap) as i32;
@@ -116,6 +134,38 @@ fn random_value(rng: &mut Rng) -> Value {
                     current: gap as i32,
                 }
             }
+        }
+        11 => Value::U128(rng.next128()),
+        12 => {
+            let a = rng.next128() as i128;
+            let b = rng.next128() as i128;
+            let (min, max) = match a.cmp(&b) {
+                core::cmp::Ordering::Less => (a, b),
+                core::cmp::Ordering::Greater => (b, a),
+                core::cmp::Ordering::Equal if a == i128::MAX => (a - 1, a),
+                core::cmp::Ordering::Equal => (a, a + 1),
+            };
+            // pick a value in [min,max] in the unsigned domain so wide ranges cannot overflow
+            let span = (max as u128).wrapping_sub(min as u128).wrapping_add(1);
+            let offset = if span == 0 {
+                rng.next128()
+            } else {
+                rng.next128() % span
+            };
+            let value = (min as u128).wrapping_add(offset) as i128;
+            Value::Int128 { value, min, max }
+        }
+        13 => {
+            let raw_min = FIXED48_MIN_UNITS << 16;
+            let raw_range = ((FIXED48_MAX_UNITS - FIXED48_MIN_UNITS) as u64) << 16;
+            let raw = (raw_min as u64).wrapping_add(rng.next() % (raw_range + 1)) as i64;
+            Value::Fixed48 { raw }
+        }
+        _ => {
+            let raw_min = i128::from(FIXED112_MIN_UNITS) << 16;
+            let raw_range = ((FIXED112_MAX_UNITS - FIXED112_MIN_UNITS) as u128) << 16;
+            let raw = (raw_min as u128).wrapping_add(rng.next128() % (raw_range + 1)) as i128;
+            Value::Fixed112 { raw }
         }
     }
 }
@@ -134,6 +184,14 @@ fn serialize_value<S: Stream>(stream: &mut S, value: &mut Value) -> serialize::R
         Value::String(value) => stream.serialize_string(value, 16),
         Value::IntRelative { previous, current } => {
             stream.serialize_int_relative(*previous, current)
+        }
+        Value::U128(value) => stream.serialize_u128(value),
+        Value::Int128 { value, min, max } => stream.serialize_int128(value, *min, *max),
+        Value::Fixed48 { raw } => {
+            stream.serialize_fixed(raw, 48, 16, FIXED48_MIN_UNITS, FIXED48_MAX_UNITS)
+        }
+        Value::Fixed112 { raw } => {
+            stream.serialize_fixed(raw, 112, 16, FIXED112_MIN_UNITS, FIXED112_MAX_UNITS)
         }
     }
 }
@@ -167,6 +225,18 @@ fn blank(value: &Value) -> Value {
         Value::IntRelative { previous, .. } => Value::IntRelative {
             previous: *previous,
             current: 0,
+        },
+        Value::U128(_) => Value::U128(0),
+        Value::Int128 { min, max, .. } => Value::Int128 {
+            value: *min,
+            min: *min,
+            max: *max,
+        },
+        Value::Fixed48 { .. } => Value::Fixed48 {
+            raw: FIXED48_MIN_UNITS << 16,
+        },
+        Value::Fixed112 { .. } => Value::Fixed112 {
+            raw: i128::from(FIXED112_MIN_UNITS) << 16,
         },
     }
 }
