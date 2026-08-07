@@ -126,6 +126,7 @@ pub trait Stream {
     ///
     /// On read, [`Error::Overflow`] if the read would pass the end of the buffer, or
     /// [`Error::ValueOutOfRange`] if the decoded value is outside `[min,max]`.
+    #[inline]
     fn serialize_int(&mut self, value: &mut i32, min: i32, max: i32) -> Result {
         assert!(
             min < max,
@@ -162,6 +163,7 @@ pub trait Stream {
     ///
     /// On read, [`Error::Overflow`] if the read would pass the end of the buffer, or
     /// [`Error::ValueOutOfRange`] if the decoded value is outside `[min,max]`.
+    #[inline]
     fn serialize_int64(&mut self, value: &mut i64, min: i64, max: i64) -> Result {
         assert!(
             min < max,
@@ -208,6 +210,7 @@ pub trait Stream {
     /// # Errors
     ///
     /// On read, [`Error::Overflow`] if the read would pass the end of the buffer.
+    #[inline]
     fn serialize_bits64(&mut self, value: &mut u64, bits: u32) -> Result {
         assert!(
             (1..=64).contains(&bits),
@@ -242,6 +245,7 @@ pub trait Stream {
     /// # Errors
     ///
     /// On read, [`Error::Overflow`] if the read would pass the end of the buffer.
+    #[inline]
     fn serialize_bool(&mut self, value: &mut bool) -> Result {
         let mut unsigned_value = u32::from(Self::IS_WRITING && *value);
         self.serialize_bits(&mut unsigned_value, 1)?;
@@ -256,6 +260,7 @@ pub trait Stream {
     /// # Errors
     ///
     /// On read, [`Error::Overflow`] if the read would pass the end of the buffer.
+    #[inline]
     fn serialize_u8(&mut self, value: &mut u8) -> Result {
         let mut unsigned_value = u32::from(*value);
         self.serialize_bits(&mut unsigned_value, 8)?;
@@ -270,6 +275,7 @@ pub trait Stream {
     /// # Errors
     ///
     /// On read, [`Error::Overflow`] if the read would pass the end of the buffer.
+    #[inline]
     fn serialize_u16(&mut self, value: &mut u16) -> Result {
         let mut unsigned_value = u32::from(*value);
         self.serialize_bits(&mut unsigned_value, 16)?;
@@ -284,6 +290,7 @@ pub trait Stream {
     /// # Errors
     ///
     /// On read, [`Error::Overflow`] if the read would pass the end of the buffer.
+    #[inline]
     fn serialize_u32(&mut self, value: &mut u32) -> Result {
         self.serialize_bits(value, 32)
     }
@@ -293,6 +300,7 @@ pub trait Stream {
     /// # Errors
     ///
     /// On read, [`Error::Overflow`] if the read would pass the end of the buffer.
+    #[inline]
     fn serialize_u64(&mut self, value: &mut u64) -> Result {
         self.serialize_bits64(value, 64)
     }
@@ -302,6 +310,7 @@ pub trait Stream {
     /// # Errors
     ///
     /// On read, [`Error::Overflow`] if the read would pass the end of the buffer.
+    #[inline]
     fn serialize_f32(&mut self, value: &mut f32) -> Result {
         let mut int_value = if Self::IS_WRITING { value.to_bits() } else { 0 };
         self.serialize_bits(&mut int_value, 32)?;
@@ -316,6 +325,7 @@ pub trait Stream {
     /// # Errors
     ///
     /// On read, [`Error::Overflow`] if the read would pass the end of the buffer.
+    #[inline]
     fn serialize_f64(&mut self, value: &mut f64) -> Result {
         let mut int_value = if Self::IS_WRITING { value.to_bits() } else { 0 };
         self.serialize_bits64(&mut int_value, 64)?;
@@ -338,6 +348,7 @@ pub trait Stream {
     ///
     /// On read, [`Error::Overflow`] if the read would pass the end of the buffer, or
     /// [`Error::ValueOutOfRange`] if the quantized integer is above the maximum for the range.
+    #[inline]
     fn serialize_compressed_float(
         &mut self,
         value: &mut f32,
@@ -401,6 +412,7 @@ pub trait Stream {
     ///
     /// On read, [`Error::Overflow`] if the read would pass the end of the buffer, or
     /// [`Error::ValueOutOfRange`] if the decoded value is not greater than `previous`.
+    #[inline]
     fn serialize_int_relative(&mut self, previous: i32, current: &mut i32) -> Result {
         // the buckets after the one-bit fast path: [2,6], [7,23], [24,280], [281,4377],
         // [4378,69914], then full 32 bits
