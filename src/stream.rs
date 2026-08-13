@@ -120,7 +120,7 @@ pub trait Stream {
     ///
     /// # Panics
     ///
-    /// Panics if `min >= max`.
+    /// Panics if `min > max`. A degenerate range (`min == max`) is legal and costs zero bits.
     ///
     /// # Errors
     ///
@@ -129,9 +129,19 @@ pub trait Stream {
     #[inline]
     fn serialize_int(&mut self, value: &mut i32, min: i32, max: i32) -> Result {
         assert!(
-            min < max,
-            "serialize_int: min ({min}) must be less than max ({max})"
+            min <= max,
+            "serialize_int: min ({min}) must not be greater than max ({max})"
         );
+        if min == max {
+            // Degenerate range: STANDARD.md gives it ZERO BITS -- the value is
+            // known from the range alone, so nothing rides and nothing is read.
+            // This must not reach serialize_bits, whose bit count has to be at
+            // least 1.
+            if Self::IS_READING {
+                *value = min;
+            }
+            return Ok(());
+        }
         // arithmetic is done in the unsigned domain: max - min overflows signed arithmetic
         // when the range is wider than 2^31
         let range = (max as u32).wrapping_sub(min as u32);
@@ -157,7 +167,7 @@ pub trait Stream {
     ///
     /// # Panics
     ///
-    /// Panics if `min >= max`.
+    /// Panics if `min > max`. A degenerate range (`min == max`) is legal and costs zero bits.
     ///
     /// # Errors
     ///
@@ -166,9 +176,19 @@ pub trait Stream {
     #[inline]
     fn serialize_int64(&mut self, value: &mut i64, min: i64, max: i64) -> Result {
         assert!(
-            min < max,
-            "serialize_int64: min ({min}) must be less than max ({max})"
+            min <= max,
+            "serialize_int64: min ({min}) must not be greater than max ({max})"
         );
+        if min == max {
+            // Degenerate range: STANDARD.md gives it ZERO BITS -- the value is
+            // known from the range alone, so nothing rides and nothing is read.
+            // This must not reach serialize_bits, whose bit count has to be at
+            // least 1.
+            if Self::IS_READING {
+                *value = min;
+            }
+            return Ok(());
+        }
         // arithmetic is done in the unsigned domain: max - min overflows signed arithmetic
         // when the range is wider than 2^63
         let range = (max as u64).wrapping_sub(min as u64);
@@ -211,7 +231,7 @@ pub trait Stream {
     ///
     /// # Panics
     ///
-    /// Panics if `min >= max`.
+    /// Panics if `min > max`. A degenerate range (`min == max`) is legal and costs zero bits.
     ///
     /// # Errors
     ///
@@ -219,9 +239,19 @@ pub trait Stream {
     /// [`Error::ValueOutOfRange`] if the decoded value is outside `[min,max]`.
     fn serialize_int128(&mut self, value: &mut i128, min: i128, max: i128) -> Result {
         assert!(
-            min < max,
-            "serialize_int128: min ({min}) must be less than max ({max})"
+            min <= max,
+            "serialize_int128: min ({min}) must not be greater than max ({max})"
         );
+        if min == max {
+            // Degenerate range: STANDARD.md gives it ZERO BITS -- the value is
+            // known from the range alone, so nothing rides and nothing is read.
+            // This must not reach serialize_bits, whose bit count has to be at
+            // least 1.
+            if Self::IS_READING {
+                *value = min;
+            }
+            return Ok(());
+        }
         // arithmetic is done in the unsigned domain: max - min overflows signed arithmetic
         // when the range is wider than 2^127
         let range = (max as u128).wrapping_sub(min as u128);
