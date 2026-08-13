@@ -1,1 +1,5 @@
 /target
+
+# Bench-local scratch: working notes, logs and generated corpora.
+# Never repo content — this ignore is what keeps it that way.
+tending/
