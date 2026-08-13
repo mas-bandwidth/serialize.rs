@@ -54,7 +54,7 @@
 //! function on the first error, so a truncated or hostile packet can never drive a loop with
 //! unvalidated data.
 //!
-//! Panics are reserved for API misuse: bits out of `[1,32]` or `[1,64]`, `min >= max`, a write
+//! Panics are reserved for API misuse: bits out of `[1,32]` or `[1,64]`, `min > max`, a write
 //! buffer size that is not a multiple of 8 bytes, or writing past the end of a buffer (a debug
 //! assertion first, then the slice bounds check in release — where the C++ library makes this
 //! the caller's problem, Rust makes it a panic rather than undefined behavior).
