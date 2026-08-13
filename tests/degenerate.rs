@@ -18,7 +18,11 @@ fn degenerate_range_costs_nothing() {
         let mut degenerate = 5i32;
         let mut after = 3i32;
         w.serialize_int(&mut degenerate, 5, 5).unwrap();
-        assert_eq!(w.bits_processed(), 0, "a degenerate range must write no bits");
+        assert_eq!(
+            w.bits_processed(),
+            0,
+            "a degenerate range must write no bits"
+        );
         w.serialize_int(&mut after, 0, 7).unwrap();
         bits_after = w.bits_processed();
         w.flush();
@@ -53,8 +57,12 @@ fn degenerate_range_64_and_128() {
         let mut v64 = -42i64;
         let mut v128 = -12345678901234567890i128;
         w.serialize_int64(&mut v64, -42, -42).unwrap();
-        w.serialize_int128(&mut v128, -12345678901234567890i128, -12345678901234567890i128)
-            .unwrap();
+        w.serialize_int128(
+            &mut v128,
+            -12345678901234567890i128,
+            -12345678901234567890i128,
+        )
+        .unwrap();
         assert_eq!(w.bits_processed(), 0);
         w.flush();
         bytes = w.bytes_processed().max(1) as usize;
@@ -64,8 +72,12 @@ fn degenerate_range_64_and_128() {
     let mut v64 = 0i64;
     let mut v128 = 0i128;
     r.serialize_int64(&mut v64, -42, -42).unwrap();
-    r.serialize_int128(&mut v128, -12345678901234567890i128, -12345678901234567890i128)
-        .unwrap();
+    r.serialize_int128(
+        &mut v128,
+        -12345678901234567890i128,
+        -12345678901234567890i128,
+    )
+    .unwrap();
     assert_eq!(v64, -42);
     assert_eq!(v128, -12345678901234567890i128);
 }
