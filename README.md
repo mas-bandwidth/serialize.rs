@@ -10,7 +10,7 @@ This is a port of the C++ [serialize](https://github.com/mas-bandwidth/serialize
 the exact bytes, copied verbatim from the C++ test suite, and on every push and pull request
 CI builds the real C++ library and verifies head-to-head that both implementations write
 byte-identical data and decode each other's output. Packets written by any of the three
-libraries decode in the others. Zero dependencies, no unsafe code, MBSL.
+libraries decode in the others. Zero dependencies, no unsafe code, BSD 3-Clause.
 
 Values are packed with exactly the number of bits they need: a bool takes 1 bit, an integer in
 [0,31] takes 5 bits. Write one serialize function and it handles write, read and measure —
@@ -167,7 +167,7 @@ requests. The crate is `#![forbid(unsafe_code)]`, enforced by the compiler.
 
 ## License
 
-[Más Bandwidth Source License (MBSL)](LICENSE) — BSD 3-Clause plus one credit
+[BSD 3-Clause](LICENSE) — permissive; keep the copyright notice
 clause, described under Crediting below.
 
 Note that this is **not** the same licence as the C++ `serialize` library, which
@@ -175,9 +175,8 @@ remains BSD 3-Clause. The two are separate projects with separate licences.
 
 ## Crediting
 
-This library is licensed under the [Más Bandwidth Source License (MBSL)](LICENSE),
-which is BSD 3-Clause plus one clause: products that incorporate it must include
-this credit in their product credits, or in their documentation:
+Licensed [BSD 3-Clause](LICENSE), which asks only that you keep the copyright
+notice. Credit is not required — but if you would like to give it:
 
 > serialize.rs by Glenn Fiedler and Rowan Claude
 
