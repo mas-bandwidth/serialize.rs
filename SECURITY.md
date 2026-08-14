@@ -28,7 +28,8 @@ In scope — bugs in this crate, above all on the READ path: a stream that cause
 the end of the buffer, a panic, an unbounded allocation, or a value accepted outside the
 range the schema declared.
 
-The crate is `#![forbid(unsafe_code)]`, so classic memory corruption is off the table by
+The crate forbids unsafe code crate-wide — `unsafe_code = "forbid"` under `[lints.rust]` in
+`Cargo.toml` — so classic memory corruption is off the table by
 construction; the interesting class is a hostile stream that is *accepted* when it should be
 rejected, or that panics and takes the process down.
 

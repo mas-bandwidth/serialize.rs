@@ -1,6 +1,9 @@
 //! A simple bitpacking serializer for Rust, ported from the C++
 //! [serialize](https://github.com/mas-bandwidth/serialize) library and wire compatible with it
-//! (and with the Go port, [goserialize](https://github.com/mas-bandwidth/goserialize)).
+//! (and with the C, C# and Go ports —
+//! [serialize.c](https://github.com/mas-bandwidth/serialize.c),
+//! [serialize.cs](https://github.com/mas-bandwidth/serialize.cs),
+//! [serialize.go](https://github.com/mas-bandwidth/serialize.go)).
 //!
 //! Values are packed with exactly the number of bits they need: a bool takes 1 bit, an integer
 //! in `[0,31]` takes 5 bits, and so on. The wire format is an unattributed little endian bit
