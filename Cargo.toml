@@ -34,11 +34,13 @@ cast_precision_loss = "allow"
 cast_lossless = "allow"
 # ReadStream lives in read_stream.rs, matching the Go port's layout
 module_name_repetitions = "allow"
-# the hot read spine (ReadStream::serialize_bits and the thin fallible wrappers) is
-# #[inline(always)] on measurement, not hope: at plain #[inline] strength LLVM's
-# cold-callsite classification strands these calls out of line partway down long
-# serialize functions and reads run 1.8-2.6x behind the C++ library (schema bench,
-# Apple M2); each attribute carries a bench-verified delta
+# the hot serialize spine (ReadStream::serialize_bits, the thin fallible wrappers,
+# WriteStream::serialize_bits, BitWriter::write_bits/flush_bits) is #[inline(always)]
+# on measurement, not hope: at plain #[inline] strength LLVM's cold-callsite
+# classification strands these calls out of line partway down long serialize
+# functions — reads ran 1.8-2.6x behind the C++ library, and generated writers past
+# a fallible field stranded write_bits at cost 225 against the cold threshold 45
+# (schema bench, Apple M2); each attribute carries a bench-verified delta
 inline_always = "allow"
 # test values are copied verbatim from the C++ test suite so the suites stay diffable;
 # inserting separators would defeat that

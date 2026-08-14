@@ -92,7 +92,7 @@ impl Stream for WriteStream<'_> {
     const IS_WRITING: bool = true;
     const IS_READING: bool = false;
 
-    #[inline]
+    #[inline(always)]
     fn serialize_bits(&mut self, value: &mut u32, bits: u32) -> Result {
         self.writer.write_bits(*value, bits);
         Ok(())
