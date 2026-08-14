@@ -38,8 +38,11 @@ zero unsafe, BSD-3.
    `golden_wire_bytes` verbatim (bytes 0..72 are the original vector; the fixed point tail
    was derived from STANDARD.md's stated rules independently of both implementations),
    and the `cpp-interop` CI job proves it against the real thing on every push and PR: it
-   builds interop/golden.cpp against the actual C++ library (pinned at its release tag),
-   both implementations write the golden data, the bytes are compared with `cmp`, and each
+   builds interop/golden.cpp against the actual C++ library (pinned at v1.7.0 — a floor,
+   not a preference: the harness's extended sequence carries a degenerate 64 bit range that
+   older releases abort on, plus STANDARD.md's between-quanta compressed float vector, and
+   the build keeps asserts live with no -ffp-contract=off), both implementations write the
+   golden data plus the extended sequence, the bytes are compared with `cmp`, and each
    implementation decodes the other's file (examples/wire_interop.rs is the Rust half).
    Never change any encoding without coordinating with the C++ library. When adding
    serialization features, port them from serialize.h and mirror its tests. Note the golden
@@ -81,7 +84,7 @@ zero unsafe, BSD-3.
   fuzz harness, as seeded tests, no deps)
 - `tests/degenerate.rs` — the zero-bit `min == max` range, write/read/measure
 - `examples/packet.rs` — condensed example.cpp; `examples/wire_interop.rs` — the Rust half of
-  the C++ interop job (writes the golden file, reads the C++ one)
+  the C++ interop job (writes the golden + extended interop file, reads the C++ one)
 - `fuzz/` — a separate crate (not in the library's dependency graph) with the `hostile_read`
   and `round_trip` libFuzzer targets
 - `STANDARD.md` — a VERBATIM VENDORED COPY of the wire format spec from mas-bandwidth/

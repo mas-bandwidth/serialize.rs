@@ -2,16 +2,34 @@
 //! against the C++ harness (interop/golden.cpp) built from the real C++ serialize library:
 //!
 //! ```text
-//! wire_interop write <file>   serialize the golden wire data, verify it matches the pinned
-//!                             golden bytes, write it out
+//! wire_interop write <file>   serialize the golden wire data plus the extended interop
+//!                             sequence, verify the golden prefix matches the pinned golden
+//!                             bytes, write it out
 //! wire_interop read <file>    decode a file written by the other implementation, verify the
-//!                             decoded values match the golden values, re-encode them, and
+//!                             decoded values match the expected values, re-encode them, and
 //!                             verify the bytes are identical
 //! ```
 //!
 //! The golden data below mirrors `GoldenWireSerialize` in the C++ library's serialize.h (and
-//! the copy in tests/serialize.rs). Any drift between the copies is caught in CI: both
-//! implementations must produce byte-identical files.
+//! the copy in tests/serialize.rs). After it the stream carries an EXTENDED sequence defined
+//! by the harness itself (mirrored in interop/golden.cpp), covering what `GoldenWireData`
+//! does not:
+//!
+//! - degenerate ranges (`min == max`): zero bits on the wire, 32 and 64 bit, placed in the
+//!   MIDDLE of the sequence so the byte cmp proves both that they are free on the wire and
+//!   that every field after them stays put — a trailing field could show neither. The 64 bit
+//!   one is why CI pins the C++ library at v1.7.0 or newer: older releases assert
+//!   `min < max` on the `serialize_int64` path and abort.
+//!
+//! - compressed floats that land BETWEEN quanta (STANDARD.md's discriminating vector: 0.005,
+//!   0.025, 0.105, 9.995 over [0,10] at resolution 0.01). A value on a quantum (like the
+//!   golden 5.0) encodes identically under float32 double rounding, double widening and FMA
+//!   contraction, so it can never catch the arithmetic being wrong; these values differ by
+//!   one wire quantum under each variant, so a widened or contracted build fails the cmp
+//!   instead of passing silently.
+//!
+//! Any drift between the copies is caught in CI: both implementations must produce
+//! byte-identical files.
 
 use serialize::{ReadStream, Result, Stream, WriteStream};
 use std::process::ExitCode;
@@ -37,6 +55,12 @@ struct GoldenWireData {
     bytes: [u8; 7],
     string: String,
     wstring: String,
+    fixed_q8_8: i16,
+    fixed_q16_16: i32,
+    fixed_q48_16: i64,
+    fixed_q16_16_unsigned: u32,
+    fixed_q112_16_wide: i128,
+    fixed_q64_64_wide: i128,
 }
 
 // not PI: the golden bytes pin the literal 3.1415926f (bit pattern 0x40490FDA), which differs
@@ -63,6 +87,14 @@ fn golden_wire_init() -> GoldenWireData {
         bytes: [0xDE, 0xAD, 0xBE, 0xEF, 0xCA, 0xFE, 0x01],
         string: "golden".to_string(),
         wstring: "\u{043C}\u{0438}\u{0440}".to_string(),
+        fixed_q8_8: -(3 * 256 + 64),                  // -3.25 in Q8.8
+        fixed_q16_16: 1234 * 65536 + 32768,           // 1234.5 in Q16.16
+        fixed_q48_16: -(54321i64 * 65536 + 12345),    // -54321.1883... in Q48.16
+        fixed_q16_16_unsigned: 29999 * 65536 + 65535, // 29999.99998...: every fraction bit set
+        // -98765432109.066 in Q112.16: 75 bits on the wire, three groups
+        fixed_q112_16_wide: i128::from(-(98765432109i64 * 65536 + 4321)),
+        // Q64.64 over the full unit range: 128 bits, four groups, every group distinct
+        fixed_q64_64_wide: (0x0123456789ABCDEFi128 << 64) + 0x0FEDCBA987654321,
     }
 }
 
@@ -88,17 +120,100 @@ fn golden_wire_serialize<S: Stream>(stream: &mut S, data: &mut GoldenWireData) -
     stream.serialize_bytes(&mut data.bytes)?;
     stream.serialize_string(&mut data.string, 16)?;
     stream.serialize_wide_string(&mut data.wstring, 8)?;
+    // the fixed point section starts byte aligned, so every byte pinned above it stays put
+    stream.serialize_align()?;
+    stream.serialize_fixed(&mut data.fixed_q8_8, 8, 8, -100, 100)?;
+    stream.serialize_fixed(&mut data.fixed_q16_16, 16, 16, -2000, 2000)?;
+    stream.serialize_fixed(&mut data.fixed_q48_16, 48, 16, -100000, 100000)?;
+    stream.serialize_fixed(&mut data.fixed_q16_16_unsigned, 16, 16, 0, 30000)?;
+    // the wide fixed section starts byte aligned, so every byte pinned above it stays put
+    stream.serialize_align()?;
+    // ±2^57 units: 75 bits, the three group structure
+    stream.serialize_fixed(
+        &mut data.fixed_q112_16_wide,
+        112,
+        16,
+        -144115188075855872,
+        144115188075855872,
+    )?;
+    // full unit range: 128 bits, the four group structure
+    stream.serialize_fixed(&mut data.fixed_q64_64_wide, 64, 64, i64::MIN, i64::MAX)?;
     Ok(())
 }
 
+#[derive(Default, Clone, PartialEq, Debug)]
+struct ExtendedInteropData {
+    marker: u32,
+    degenerate32: i32,
+    degenerate64: i64,
+    cf_low: f32,
+    cf_mid_low: f32,
+    cf_mid_high: f32,
+    cf_high: f32,
+    post: i32,
+}
+
+fn extended_interop_init() -> ExtendedInteropData {
+    ExtendedInteropData {
+        marker: 1337,
+        cf_low: 0.005, // between quanta: float32 double rounding writes 1, double widening writes 0
+        degenerate32: 42, // min == max: known from the range alone, zero bits on the wire
+        cf_mid_low: 0.025, // between quanta: 3 vs 2
+        cf_mid_high: 0.105, // between quanta: 11 vs 10
+        degenerate64: 10_000_000_000, // min == max on the 64 bit path, bounds wider than 2^32 (needs C++ v1.7.0+)
+        cf_high: 9.995,               // between quanta: 1000 vs 999
+        post: -37, // live field after both degenerates: proves everything downstream stays put
+    }
+}
+
+fn extended_interop_serialize<S: Stream>(stream: &mut S, data: &mut ExtendedInteropData) -> Result {
+    // the extended section starts byte aligned: the golden prefix stays pinned
+    stream.serialize_align()?;
+    stream.serialize_bits(&mut data.marker, 11)?;
+    stream.serialize_compressed_float(&mut data.cf_low, 0.0, 10.0, 0.01)?;
+    // zero bits, mid-sequence
+    stream.serialize_int(&mut data.degenerate32, 42, 42)?;
+    stream.serialize_compressed_float(&mut data.cf_mid_low, 0.0, 10.0, 0.01)?;
+    stream.serialize_compressed_float(&mut data.cf_mid_high, 0.0, 10.0, 0.01)?;
+    // zero bits, 64 bit path
+    stream.serialize_int64(&mut data.degenerate64, 10_000_000_000, 10_000_000_000)?;
+    stream.serialize_compressed_float(&mut data.cf_high, 0.0, 10.0, 0.01)?;
+    stream.serialize_int(&mut data.post, -100, 100)?;
+    Ok(())
+}
+
+// a wrong degenerate decode re-encodes to the same (zero) bits, so the re-encode cmp alone
+// cannot catch it: the decoded values have to be checked against the expected ones too.
+// compressed floats decode to the quantized reconstruction, so they compare within resolution.
+fn extended_interop_check(data: &ExtendedInteropData) -> bool {
+    let expected = extended_interop_init();
+    let cf_ok = |a: f32, b: f32| (a - b).abs() <= 0.01;
+    data.marker == expected.marker
+        && data.degenerate32 == expected.degenerate32
+        && data.degenerate64 == expected.degenerate64
+        && data.post == expected.post
+        && cf_ok(data.cf_low, expected.cf_low)
+        && cf_ok(data.cf_mid_low, expected.cf_mid_low)
+        && cf_ok(data.cf_mid_high, expected.cf_mid_high)
+        && cf_ok(data.cf_high, expected.cf_high)
+}
+
+// bytes 0..72 are the original golden vector; the fixed point tail (72..112) was derived
+// from STANDARD.md's stated rules independently of both implementations, and matches the
+// C++ suite's golden_wire_bytes verbatim. The extended interop sequence follows these on
+// the wire, byte aligned, so this prefix stays pinned.
 #[rustfmt::skip]
-const GOLDEN_WIRE_BYTES: [u8; 72] = [
+const GOLDEN_WIRE_BYTES: [u8; 112] = [
     0x5D, 0xDA, 0xF7, 0xE6, 0xD5, 0x77, 0xDF, 0x56, 0xEF, 0x9F, 0x75, 0x19,
     0x52, 0xBC, 0xDA, 0x0F, 0x49, 0x40, 0xF4, 0x55, 0x55, 0x55, 0x55, 0x55,
     0x55, 0x55, 0xFF, 0xFC, 0xD1, 0x48, 0xE0, 0x59, 0xD1, 0x48, 0xC0, 0x7B,
     0xF3, 0x6A, 0xE2, 0x59, 0xD1, 0x48, 0x84, 0xB7, 0x06, 0xDE, 0xAD, 0xBE,
     0xEF, 0xCA, 0xFE, 0x01, 0x06, 0x67, 0x6F, 0x6C, 0x64, 0x65, 0x6E, 0xE3,
     0x21, 0x00, 0x00, 0xC0, 0x21, 0x00, 0x00, 0x00, 0x22, 0x00, 0x00, 0x00,
+    0xC0, 0x60, 0x00, 0x80, 0xA2, 0x7C, 0xFC, 0xEC, 0x26, 0xCB, 0xFF, 0xFF,
+    0x4B, 0x1D, 0x1F, 0xEF, 0xD2, 0x1A, 0x1F, 0x01, 0xE9, 0xFF, 0xFF, 0x09,
+    0x19, 0x2A, 0x3B, 0x4C, 0x5D, 0x6E, 0x7F, 0x78, 0x6F, 0x5E, 0x4D, 0x3C,
+    0x2B, 0x1A, 0x09, 0x04,
 ];
 
 fn encode() -> std::result::Result<Vec<u8>, String> {
@@ -107,6 +222,9 @@ fn encode() -> std::result::Result<Vec<u8>, String> {
     let mut data = golden_wire_init();
     golden_wire_serialize(&mut stream, &mut data)
         .map_err(|e| format!("golden serialize (write) failed: {e}"))?;
+    let mut extended = extended_interop_init();
+    extended_interop_serialize(&mut stream, &mut extended)
+        .map_err(|e| format!("extended serialize (write) failed: {e}"))?;
     stream.flush();
     let bytes = stream.bytes_processed() as usize;
     buffer.truncate(bytes);
@@ -115,11 +233,13 @@ fn encode() -> std::result::Result<Vec<u8>, String> {
 
 fn write_file(path: &str) -> std::result::Result<(), String> {
     let bytes = encode()?;
-    if bytes != GOLDEN_WIRE_BYTES {
-        return Err("rust output does not match the pinned golden bytes".to_string());
+    if bytes.len() <= GOLDEN_WIRE_BYTES.len()
+        || bytes[..GOLDEN_WIRE_BYTES.len()] != GOLDEN_WIRE_BYTES
+    {
+        return Err("rust output does not start with the pinned golden bytes".to_string());
     }
     std::fs::write(path, &bytes).map_err(|e| format!("could not write {path}: {e}"))?;
-    println!("rust: wrote {} golden bytes to {path}", bytes.len());
+    println!("rust: wrote {} bytes to {path}", bytes.len());
     Ok(())
 }
 
@@ -135,6 +255,9 @@ fn read_file(path: &str) -> std::result::Result<(), String> {
     let mut data = GoldenWireData::default();
     golden_wire_serialize(&mut stream, &mut data)
         .map_err(|e| format!("rust could not decode {path}: {e}"))?;
+    let mut extended = ExtendedInteropData::default();
+    extended_interop_serialize(&mut stream, &mut extended)
+        .map_err(|e| format!("rust could not decode the extended section of {path}: {e}"))?;
 
     // the decoded values must match the golden values exactly (floats by bit pattern; the
     // compressed float quantizes 5.0 in [0,10] exactly, so it round trips bit identical too)
@@ -144,13 +267,21 @@ fn read_file(path: &str) -> std::result::Result<(), String> {
             "decoded values differ from golden:\n{data:#?}\nvs\n{expected:#?}"
         ));
     }
+    if !extended_interop_check(&extended) {
+        return Err(format!(
+            "extended section decoded to unexpected values:\n{extended:#?}"
+        ));
+    }
 
     // re-encode the decoded values: the bytes must be identical to what was read
     let mut round = data.clone();
+    let mut round_extended = extended.clone();
     let mut out = vec![0u8; 256];
     let mut out_stream = WriteStream::new(&mut out);
     golden_wire_serialize(&mut out_stream, &mut round)
         .map_err(|e| format!("golden serialize (re-encode) failed: {e}"))?;
+    extended_interop_serialize(&mut out_stream, &mut round_extended)
+        .map_err(|e| format!("extended serialize (re-encode) failed: {e}"))?;
     out_stream.flush();
     let out_bytes = out_stream.bytes_processed() as usize;
     if out[..out_bytes] != input {
