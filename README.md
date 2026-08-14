@@ -4,13 +4,28 @@
 
 A simple bitpacking serializer for Rust.
 
-This is a port of the C++ [serialize](https://github.com/mas-bandwidth/serialize) library,
-**bit-for-bit wire compatible** with it and with the Go port
-([goserialize](https://github.com/mas-bandwidth/goserialize)): a golden wire format test pins
-the exact bytes, copied verbatim from the C++ test suite, and on every push and pull request
-CI builds the real C++ library and verifies head-to-head that both implementations write
-byte-identical data and decode each other's output. Packets written by any of the three
-libraries decode in the others. Zero dependencies, no unsafe code, BSD 3-Clause.
+This is a port of the C++ [serialize](https://github.com/mas-bandwidth/serialize) library and
+is **bit-for-bit wire compatible** with it. The golden wire format test pins 112 exact bytes —
+byte for byte the vector `golden_wire_bytes` pins in the C++ test suite — and on every push and
+pull request CI builds the real C++ library at a pinned release and runs both implementations
+head to head over the library's own golden serialize function: they write byte-identical data
+and each decodes the other's output. That machine check covers the first 72 of those bytes,
+which is everything the pinned release defines; the fixed point tail after them was derived
+from STANDARD.md's rules here, and matches the vector the C++ suite pins today.
+
+Nothing here exercises the [C](https://github.com/mas-bandwidth/serialize.c),
+[C#](https://github.com/mas-bandwidth/serialize.cs) and
+[Go](https://github.com/mas-bandwidth/serialize.go) ports, so this repo proves no leg of the
+family beyond the C++ one. What ties the family together is the C++ library as the common
+reference: each port runs its own head-to-head check against it in its own CI, all four ports
+vendor a byte-identical copy of [STANDARD.md](STANDARD.md) — the upstream specification, with a
+CI job in each repo that fails on drift — and the golden vectors line up, the Go port pinning
+this exact 112 byte vector, the C# port pinning the same bytes in two pieces (the 72 byte core
+and the 40 byte fixed point tail), while the C port pins sequences of its own that its CI
+checks against the C++ library. Compatibility across the family rests on that shared reference
+and that shared specification, not on any Rust-to-Go or Rust-to-C# test.
+
+Zero dependencies, no unsafe code, BSD 3-Clause.
 
 Values are packed with exactly the number of bits they need: a bool takes 1 bit, an integer in
 [0,31] takes 5 bits. Write one serialize function and it handles write, read and measure —
@@ -85,8 +100,10 @@ and in release it is the caller's responsibility — size buffers conservatively
 with `MeasureStream` (its estimate is guaranteed conservative). Writing past the end of a
 buffer panics via the slice bounds check rather than being undefined behavior.
 
-Panics are reserved for API misuse: bits out of [1,32]/[1,64], `min >= max`, a write buffer
-that is not a multiple of 8 bytes.
+Panics are reserved for API misuse: bits out of [1,32]/[1,64], `min > max`, a write buffer
+that is not a multiple of 8 bytes. A degenerate range where `min == max` is not misuse — the
+format defines it as costing zero bits, and the ranged integer methods accept it and recover
+the value from the range alone.
 
 ## Buffer contracts
 
@@ -140,8 +157,8 @@ away, and the branchless reader's no-dependency design lets the CPU overlap the 
 the Rust stream path comes out 2-3x faster than the C++ build on the same machine. The raw
 bitpacker rows use runtime-variable bit widths from a table — the worst case for the safe
 path, where the per-call validation and bounds-checked loads that replace the C++ library's
-unchecked memory access cost about 2.5x (this crate is `forbid(unsafe_code)`; that's the
-trade, measured).
+unchecked memory access cost about 2.5x (this crate forbids unsafe code; that's the trade,
+measured).
 
 ## Tests
 
@@ -157,21 +174,26 @@ cargo +nightly fuzz run hostile_read         # libFuzzer (also: round_trip)
 The test suite mirrors serialize.h test-for-test, including the adversarial cases
 (out-of-range values smuggled into bit headroom, full-range integers, NaN handling, >2^31
 relative gaps) and the golden wire format test. `tests/differential.rs` adds a deterministic
-differential write→read round trip and a hostile read pass, and `fuzz/` carries the same two
-passes as real libFuzzer targets, mirroring the C++ library's fuzz harness.
+differential write→read round trip and a hostile read pass, `tests/degenerate.rs` pins the
+zero-bit `min == max` range across all three streams, and `fuzz/` carries the same two passes
+as real libFuzzer targets, mirroring the C++ library's fuzz harness.
 
 CI runs the test matrix on Linux/macOS/Windows (debug and release), pedantic clippy, rustfmt,
 rustdoc, an MSRV (1.85) check, the whole suite under Miri, 60 seconds of each fuzz target, a
-zero-dependency guard, a big-endian s390x run under qemu, and `cargo semver-checks` on pull
-requests. The crate is `#![forbid(unsafe_code)]`, enforced by the compiler.
+zero-dependency guard, big-endian s390x and 32 bit i686 runs under qemu, a wasm32 build check,
+a STANDARD.md drift check against upstream, and `cargo semver-checks` on pull requests.
+
+Unsafe code is forbidden crate-wide and enforced by the compiler: the crate declares
+`unsafe_code = "forbid"` under `[lints.rust]` in `Cargo.toml`, which applies the same
+`forbid(unsafe_code)` lint level as the source attribute would, to every target in the crate.
 
 ## License
 
 [BSD 3-Clause](LICENSE) — permissive; keep the copyright notice
 clause, described under Crediting below.
 
-Note that this is **not** the same licence as the C++ `serialize` library, which
-remains BSD 3-Clause. The two are separate projects with separate licences.
+The whole serialize family is BSD 3-Clause under the same copyright holder, so a
+project that links more than one of the ports has one licence to read, not several.
 
 ## Crediting
 
@@ -180,4 +202,4 @@ notice. Credit is not required — but if you would like to give it:
 
 > serialize.rs by Glenn Fiedler and Rowan Claude
 
-Free to use, source open, credit required. Fair credit keeps open source honest.
+Fair credit keeps open source honest.

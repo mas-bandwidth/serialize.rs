@@ -1,10 +1,11 @@
 <!-- HOT:BEGIN -->
 ## HOT — read before touching this repo
 
-WHAT: Rust port of mas-bandwidth/serialize, the C bitpacking library.
-NOT mas-bandwidth/serialize (the C reference), NOT serialize.modern (the C++23 one).
+WHAT: this repo is serialize.rs, the Rust port of mas-bandwidth/serialize — the C++
+bitpacking library. NOT that upstream itself, NOT the sibling ports (serialize.c,
+serialize.cs, serialize.go), NOT serialize.modern (the experimental C++23 one).
 
-NAME: the crate is `serialize` and as of 2026-07-26 that name is STILL FREE on crates.io
+NAME: the crate is `serialize` and as of 2026-08-14 that name is STILL FREE on crates.io
 — unpublished, unclaimed. Unlike netcode (where `netcode` was taken in 2017 by an
 unrelated project, forcing the `netcode-official` crate name), there is no name trap here
 yet. Publishing sooner rather than later is what keeps it that way.
@@ -17,9 +18,11 @@ mint a new one — it is the wrong machine account. Either Glenn publishes from 
 account, or he moves the token into the mas keychain with the prompting form
 (`security add-generic-password -U -a rowan -s crates-io-token -w`, no value after -w).
 
-STATE as verified 2026-07-26: Cargo.toml is at 1.2.2, `cargo publish --dry-run` packages
-and compiles clean, and the crate has never been published. This is a publish-NEW, so a
-token needs the `publish-new` scope — the other two Rust ports are publish-UPDATE.
+STATE as verified 2026-08-14: Cargo.toml is at 1.5.0, `cargo package` packages and compiles
+clean, and the crate has still never been published — v1.0.0 through v1.5.0 are git tags and
+GitHub releases only, nothing on crates.io. The repo itself is already public. This is a
+publish-NEW, so a token needs the `publish-new` scope — the other two Rust ports are
+publish-UPDATE.
 <!-- HOT:END -->
 
 # serialize.rs
@@ -31,7 +34,9 @@ zero unsafe, BSD-3.
 ## Invariants — never break these
 
 1. **The wire format is frozen and bit-identical to the C++ library.**
-   `test_golden_wire_format` pins 72 golden bytes copied verbatim from the C++ test suite,
+   `test_golden_wire_format` pins 112 golden bytes that match the C++ suite's
+   `golden_wire_bytes` verbatim (bytes 0..72 are the original vector; the fixed point tail
+   was derived from STANDARD.md's stated rules independently of both implementations),
    and the `cpp-interop` CI job proves it against the real thing on every push and PR: it
    builds interop/golden.cpp against the actual C++ library (pinned at its release tag),
    both implementations write the golden data, the bytes are compared with `cmp`, and each
@@ -42,8 +47,11 @@ zero unsafe, BSD-3.
    differs in the last bit.
 2. **Malicious packet data never panics.** Every ReadStream operation is bounds checked and
    range validated and fails with an `Error`. Panics are reserved for API misuse only (bits
-   out of [1,32]/[1,64], min >= max, write buffer not a multiple of 8 bytes, writing past the
-   end of a buffer). `tests/differential.rs::test_hostile_read` enforces this — keep it
+   out of [1,32]/[1,64], min > max, write buffer not a multiple of 8 bytes, writing past the
+   end of a buffer). A degenerate range (min == max) is NOT misuse: the format defines it as
+   zero bits, `serialize_int`/`int64`/`int128` accept it, and `tests/degenerate.rs` pins that.
+   `serialize_compressed_float` and `serialize_fixed` still require a strictly increasing
+   range. `tests/differential.rs::test_hostile_read` enforces the no-panic property — keep it
    passing.
 3. **Error control flow.** Serialize methods return `Result` and callers propagate with `?`,
    so the first failure aborts the whole serialize function. This is the safety property that
@@ -57,19 +65,28 @@ zero unsafe, BSD-3.
 
 ## Layout
 
-- `src/lib.rs` — crate docs, `Error`/`Result`, `bits_required(64)`, zigzag (all const fn)
+- `src/lib.rs` — crate docs, `Error`/`Result`, `bits_required`/`bits_required64`/
+  `bits_required128`, zigzag (all const fn)
 - `src/bitpacker.rs` — `BitWriter` (64 bit scratch, LE qword stores), `BitReader` (branchless
   windows, `read_byte_slice` returns borrowed subslices for zero-copy strings)
 - `src/stream.rs` — `Stream` trait: required primitives per stream (bits/bytes/align/strings)
-  plus default methods for everything derivable (int/int64/bits64/bool/u8-u64/f32/f64/
-  compressed float/int relative). `IS_WRITING`/`IS_READING` are associated consts, so the
-  branches monomorphize away. `Serialize` trait for objects.
+  plus default methods for everything derivable (int/int64/int128/bits64/bool/u8-u64/u128/
+  f32/f64/compressed float/fixed point/int relative). `IS_WRITING`/`IS_READING` are associated
+  consts, so the branches monomorphize away. `FixedPointStorage` is the storage trait behind
+  `serialize_fixed` (i8..i128 and their unsigned twins). `Serialize` trait for objects.
 - `src/write_stream.rs` / `src/read_stream.rs` / `src/measure_stream.rs` — the three streams.
   Context is `Option<&'a dyn Any>` (the C++ void* context; copy out of it before serializing).
 - `tests/serialize.rs` — the C++ test suite ported test-for-test + golden wire test
 - `tests/differential.rs` — deterministic differential round trip + hostile read (the C++
   fuzz harness, as seeded tests, no deps)
-- `examples/packet.rs` — condensed example.cpp
+- `tests/degenerate.rs` — the zero-bit `min == max` range, write/read/measure
+- `examples/packet.rs` — condensed example.cpp; `examples/wire_interop.rs` — the Rust half of
+  the C++ interop job (writes the golden file, reads the C++ one)
+- `fuzz/` — a separate crate (not in the library's dependency graph) with the `hostile_read`
+  and `round_trip` libFuzzer targets
+- `STANDARD.md` — a VERBATIM VENDORED COPY of the wire format spec from mas-bandwidth/
+  serialize. The `spec-sync` CI job diffs it against upstream and fails on divergence; if it
+  fails, port what the upstream change implies and copy the new file across in the same commit
 
 ## Commands
 
@@ -101,9 +118,12 @@ zero unsafe, BSD-3.
 - CI (.github/workflows/ci.yml): 3-OS test matrix (debug + release + example), lint
   (pedantic clippy / fmt / rustdoc / zero-dependency guard), MSRV 1.85 check, Miri, 60s fuzz
   smoke per target (uploads crash reproducers on failure), C++ wire interop, cross matrix
-  (big-endian s390x + 32 bit i686 under qemu), wasm32 build check, and cargo-semver-checks
-  against main on PRs. `#![forbid(unsafe_code)]` via `[lints]`. nightly-fuzz.yml runs 30 min
-  per fuzz target daily with a cumulative cached corpus (bills minutes while private).
+  (big-endian s390x + 32 bit i686 under qemu), wasm32 build check, STANDARD.md spec-sync
+  against upstream, and cargo-semver-checks against main on PRs. Unsafe code is forbidden
+  crate-wide by `unsafe_code = "forbid"` under `[lints.rust]` in Cargo.toml — there is no
+  `#![forbid(unsafe_code)]` attribute in lib.rs, and the lint table is the one place to look.
+  nightly-fuzz.yml runs 30 min per fuzz target daily with a cumulative cached corpus (free now
+  that the repo is public).
 
 ## API review decisions (red/blue review, 2026-07-12 — do not relitigate without new evidence)
 
@@ -145,17 +165,17 @@ Rejected, with reasons — do not propose again:
 ## Releases
 
 v1.0.0 released 2026-07-12 (opened at 1.0.0 deliberately — the wire format is a decade old
-and frozen, like the Go port). Release process: bump `version` in Cargo.toml, refresh both
-lockfiles (`cargo update -p serialize` at the root and in fuzz/), verify
-`cargo publish --dry-run`, push, wait for CI fully green, then `git tag -a vX.Y.Z` +
-`gh release create` on that commit. New exported API = minor bump; any wire format change is
-forbidden (see invariant 1), not a version discussion. The cargo-semver-checks CI job flags
-accidental API breaks on PRs.
+and frozen, like the Go port); latest is v1.5.0, released 2026-08-13. Release process: bump
+`version` in Cargo.toml, refresh both lockfiles (`cargo update -p serialize` at the root and
+in fuzz/ — both are committed, and a stale one is the step that gets skipped), verify
+`cargo package`, push, wait for CI fully green, then `git tag -a vX.Y.Z` + `gh release create`
+on that commit. New exported API = minor bump; any wire format change is forbidden (see
+invariant 1), not a version discussion. The cargo-semver-checks CI job flags accidental API
+breaks on PRs.
 
-Glenn does two things himself, in this order: flip repo visibility
-(`gh repo edit mas-bandwidth/serialize.rs --visibility public
---accept-visibility-change-consequences`) and `cargo publish` (crates.io token via
-`cargo login`; the `serialize` crate name was confirmed available 2026-07-12). docs.rs builds
+The repo is public (that flip is done). The one step still waiting on Glenn is `cargo publish`
+— crates.io token via `cargo login`, and see the HOT block for why it cannot happen from the
+mas account. The `serialize` crate name was still unclaimed on 2026-08-14. docs.rs builds
 automatically on publish.
 
 ## Portability notes
