@@ -18,8 +18,8 @@ mint a new one — it is the wrong machine account. Either Glenn publishes from 
 account, or he moves the token into the mas keychain with the prompting form
 (`security add-generic-password -U -a rowan -s crates-io-token -w`, no value after -w).
 
-STATE as verified 2026-08-14: Cargo.toml is at 1.5.0, `cargo package` packages and compiles
-clean, and the crate has still never been published — v1.0.0 through v1.5.0 are git tags and
+STATE as verified 2026-08-15: Cargo.toml is at 1.5.1, `cargo package` packages and compiles
+clean, and the crate has still never been published — v1.0.0 through v1.5.1 are git tags and
 GitHub releases only, nothing on crates.io. The repo itself is already public. This is a
 publish-NEW, so a token needs the `publish-new` scope — the other two Rust ports are
 publish-UPDATE.
@@ -165,7 +165,7 @@ Rejected, with reasons — do not propose again:
 ## Releases
 
 v1.0.0 released 2026-07-12 (opened at 1.0.0 deliberately — the wire format is a decade old
-and frozen, like the Go port); latest is v1.5.0, released 2026-08-13. Release process: bump
+and frozen, like the Go port); latest is v1.5.1, released 2026-08-15. Release process: bump
 `version` in Cargo.toml, refresh both lockfiles (`cargo update -p serialize` at the root and
 in fuzz/ — both are committed, and a stale one is the step that gets skipped), verify
 `cargo package`, push, wait for CI fully green, then `git tag -a vX.Y.Z` + `gh release create`
