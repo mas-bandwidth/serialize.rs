@@ -2115,3 +2115,68 @@ fn test_read_bits_group_validates_wide_widths() {
     let mut reader = BitReader::new(&buffer, 16);
     let _ = reader.read_bits_group(&[8, 33]);
 }
+
+#[test]
+fn test_read_stream_bits_group() {
+    // ReadStream::read_bits_group is wire-identical to serialize_bits once per width,
+    // through the stream surface, from aligned and unaligned starts
+    const WIDTHS: [u32; 6] = [3, 25, 12, 1, 23, 32];
+
+    let mut buffer = [0u8; 32];
+    let bytes_written = {
+        let mut write_stream = WriteStream::new(&mut buffer);
+        let mut lead = 5u32;
+        write_stream.serialize_bits(&mut lead, 3).unwrap(); // leave the stream unaligned
+        for (i, &width) in WIDTHS.iter().enumerate() {
+            let mask = if width == 32 {
+                u32::MAX
+            } else {
+                (1u32 << width) - 1
+            };
+            let mut value = (0xDEAD_BEEFu32.wrapping_mul(i as u32 + 1)) & mask;
+            write_stream.serialize_bits(&mut value, width).unwrap();
+        }
+        write_stream.flush();
+        write_stream.bytes_processed() as usize
+    };
+
+    let mut group_stream = ReadStream::new(&buffer, bytes_written);
+    let mut single_stream = ReadStream::new(&buffer, bytes_written);
+    let mut lead = 0u32;
+    group_stream.serialize_bits(&mut lead, 3).unwrap();
+    assert_eq!(lead, 5);
+    single_stream.serialize_bits(&mut lead, 3).unwrap();
+
+    let group = group_stream.read_bits_group(&WIDTHS).unwrap();
+    for (i, &width) in WIDTHS.iter().enumerate() {
+        let mut value = 0u32;
+        single_stream.serialize_bits(&mut value, width).unwrap();
+        assert_eq!(group[i], value);
+    }
+    assert_eq!(
+        group_stream.bits_processed(),
+        single_stream.bits_processed()
+    );
+}
+
+#[test]
+fn test_read_stream_bits_group_overflow() {
+    // a group whose total passes the end of the packet data is refused whole:
+    // Error::Overflow, nothing consumed, stream position unchanged
+    let buffer = [0u8; 16];
+    let mut read_stream = ReadStream::new(&buffer, 4); // 32 bits of packet data
+
+    // 33 bits > 32: refused before any value is consumed
+    let result = read_stream.read_bits_group(&[32, 1]);
+    assert_eq!(result, Err(Error::Overflow));
+    assert_eq!(read_stream.bits_processed(), 0);
+
+    // exactly 32 bits: succeeds to the last bit of the packet data
+    let group = read_stream.read_bits_group(&[31, 1]).unwrap();
+    assert_eq!(group, [0, 0]);
+    assert_eq!(read_stream.bits_processed(), 32);
+
+    // and now even a single grouped bit is past the end
+    assert_eq!(read_stream.read_bits_group(&[1]), Err(Error::Overflow));
+    assert_eq!(read_stream.bits_processed(), 32);
+}

@@ -56,6 +56,46 @@ impl<'a> ReadStream<'a> {
     pub fn set_context(&mut self, context: &'a dyn Any) {
         self.context = Some(context);
     }
+
+    /// Read a group of values with one bounds check for the whole group: the read-path
+    /// surface of [`BitReader::read_bits_group`].
+    ///
+    /// Wire-identical to calling [`Stream::serialize_bits`] once per width, in order — but
+    /// the overflow check runs once against the group's total instead of once per value,
+    /// and the underlying grouped read compiles with no per-read checks and provably
+    /// in-range window loads, so the values decode independently instead of each load
+    /// waiting on the previous read's bit index. Reads of generated or fixed-layout
+    /// wire formats, where a run of field widths is known up front, decode measurably
+    /// faster through this surface.
+    ///
+    /// The values are raw group bits: range validation stays the caller's job, exactly as
+    /// with `serialize_bits` — validate every value that has a tighter range than its
+    /// width before using it. With a buffer extending 40 or more bytes past the current
+    /// read position the group takes a single span check; nearer the end of the buffer
+    /// (or for groups totalling more than 248 bits) it falls back to per-value reads
+    /// automatically — same values, same wire, just slower.
+    ///
+    /// On error the stream position is unchanged and nothing is consumed.
+    ///
+    /// # Panics
+    ///
+    /// Panics if any width is not in `[1,32]`.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::Overflow`] if reading the group's total bits would pass the end of the
+    /// buffer.
+    #[inline]
+    pub fn read_bits_group<const N: usize>(&mut self, widths: &[u32; N]) -> Result<[u32; N]> {
+        let mut total = 0u64;
+        for &bits in widths {
+            total += u64::from(bits);
+        }
+        if self.reader.bits_remaining() < total {
+            return Err(Error::Overflow);
+        }
+        Ok(self.reader.read_bits_group(widths))
+    }
 }
 
 impl Stream for ReadStream<'_> {
