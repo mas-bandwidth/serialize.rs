@@ -97,10 +97,23 @@ jobs:
       - name: Check out the C++ serialize library (pinned release)
         uses: actions/checkout@v7
         with:
+          # v1.7.0 is a floor, not a preference: the harness's extended sequence
+          # carries a degenerate 64 bit range (min == max), and v1.7.0 is the C++
+          # release that stopped serialize_int64 asserting min < max — against
+          # anything older the C++ half aborts on that field. v1.7.0 also pins
+          # serialize_compressed_float to float32 double rounding (no FMA
+          # contraction), which the extended sequence's between-quanta values
+          # discriminate. Each port pins independently — there is no family-wide
+          # tag. Bump deliberately, in its own commit.
           repository: mas-bandwidth/serialize
-          ref: v1.4.3
+          ref: v1.7.0
           path: cpp-serialize
       - uses: dtolnay/rust-toolchain@stable
+      # no -DNDEBUG on purpose: serialize_assert stays live, so the degenerate
+      # ranges must pass with the C++ library's own checks enabled rather than
+      # around them. No -ffp-contract=off either: v1.7.0 pins the compressed
+      # float arithmetic in source, and building with default flags proves the
+      # library's fix instead of masking it.
       - name: Build the C++ golden harness against the real library
         run: g++ -O2 -std=c++17 -I cpp-serialize interop/golden.cpp -o cpp_golden
       - name: Both implementations write byte-identical wire data

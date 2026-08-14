@@ -12,11 +12,86 @@
     Uses the GoldenWireData/GoldenWireInit/GoldenWireSerialize/golden_wire_bytes definitions
     that ship inside serialize.h behind SERIALIZE_ENABLE_TESTS, so this harness always tests
     exactly what the C++ library defines the wire format to be.
+
+    After the golden section the stream carries an EXTENDED sequence defined by this harness
+    (mirrored in examples/wire_interop.rs), covering what GoldenWireData does not:
+
+      - degenerate ranges (min == max): zero bits on the wire, 32 and 64 bit, placed in the
+        MIDDLE of the sequence so the cmp proves both that they are free on the wire and that
+        every field after them stays put — a trailing field could show neither. The 64 bit
+        one is why the CI pin is v1.7.0 or newer: older releases assert min < max on the
+        serialize_int64 path and abort.
+
+      - compressed floats that land BETWEEN quanta (STANDARD.md's discriminating vector:
+        0.005, 0.025, 0.105, 9.995 over [0,10] at resolution 0.01). A value on a quantum
+        (like GoldenWireData's 5.0f) encodes identically under float32 double rounding,
+        double widening and FMA contraction, so it can never catch the arithmetic being
+        wrong; these values differ by one wire quantum under each variant, so a widened or
+        contracted build fails the cmp instead of passing silently.
+
+    The extended section starts with serialize_align, so the golden prefix stays pinned byte
+    for byte and the write half still verifies it against golden_wire_bytes.
 */
 
 #define SERIALIZE_ENABLE_TESTS 1
 
 #include <serialize.h>
+
+struct ExtendedInteropData
+{
+    uint32_t marker;
+    int32_t degenerate32;
+    int64_t degenerate64;
+    float cf_low;
+    float cf_mid_low;
+    float cf_mid_high;
+    float cf_high;
+    int32_t post;
+};
+
+static void ExtendedInteropInit(ExtendedInteropData &data)
+{
+    memset((void *)&data, 0, sizeof(data));
+    data.marker = 1337;
+    data.cf_low = 0.005f;              // between quanta: float32 double rounding writes 1, double widening writes 0
+    data.degenerate32 = 42;            // min == max: known from the range alone, zero bits on the wire
+    data.cf_mid_low = 0.025f;          // between quanta: 3 vs 2
+    data.cf_mid_high = 0.105f;         // between quanta: 11 vs 10
+    data.degenerate64 = 10000000000LL; // min == max on the 64 bit path, bounds wider than 2^32 (needs C++ v1.7.0+)
+    data.cf_high = 9.995f;             // between quanta: 1000 vs 999
+    data.post = -37;                   // live field after both degenerates: proves everything downstream stays put
+}
+
+template <typename Stream> bool ExtendedInteropSerialize(Stream &stream, ExtendedInteropData &data)
+{
+    serialize_align(stream); // the extended section starts byte aligned: the golden prefix stays pinned
+    serialize_bits(stream, data.marker, 11);
+    serialize_compressed_float(stream, data.cf_low, 0.0f, 10.0f, 0.01f);
+    serialize_int(stream, data.degenerate32, 42, 42); // zero bits, mid-sequence
+    serialize_compressed_float(stream, data.cf_mid_low, 0.0f, 10.0f, 0.01f);
+    serialize_compressed_float(stream, data.cf_mid_high, 0.0f, 10.0f, 0.01f);
+    serialize_int64(stream, data.degenerate64, 10000000000LL, 10000000000LL); // zero bits, 64 bit path
+    serialize_compressed_float(stream, data.cf_high, 0.0f, 10.0f, 0.01f);
+    serialize_int(stream, data.post, -100, +100);
+    return true;
+}
+
+// a wrong degenerate decode re-encodes to the same (zero) bits, so the re-encode cmp alone
+// cannot catch it: the decoded values have to be checked against the expected ones too.
+// compressed floats decode to the quantized reconstruction, so they compare within resolution.
+static bool ExtendedInteropCheck(const ExtendedInteropData &data)
+{
+    ExtendedInteropData expected;
+    ExtendedInteropInit(expected);
+    return data.marker == expected.marker
+        && data.degenerate32 == expected.degenerate32
+        && data.degenerate64 == expected.degenerate64
+        && data.post == expected.post
+        && fabsf(data.cf_low - expected.cf_low) <= 0.01f
+        && fabsf(data.cf_mid_low - expected.cf_mid_low) <= 0.01f
+        && fabsf(data.cf_mid_high - expected.cf_mid_high) <= 0.01f
+        && fabsf(data.cf_high - expected.cf_high) <= 0.01f;
+}
 
 static int write_file(const char *path)
 {
@@ -31,13 +106,20 @@ static int write_file(const char *path)
         fprintf(stderr, "error: golden serialize (write) failed\n");
         return 1;
     }
+    ExtendedInteropData extended;
+    ExtendedInteropInit(extended);
+    if (!ExtendedInteropSerialize(stream, extended))
+    {
+        fprintf(stderr, "error: extended serialize (write) failed\n");
+        return 1;
+    }
     stream.Flush();
 
     const int64_t bytes = stream.GetBytesProcessed();
-    if (bytes != (int64_t)sizeof(golden_wire_bytes) ||
+    if (bytes <= (int64_t)sizeof(golden_wire_bytes) ||
         memcmp(buffer, golden_wire_bytes, sizeof(golden_wire_bytes)) != 0)
     {
-        fprintf(stderr, "error: C++ output does not match the pinned golden bytes\n");
+        fprintf(stderr, "error: C++ output does not start with the pinned golden bytes\n");
         return 1;
     }
 
@@ -76,6 +158,18 @@ static int read_file(const char *path)
         fprintf(stderr, "error: C++ could not decode %s\n", path);
         return 1;
     }
+    ExtendedInteropData extended;
+    memset((void *)&extended, 0, sizeof(extended));
+    if (!ExtendedInteropSerialize(stream, extended))
+    {
+        fprintf(stderr, "error: C++ could not decode the extended section of %s\n", path);
+        return 1;
+    }
+    if (!ExtendedInteropCheck(extended))
+    {
+        fprintf(stderr, "error: extended section of %s decoded to unexpected values\n", path);
+        return 1;
+    }
 
     // re-encode the decoded values: the bytes must be identical to what was read
     uint8_t out[256];
@@ -84,6 +178,11 @@ static int read_file(const char *path)
     if (!GoldenWireSerialize(out_stream, data))
     {
         fprintf(stderr, "error: golden serialize (re-encode) failed\n");
+        return 1;
+    }
+    if (!ExtendedInteropSerialize(out_stream, extended))
+    {
+        fprintf(stderr, "error: extended serialize (re-encode) failed\n");
         return 1;
     }
     out_stream.Flush();
