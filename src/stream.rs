@@ -2,7 +2,7 @@
 
 use core::any::Any;
 
-use crate::{Error, Result, bits_required, bits_required64, bits_required128};
+use crate::{Error, Result, bits_required, bits_required64, bits_required128, cold_error};
 
 /// Types that serialize themselves to a [`Stream`]. The equivalent of the C++ library's
 /// convention that objects have a templated `Serialize` method.
@@ -126,7 +126,7 @@ pub trait Stream {
     ///
     /// On read, [`Error::Overflow`] if the read would pass the end of the buffer, or
     /// [`Error::ValueOutOfRange`] if the decoded value is outside `[min,max]`.
-    #[inline]
+    #[inline(always)]
     fn serialize_int(&mut self, value: &mut i32, min: i32, max: i32) -> Result {
         assert!(
             min <= max,
@@ -155,7 +155,7 @@ pub trait Stream {
         self.serialize_bits(&mut unsigned_value, bits)?;
         if Self::IS_READING {
             if unsigned_value > range {
-                return Err(Error::ValueOutOfRange);
+                return cold_error(Error::ValueOutOfRange);
             }
             *value = unsigned_value.wrapping_add(min as u32) as i32;
         }
@@ -173,7 +173,7 @@ pub trait Stream {
     ///
     /// On read, [`Error::Overflow`] if the read would pass the end of the buffer, or
     /// [`Error::ValueOutOfRange`] if the decoded value is outside `[min,max]`.
-    #[inline]
+    #[inline(always)]
     fn serialize_int64(&mut self, value: &mut i64, min: i64, max: i64) -> Result {
         assert!(
             min <= max,
@@ -213,7 +213,7 @@ pub trait Stream {
         }
         if Self::IS_READING {
             if unsigned_value > range {
-                return Err(Error::ValueOutOfRange);
+                return cold_error(Error::ValueOutOfRange);
             }
             *value = unsigned_value.wrapping_add(min as u64) as i64;
         }
@@ -265,7 +265,7 @@ pub trait Stream {
         serialize_offset128(self, &mut offset, bits)?;
         if Self::IS_READING {
             if offset > range {
-                return Err(Error::ValueOutOfRange);
+                return cold_error(Error::ValueOutOfRange);
             }
             *value = offset.wrapping_add(min as u128) as i128;
         }
@@ -282,7 +282,7 @@ pub trait Stream {
     /// # Errors
     ///
     /// On read, [`Error::Overflow`] if the read would pass the end of the buffer.
-    #[inline]
+    #[inline(always)]
     fn serialize_bits64(&mut self, value: &mut u64, bits: u32) -> Result {
         assert!(
             (1..=64).contains(&bits),
@@ -317,7 +317,7 @@ pub trait Stream {
     /// # Errors
     ///
     /// On read, [`Error::Overflow`] if the read would pass the end of the buffer.
-    #[inline]
+    #[inline(always)]
     fn serialize_bool(&mut self, value: &mut bool) -> Result {
         let mut unsigned_value = u32::from(Self::IS_WRITING && *value);
         self.serialize_bits(&mut unsigned_value, 1)?;
@@ -372,7 +372,7 @@ pub trait Stream {
     /// # Errors
     ///
     /// On read, [`Error::Overflow`] if the read would pass the end of the buffer.
-    #[inline]
+    #[inline(always)]
     fn serialize_u64(&mut self, value: &mut u64) -> Result {
         self.serialize_bits64(value, 64)
     }
@@ -404,7 +404,7 @@ pub trait Stream {
     /// # Errors
     ///
     /// On read, [`Error::Overflow`] if the read would pass the end of the buffer.
-    #[inline]
+    #[inline(always)]
     fn serialize_f32(&mut self, value: &mut f32) -> Result {
         let mut int_value = if Self::IS_WRITING { value.to_bits() } else { 0 };
         self.serialize_bits(&mut int_value, 32)?;
@@ -488,7 +488,7 @@ pub trait Stream {
 
         if Self::IS_READING {
             if integer_value > max_integer_value {
-                return Err(Error::ValueOutOfRange);
+                return cold_error(Error::ValueOutOfRange);
             }
             let normalized_value = integer_value as f32 / max_integer_value as f32;
             *value = normalized_value * delta + min;
@@ -600,7 +600,7 @@ pub trait Stream {
             // reject raw values outside [raw_min,raw_max] smuggled into the bit headroom of
             // the offset encoding. reject, never clamp
             if offset > raw_range {
-                return Err(Error::ValueOutOfRange);
+                return cold_error(Error::ValueOutOfRange);
             }
             // reconstruct in the unsigned domain, then truncate to the storage width: exact
             // two's complement for signed storage
@@ -674,7 +674,7 @@ pub trait Stream {
         if Self::IS_READING {
             *current = value as i32;
             if *current <= previous {
-                return Err(Error::ValueOutOfRange);
+                return cold_error(Error::ValueOutOfRange);
             }
         }
 

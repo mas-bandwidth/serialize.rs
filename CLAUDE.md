@@ -88,7 +88,14 @@ zero unsafe, BSD-3.
 - **`#[inline]` on the bitpacker and stream methods is load-bearing.** They are non-generic
   and called cross-crate: without the attribute nothing inlines outside this crate (no LTO by
   default) and throughput drops 2-8x (measured — the stream read went from 410 to 38 M
-  packets/s). Do not strip them.
+  packets/s). Do not strip them. Equally load-bearing: `cold_error` (lib.rs) and the
+  `#[inline(always)]` read spine. Every data-dependent failure routes through the `#[cold]`
+  constructor so LLVM's static branch heuristics keep the happy path at entry frequency —
+  without it, block frequency decays down a serialize function and the inliner strands the
+  later serialize calls out of line despite `#[inline]` (measured 1.8-2.6x slower reads than
+  the C++ library, schema bench, Apple M2). The thin fallible wrappers carry
+  `#[inline(always)]` because the hint alone loses to that same cold-callsite
+  classification in long serialize functions.
 - Local toolchains on Glenn's Mac: homebrew rustup at `/opt/homebrew/opt/rustup/bin` (not on
   default PATH), with `1.85` (MSRV) and `nightly` (+miri) installed; cargo-fuzz in ~/.cargo/bin
 - CI (.github/workflows/ci.yml): 3-OS test matrix (debug + release + example), lint

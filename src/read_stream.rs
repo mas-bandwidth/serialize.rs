@@ -4,7 +4,7 @@ use core::any::Any;
 
 use crate::bitpacker::BitReader;
 use crate::stream::Stream;
-use crate::{Error, Result};
+use crate::{Error, Result, cold_error};
 
 /// Stream for reading bitpacked data.
 ///
@@ -62,14 +62,14 @@ impl Stream for ReadStream<'_> {
     const IS_WRITING: bool = false;
     const IS_READING: bool = true;
 
-    #[inline]
+    #[inline(always)]
     fn serialize_bits(&mut self, value: &mut u32, bits: u32) -> Result {
         assert!(
             bits.wrapping_sub(1) < 32,
             "bits must be in [1,32] (got {bits})"
         );
         if self.reader.would_read_past_end(bits) {
-            return Err(Error::Overflow);
+            return cold_error(Error::Overflow);
         }
         *value = self.reader.read_bits(bits);
         Ok(())
@@ -80,7 +80,7 @@ impl Stream for ReadStream<'_> {
         self.serialize_align()?;
         // compare in bytes rather than bits, consistent with the 64 bit bookkeeping
         if data.len() as u64 > self.reader.bits_remaining() / 8 {
-            return Err(Error::Overflow);
+            return cold_error(Error::Overflow);
         }
         self.reader.read_bytes(data);
         Ok(())
@@ -90,10 +90,10 @@ impl Stream for ReadStream<'_> {
     fn serialize_align(&mut self) -> Result {
         let align_bits = self.reader.align_bits();
         if self.reader.would_read_past_end(align_bits) {
-            return Err(Error::Overflow);
+            return cold_error(Error::Overflow);
         }
         if !self.reader.read_align() {
-            return Err(Error::Align);
+            return cold_error(Error::Align);
         }
         Ok(())
     }
@@ -109,12 +109,14 @@ impl Stream for ReadStream<'_> {
         self.serialize_align()?;
         let length = length as usize;
         if length as u64 > self.reader.bits_remaining() / 8 {
-            return Err(Error::Overflow);
+            return cold_error(Error::Overflow);
         }
         // validate in place from the underlying buffer, then copy once into the string,
         // reusing its capacity where possible
         let bytes = self.reader.read_byte_slice(length);
-        let string = core::str::from_utf8(bytes).map_err(|_| Error::InvalidString)?;
+        let Ok(string) = core::str::from_utf8(bytes) else {
+            return cold_error(Error::InvalidString);
+        };
         value.clear();
         value.push_str(string);
         Ok(())
@@ -132,7 +134,9 @@ impl Stream for ReadStream<'_> {
         for _ in 0..length {
             let mut char_value = 0u32;
             self.serialize_bits(&mut char_value, 32)?;
-            let c = char::from_u32(char_value).ok_or(Error::InvalidString)?;
+            let Some(c) = char::from_u32(char_value) else {
+                return cold_error(Error::InvalidString);
+            };
             value.push(c);
         }
         Ok(())

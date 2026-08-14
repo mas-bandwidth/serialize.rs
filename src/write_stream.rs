@@ -4,7 +4,7 @@ use core::any::Any;
 
 use crate::bitpacker::BitWriter;
 use crate::stream::Stream;
-use crate::{Error, Result};
+use crate::{Error, Result, cold_error};
 
 /// Stream for writing bitpacked data.
 ///
@@ -161,7 +161,7 @@ pub(crate) fn string_length(length: usize, buffer_size: usize) -> Result<i32> {
         "string buffer_size must be in [2,i32::MAX] (got {buffer_size})"
     );
     if length >= buffer_size {
-        return Err(Error::ValueOutOfRange);
+        return cold_error(Error::ValueOutOfRange);
     }
     Ok(length as i32)
 }
