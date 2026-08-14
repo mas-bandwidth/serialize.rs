@@ -1,9 +1,10 @@
 name: nightly-fuzz
 
 # 30 minutes per target nightly, with a corpus that accumulates across runs via the actions
-# cache — the same shape as the C++ library's nightly-fuzz workflow. NOTE: scheduled runs bill
-# Actions minutes while this repository is private (~1 hour of ubuntu per day); they are free
-# once it is public.
+# cache — the same shape as the C++ library's nightly-fuzz workflow: a daily schedule, and a
+# corpus carried from one run to the next. This repository is public, so the ~1 hour of ubuntu
+# per day these scheduled runs consume costs no Actions minutes; that billing applies only to
+# private repositories.
 
 on:
   schedule:

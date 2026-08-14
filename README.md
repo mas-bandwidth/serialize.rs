@@ -4,17 +4,28 @@
 
 A simple bitpacking serializer for Rust.
 
-This is a port of the C++ [serialize](https://github.com/mas-bandwidth/serialize) library,
-**bit-for-bit wire compatible** with it and with the rest of the family — the
-[C](https://github.com/mas-bandwidth/serialize.c),
+This is a port of the C++ [serialize](https://github.com/mas-bandwidth/serialize) library and
+is **bit-for-bit wire compatible** with it. The golden wire format test pins 112 exact bytes —
+byte for byte the vector `golden_wire_bytes` pins in the C++ test suite — and on every push and
+pull request CI builds the real C++ library at a pinned release and runs both implementations
+head to head over the library's own golden serialize function: they write byte-identical data
+and each decodes the other's output. That machine check covers the first 72 of those bytes,
+which is everything the pinned release defines; the fixed point tail after them was derived
+from STANDARD.md's rules here, and matches the vector the C++ suite pins today.
+
+Nothing here exercises the [C](https://github.com/mas-bandwidth/serialize.c),
 [C#](https://github.com/mas-bandwidth/serialize.cs) and
-[Go](https://github.com/mas-bandwidth/serialize.go) ports: a golden wire format test pins the
-exact bytes, byte-for-byte the same vector the C++ test suite pins, and on every push and pull
-request CI builds the real C++ library and verifies head-to-head that both implementations
-write byte-identical data and decode each other's output. Packets written by any library in
-the family decode in the others. The format itself is specified in
-[STANDARD.md](STANDARD.md), a verbatim copy of the upstream specification that CI checks for
-drift. Zero dependencies, no unsafe code, BSD 3-Clause.
+[Go](https://github.com/mas-bandwidth/serialize.go) ports, so this repo proves no leg of the
+family beyond the C++ one. What ties the family together is the C++ library as the common
+reference: each port runs its own head-to-head check against it in its own CI, all four ports
+vendor a byte-identical copy of [STANDARD.md](STANDARD.md) — the upstream specification, with a
+CI job in each repo that fails on drift — and the golden vectors line up, the Go port pinning
+this exact 112 byte vector, the C# port pinning the same bytes in two pieces (the 72 byte core
+and the 40 byte fixed point tail), while the C port pins sequences of its own that its CI
+checks against the C++ library. Compatibility across the family rests on that shared reference
+and that shared specification, not on any Rust-to-Go or Rust-to-C# test.
+
+Zero dependencies, no unsafe code, BSD 3-Clause.
 
 Values are packed with exactly the number of bits they need: a bool takes 1 bit, an integer in
 [0,31] takes 5 bits. Write one serialize function and it handles write, read and measure —
