@@ -117,6 +117,23 @@ impl std::error::Error for Error {}
 /// type of every serialize method.
 pub type Result<T = ()> = core::result::Result<T, Error>;
 
+// Every data-dependent failure funnels through this constructor so LLVM sees the error
+// edges as cold. #[cold] is load-bearing the same way the #[inline] attributes are:
+// without it the static branch heuristics treat each Ok/Err split as roughly even odds,
+// block frequency decays geometrically along a serialize function, and after a handful
+// of fallible fields the remaining serialize calls sit in blocks the inliner classifies
+// as cold — where its threshold drops so far that the read helpers stay out of line
+// despite #[inline] (measured at 1.8-2.6x slower reads than the C++ library, schema
+// bench, Apple M2). With the error edges pinned cold the happy path holds entry-level
+// frequency and the read path inlines end to end. #[inline(never)] keeps the marker
+// meaningful: an inlined body carries no cold attribute. Generic so cross-crate
+// instantiations of the stream defaults get their own copy.
+#[cold]
+#[inline(never)]
+pub(crate) fn cold_error<T>(error: Error) -> Result<T> {
+    Err(error)
+}
+
 /// Calculates the number of bits required to serialize an integer in range `[min,max]`.
 ///
 /// Usable in const contexts, which covers the C++ library's compile time `BitsRequired<min,max>`

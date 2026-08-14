@@ -71,7 +71,7 @@ impl<'a> BitWriter<'a> {
     ///
     /// Panics if `bits` is not in `[1,32]`, or (via the slice bounds check) if the write passes
     /// the end of the buffer.
-    #[inline]
+    #[inline(always)]
     pub fn write_bits(&mut self, value: u32, bits: u32) {
         assert!(
             bits.wrapping_sub(1) < 32,
@@ -162,7 +162,7 @@ impl<'a> BitWriter<'a> {
     /// Call this once after you finish writing bits, otherwise the last word of scratch is
     /// never stored. Stores a full qword: the buffer size is a multiple of 8 so this stays in
     /// bounds, and bytes past the written data are zeros.
-    #[inline]
+    #[inline(always)]
     pub fn flush_bits(&mut self) {
         if self.scratch_bits != 0 {
             debug_assert!(self.scratch_bits < 64);
