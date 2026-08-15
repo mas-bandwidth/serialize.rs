@@ -119,32 +119,40 @@ pub trait Stream {
 
     /// Serialize a string of fewer than `buffer_size` bytes. The wire format is the length in
     /// `[0,buffer_size-1]`, an alignment, then the raw bytes, so `buffer_size` must match
-    /// between write and read. On read the bytes are validated as UTF-8, failing with
-    /// [`Error::InvalidString`] — the C++ library's strings are raw bytes, so only strings
-    /// that are valid UTF-8 interoperate.
+    /// between write and read. On read the payload is validated (STANDARD.md's refusal
+    /// rules, adopted 2026-08-15), failing with [`Error::InvalidString`]: the bytes must be
+    /// valid UTF-8, and an interior NUL byte is refused — it is well-formed UTF-8, but it
+    /// gives the payload two lengths (the wire's and the `strlen` a consumer computes), the
+    /// smuggling primitive the ruling closes.
     ///
     /// # Errors
     ///
     /// On read, [`Error::Overflow`], [`Error::Align`] or [`Error::InvalidString`] on
-    /// truncated, misaligned or non-UTF-8 data. Writes and measures cannot error: a string
-    /// that does not fit in `buffer_size - 1` bytes is a write-contract violation — a debug
-    /// assertion, and in release a malformed stream that checked readers reject.
+    /// truncated, misaligned, non-UTF-8 or interior-NUL data. Writes and measures cannot
+    /// error: a string that does not fit in `buffer_size - 1` bytes is a write-contract
+    /// violation — a debug assertion, and in release a malformed stream that checked
+    /// readers reject.
     fn serialize_string(
         &mut self,
         value: &mut String,
         buffer_size: usize,
     ) -> Result<(), Self::Error>;
 
-    /// Serialize a string as 32 bits per code point, matching the C++ library's `wchar_t`
-    /// wire format (which is 32 bits per character on every platform). `buffer_size` bounds
-    /// the length in code points and must match between write and read. On read each code
-    /// point is validated, failing with [`Error::InvalidString`] if it is not a valid char.
+    /// Serialize a wide string, matching the family's `wchar_t` wire format: each 32 bit
+    /// group carries one UTF-16 CODE UNIT (STANDARD.md "wstring", adopted 2026-08-15), so
+    /// an astral char travels as its surrogate pair — split on write, recombined on read.
+    /// `buffer_size` bounds the length in code units and must match between write and read.
+    /// On read, malformed payloads fail with [`Error::InvalidString`] in every build mode:
+    /// a group above 0xFFFF (not a code unit), an interior NUL group, an unpaired or
+    /// misordered surrogate, and a dangling high surrogate as the final group are all
+    /// refused. Well-formed pairs pass — a Rust `String` holds chars, so the pair
+    /// recombines; there is no char for a lone surrogate to become.
     ///
     /// # Errors
     ///
-    /// On read, [`Error::Overflow`] or [`Error::InvalidString`] on truncated data or an
-    /// invalid code point. Writes and measures cannot error: a string that does not fit in
-    /// `buffer_size - 1` code points is a write-contract violation — a debug assertion, and
+    /// On read, [`Error::Overflow`] or [`Error::InvalidString`] on truncated or malformed
+    /// data. Writes and measures cannot error: a string that does not fit in
+    /// `buffer_size - 1` code units is a write-contract violation — a debug assertion, and
     /// in release a malformed stream that checked readers reject.
     fn serialize_wide_string(
         &mut self,

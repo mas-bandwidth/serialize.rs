@@ -126,6 +126,15 @@ impl Stream for ReadStream<'_> {
         let Ok(string) = core::str::from_utf8(bytes) else {
             return cold_error(Error::InvalidString);
         };
+        // an interior NUL is well-formed UTF-8, so it is its own refusal (STANDARD.md
+        // "Readers must refuse malformed string payloads", adopted 2026-08-15): a
+        // conforming writer derives the length from the string itself, so a stream
+        // carrying one gives the payload two lengths — the wire's, and the strlen a
+        // consumer downstream computes — and everything between them rides invisibly
+        // past whichever side uses the other
+        if bytes.contains(&0) {
+            return cold_error(Error::InvalidString);
+        }
         value.clear();
         value.push_str(string);
         Ok(())
@@ -140,13 +149,51 @@ impl Stream for ReadStream<'_> {
         let mut length = 0i32;
         self.serialize_int(&mut length, 0, buffer_size as i32 - 1)?;
         value.clear();
+        // Each 32 bit group is one UTF-16 CODE UNIT, and malformed payloads are refused in
+        // every build mode (STANDARD.md "wstring" and its refusal rules, adopted
+        // 2026-08-15): a group above 0xFFFF is not a code unit and nothing conforming
+        // emits one; an interior NUL group gives the payload two lengths (the wire's, and
+        // the wcslen a consumer computes); the pair discipline refuses a high surrogate
+        // without its low, a low with no high before it, and a dangling high as the final
+        // group. Well-formed pairs pass — they are how astral text travels — and recombine
+        // into the char, the inverse of the split the writer performed. Refusal is the
+        // only option for unpaired surrogates here: a Rust String holds chars, and there
+        // is no char for a lone surrogate to become.
+        let mut pending_high: Option<u32> = None; // a high surrogate awaiting its low
         for _ in 0..length {
-            let mut char_value = 0u32;
-            self.serialize_bits(&mut char_value, 32)?;
-            let Some(c) = char::from_u32(char_value) else {
+            let mut group = 0u32;
+            self.serialize_bits(&mut group, 32)?;
+            if group > 0xFFFF || group == 0 {
+                return cold_error(Error::InvalidString);
+            }
+            if let Some(high) = pending_high.take() {
+                if !(0xDC00..=0xDFFF).contains(&group) {
+                    return cold_error(Error::InvalidString);
+                }
+                let code_point = 0x10000 + ((high - 0xD800) << 10) + (group - 0xDC00);
+                // a recombined pair is always in [0x10000,0x10FFFF], a valid char; the
+                // refusal arm is unreachable, kept so no panic path exists on read
+                let Some(c) = char::from_u32(code_point) else {
+                    return cold_error(Error::InvalidString);
+                };
+                value.push(c);
+                continue;
+            }
+            if (0xDC00..=0xDFFF).contains(&group) {
+                return cold_error(Error::InvalidString);
+            }
+            if (0xD800..=0xDBFF).contains(&group) {
+                pending_high = Some(group);
+                continue;
+            }
+            // a BMP non-surrogate unit is always a valid char; same unreachable refusal
+            let Some(c) = char::from_u32(group) else {
                 return cold_error(Error::InvalidString);
             };
             value.push(c);
+        }
+        if pending_high.is_some() {
+            return cold_error(Error::InvalidString);
         }
         Ok(())
     }

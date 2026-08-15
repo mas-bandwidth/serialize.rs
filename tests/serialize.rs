@@ -900,6 +900,229 @@ fn test_write_too_long_string_asserts_in_debug() {
     let Ok(()) = write_stream.serialize_string(&mut "this string is too long".to_string(), 8);
 }
 
+#[test]
+#[cfg(debug_assertions)]
+#[should_panic(expected = "does not fit buffer_size")]
+fn test_write_too_many_wide_units_asserts_in_debug() {
+    // buffer_size bounds the length in UTF-16 CODE UNITS, not chars: four astral chars
+    // are eight units, which do not fit a buffer_size of 8 (the terminator needs one).
+    // Under the old code-point model this string measured four groups and passed.
+    let mut buffer = [0u8; 64];
+    let mut write_stream = WriteStream::new(&mut buffer);
+    let Ok(()) = write_stream
+        .serialize_wide_string(&mut "\u{1F600}\u{1F601}\u{1F602}\u{1F603}".to_string(), 8);
+}
+
+// ------------------------------------------------------------------------------------------
+// wstring transmits UTF-16 CODE UNITS (STANDARD.md "wstring", adopted 2026-08-15): an astral
+// code point is a surrogate pair on the wire, and readers refuse malformed payloads in every
+// build mode (the serialize #8 ruling). The tests below mirror the C++ suite's
+// test_wstring_utf16_code_units / test_wstring_read_validation and serialize.c's vectors.
+// ------------------------------------------------------------------------------------------
+
+/// Doctor a wide-string wire image through the primitives: the length as
+/// `serialize_int(length, 0, 7)` (a `buffer_size` of 8), then each group as raw 32 bits.
+/// The public writer's contract makes most of these byte sequences impossible to produce —
+/// which is exactly why the read refusals need doctored streams to be testable.
+fn doctor_wide_stream(units: &[u32], buffer: &mut [u8; 24]) -> usize {
+    let mut stream = WriteStream::new(buffer);
+    let mut length = units.len() as i32;
+    stream.serialize_int(&mut length, 0, 7).unwrap();
+    for &unit in units {
+        let mut group = unit;
+        stream.serialize_bits(&mut group, 32).unwrap();
+    }
+    stream.flush();
+    stream.bytes_processed() as usize
+}
+
+#[test]
+fn test_wstring_utf16_code_units() {
+    // THE FAMILY CONFORMANCE PIN: "a" + U+1F600 in an 8-unit buffer is exactly these
+    // 13 bytes — a 3-bit length of 3 (UNITS: 0x0061, then the surrogate pair 0xD83D
+    // 0xDE00), then three unaligned 32-bit groups. Byte-for-byte what the C++ library
+    // (test_wstring_utf16_code_units), serialize.c and serialize.cs pin for the same
+    // string. Never regenerate these.
+    //
+    // Before the code-unit model this pin was doubly unreachable: the writer emitted
+    // CODE POINTS (a length of 2, groups 0x0061 and 0x1F600), and the reader refused
+    // these very bytes at its char::from_u32 check (0xD83D is not a char) — so a valid
+    // astral wstring from a conforming port could never be read at all.
+    #[rustfmt::skip]
+    const ASTRAL_WIRE_BYTES: [u8; 13] = [
+        0x0B, 0x03, 0x00, 0x00, 0xE8, 0xC1, 0x06, 0x00,
+        0x00, 0xF0, 0x06, 0x00, 0x00,
+    ];
+    const BUFFER_SIZE: usize = 8;
+    let astral = "a\u{1F600}";
+
+    // write side: the writer must emit exactly the conforming bytes
+    let bits_written;
+    {
+        let mut buffer = [0u8; 64];
+        let mut stream = WriteStream::new(&mut buffer);
+        let mut value = astral.to_string();
+        stream
+            .serialize_wide_string(&mut value, BUFFER_SIZE)
+            .unwrap();
+        stream.flush();
+        assert_eq!(stream.bytes_processed() as usize, ASTRAL_WIRE_BYTES.len());
+        bits_written = stream.bits_processed();
+        assert_eq!(buffer[..ASTRAL_WIRE_BYTES.len()], ASTRAL_WIRE_BYTES);
+    }
+
+    // the measure counts the units transmitted, not the chars held: 3 + 3 * 32 = 99
+    {
+        let mut measure_stream = MeasureStream::new();
+        let mut value = astral.to_string();
+        measure_stream
+            .serialize_wide_string(&mut value, BUFFER_SIZE)
+            .unwrap();
+        assert_eq!(measure_stream.bits_processed(), 99);
+        assert_eq!(measure_stream.bits_processed(), bits_written);
+    }
+
+    // read side: the conforming bytes (as any family port would send them) must decode —
+    // the pair recombines into the astral char
+    {
+        let mut buffer = [0u8; 13 + 8]; // + 8: keep reads on the branchless fast path
+        buffer[..13].copy_from_slice(&ASTRAL_WIRE_BYTES);
+        let mut stream = ReadStream::new(&buffer, ASTRAL_WIRE_BYTES.len());
+        let mut value = String::new();
+        stream
+            .serialize_wide_string(&mut value, BUFFER_SIZE)
+            .unwrap();
+        assert_eq!(value, astral);
+    }
+}
+
+#[test]
+fn test_wstring_read_refusals() {
+    // STANDARD.md "Readers must refuse malformed wstring payloads" (the #8 ruling,
+    // adopted 2026-08-15): a group above 0xFFFF is not a UTF-16 code unit, an unpaired
+    // or misordered surrogate is refused, and so is an interior NUL group (the
+    // two-lengths smuggling primitive: wire length 3, the wcslen a consumer computes 1).
+    // Every stream is doctored — no conforming writer can produce these bytes — and each
+    // refusal class is fenced below by an accepted neighbor as close to the boundary as
+    // the format allows.
+    let refused: &[&[u32]] = &[
+        &[0x10000],                // the OLD code-point model's astral group (was accepted)
+        &[0x10FFFF],               // the old model's ceiling (was accepted)
+        &[0x110000],               // above the ceiling: never a char in any model
+        &[0xFFFFFFFF],             // maximal garbage
+        &[0xD83D],                 // high surrogate dangling as the final group
+        &[0xD83D, 0x0041],         // high surrogate followed by a non-low
+        &[0xD83D, 0xD83D],         // high surrogate followed by another high
+        &[0xDE00],                 // lone low surrogate
+        &[0x0041, 0xDE00],         // low surrogate with no high before it
+        &[0xD83D, 0xDE00, 0xD83D], // valid pair, then the payload ends inside a pair
+        &[0x0041, 0x0000, 0x0042], // interior NUL group
+    ];
+    for units in refused {
+        let mut buffer = [0u8; 24];
+        let bytes = doctor_wide_stream(units, &mut buffer);
+        let mut stream = ReadStream::new(&buffer, bytes);
+        let mut value = String::new();
+        assert_eq!(
+            stream.serialize_wide_string(&mut value, 8),
+            Err(Error::InvalidString),
+            "units {units:X?} must be refused"
+        );
+    }
+
+    // the accepted fence: the boundary units hugging every refusal — 0xD7FF and 0xE000
+    // around the surrogate block, 0xFFFF the last code unit, then a correctly ordered
+    // pair — must be accepted, the pair recombined into its char
+    {
+        let mut buffer = [0u8; 24];
+        let bytes = doctor_wide_stream(&[0xD7FF, 0xE000, 0xFFFF, 0xD83D, 0xDE00], &mut buffer);
+        let mut stream = ReadStream::new(&buffer, bytes);
+        let mut value = String::new();
+        stream.serialize_wide_string(&mut value, 8).unwrap();
+        assert_eq!(value, "\u{D7FF}\u{E000}\u{FFFF}\u{1F600}");
+    }
+
+    // the NUL fence: the same three groups with the zero replaced are accepted
+    {
+        let mut buffer = [0u8; 24];
+        let bytes = doctor_wide_stream(&[0x0041, 0x0020, 0x0042], &mut buffer);
+        let mut stream = ReadStream::new(&buffer, bytes);
+        let mut value = String::new();
+        stream.serialize_wide_string(&mut value, 8).unwrap();
+        assert_eq!(value, "A B");
+    }
+}
+
+#[test]
+fn test_string_read_refusals() {
+    // STANDARD.md "Readers must refuse malformed string payloads" (the #8 ruling, adopted
+    // 2026-08-15). Invalid UTF-8 was already refused by this reader; the interior NUL is
+    // its own rule because NUL is well-formed UTF-8 — the one case the UTF-8 validator
+    // cannot catch: wire length 3, the strlen a consumer computes 1, and everything
+    // between the two lengths rides invisibly past whichever side uses the other.
+    // Doctored through the primitives: length, then the payload via serialize_bytes
+    // (which aligns, exactly as serialize_string does).
+    fn doctor_narrow_stream(payload: &[u8], buffer: &mut [u8; 32]) -> usize {
+        let mut stream = WriteStream::new(buffer);
+        let mut length = payload.len() as i32;
+        stream.serialize_int(&mut length, 0, 31).unwrap();
+        let mut bytes = payload.to_vec();
+        stream.serialize_bytes(&mut bytes).unwrap();
+        stream.flush();
+        stream.bytes_processed() as usize
+    }
+
+    let refused: &[&[u8]] = &[
+        &[0x41, 0x00, 0x42], // interior NUL: valid UTF-8, refused by its own rule
+        &[0xFF, 0xFE, 0xFF], // 0xFF can never appear in well-formed UTF-8
+        &[0xC0, 0xAF],       // overlong '/': the classic filter bypass
+        &[0xED, 0xA0, 0x80], // U+D800: surrogate as UTF-8
+        &[0x61, 0xE2],       // sequence truncated by the length
+    ];
+    for payload in refused {
+        let mut buffer = [0u8; 32];
+        let bytes = doctor_narrow_stream(payload, &mut buffer);
+        let mut stream = ReadStream::new(&buffer, bytes);
+        let mut value = String::new();
+        assert_eq!(
+            stream.serialize_string(&mut value, 32),
+            Err(Error::InvalidString),
+            "payload {payload:X?} must be refused"
+        );
+    }
+
+    // the NUL fence: the same bytes with the zero replaced are accepted
+    {
+        let mut buffer = [0u8; 32];
+        let bytes = doctor_narrow_stream(&[0x41, 0x20, 0x42], &mut buffer);
+        let mut stream = ReadStream::new(&buffer, bytes);
+        let mut value = String::new();
+        stream.serialize_string(&mut value, 32).unwrap();
+        assert_eq!(value, "A B");
+    }
+
+    // the UTF-8 fence: the boundary code points on each side of every refusal — U+D7FF
+    // and U+E000 around the surrogate block, U+10FFFF the ceiling itself, the shortest
+    // legal 2- and 4-byte forms — round trip intact
+    {
+        #[rustfmt::skip]
+        let good_utf8: &[u8] = &[
+            0x41,                   // 'A'
+            0xC2, 0x80,             // U+0080: shortest legal 2-byte form
+            0xED, 0x9F, 0xBF,       // U+D7FF: last before the surrogate block
+            0xEE, 0x80, 0x80,       // U+E000: first after it
+            0xF0, 0x90, 0x80, 0x80, // U+10000: shortest legal 4-byte form
+            0xF4, 0x8F, 0xBF, 0xBF, // U+10FFFF: the ceiling itself
+        ];
+        let mut buffer = [0u8; 32];
+        let bytes = doctor_narrow_stream(good_utf8, &mut buffer);
+        let mut stream = ReadStream::new(&buffer, bytes);
+        let mut value = String::new();
+        stream.serialize_string(&mut value, 32).unwrap();
+        assert_eq!(value.as_bytes(), good_utf8);
+    }
+}
+
 // The fork #6 ruling (Glenn, 2026-08-15): "it's non-conforming. also, attempting to send NaN
 // or INF or anything else through compressed float is non-conforming and should assert out
 // on write too." Value validity is asserted at intake, declaration validity at the param
