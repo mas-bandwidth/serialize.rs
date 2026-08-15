@@ -47,7 +47,7 @@ struct Packet {
 }
 
 impl Packet {
-    fn serialize<S: Stream>(&mut self, stream: &mut S) -> Result {
+    fn serialize<S: Stream>(&mut self, stream: &mut S) -> Result<(), S::Error> {
         stream.serialize_int(&mut self.position, -1000, 1000)?;
         stream.serialize_int(&mut self.health, 0, 100)?;
         stream.serialize_bool(&mut self.alive)?;
@@ -55,6 +55,11 @@ impl Packet {
     }
 }
 ```
+
+The stream picks the error type: `S::Error` is `Error` for `ReadStream` and `Infallible` for
+`WriteStream` and `MeasureStream`, so the write and measure instantiations of that one
+function are statically incapable of failing — `let Ok(()) = packet.serialize(&mut writer);`
+is irrefutable, and `?` compiles to nothing.
 
 See [examples/packet.rs](examples/packet.rs) for a fuller example with nested objects,
 variable length arrays and measuring.
@@ -74,7 +79,7 @@ struct Player {
 }
 
 impl Player {
-    fn serialize<S: Stream>(&mut self, stream: &mut S) -> Result {
+    fn serialize<S: Stream>(&mut self, stream: &mut S) -> Result<(), S::Error> {
         stream.serialize_fixed(&mut self.position_x, 48, 16, -8192, 8192)?;
         stream.serialize_fixed(&mut self.position_y, 48, 16, -8192, 8192)?;
         stream.serialize_fixed(&mut self.position_z, 48, 16, -8192, 8192)?;
@@ -100,15 +105,24 @@ controls a loop (a count, a length) is always validated before it drives anythin
 Rust rendering of the C++ library's early-return serialize macros and the Go port's sticky
 errors, and it is the reason serialize methods take `&mut` values and return `Result`.
 
-The write path is trusted, like the C++ library: correctness is checked with debug assertions,
-and in release it is the caller's responsibility — size buffers conservatively or pre-measure
-with `MeasureStream` (its estimate is guaranteed conservative). Writing past the end of a
-buffer panics via the slice bounds check rather than being undefined behavior.
+The write path is trusted and, as of 2.0, **infallible** — the writer-trusted contract the
+whole family shares, matching the C++ library's checkless writer. `WriteStream` and
+`MeasureStream` set `S::Error = Infallible`, so no write or measure can return an error and
+no error control flow survives in the compiled write path. Invalid arguments and out of
+range values are debug assertions, compiled out in release, where correctness is the
+caller's responsibility — size buffers conservatively or pre-measure with `MeasureStream`
+(its estimate is guaranteed conservative). A violated write contract in release produces a
+malformed stream that checked readers reject; it is never memory unsafety, and writing past
+the end of a buffer still panics via the slice bounds check rather than being undefined
+behavior. Readers are unchanged: fully fallible, every check kept.
 
-Panics are reserved for API misuse: bits out of [1,32]/[1,64], `min > max`, a write buffer
-that is not a multiple of 8 bytes. A degenerate range where `min == max` is not misuse — the
+Panics in every build are reserved for read-side API misuse (bits out of [1,32]/[1,64],
+`min > max`) and the two write-side structural cases above (buffer not a multiple of 8
+bytes, writing past the end). A degenerate range where `min == max` is not misuse — the
 format defines it as costing zero bits, and the ranged integer methods accept it and recover
-the value from the range alone.
+the value from the range alone. Non-finite values through `serialize_compressed_float` are
+non-conforming and debug-assert on write, as does a compressed float declaration whose
+`max - min` or quantum count is not finite.
 
 ## Buffer contracts
 
@@ -123,8 +137,10 @@ the value from the range alone.
 
 ## Differences from the C++ library
 
-- Errors instead of `return false`: serialize functions return `Result` and propagate with
-  `?`. No macros needed.
+- Errors instead of `return false` — on the read path: serialize functions return `Result`
+  and propagate with `?`. No macros needed. On the write and measure paths the error type is
+  uninhabited (`Infallible`), which is Rust for the C++ writer's contract: it cannot fail,
+  and the compiler knows it.
 - `serialize_string` operates on `String` and validates UTF-8 on read (C++ strings are raw
   bytes, so only valid UTF-8 interoperates). `serialize_wide_string` matches the `wchar_t`
   wire format (32 bits per code point) and validates code points on read.
@@ -146,7 +162,7 @@ the value from the range alone.
 `cargo bench` runs [benches/throughput.rs](benches/throughput.rs), a direct port of the C++
 library's bench.cpp with identical methodology (same mixed bit-width table, same packet, same
 LCG-varied fields, escape barriers, best of five trials). Apple M3 Ultra, single core, Rust
-1.97 vs clang -O3:
+1.97 vs clang -O3, measured at 1.6.0 — before the 2.0 infallible write path landed:
 
 |                       | serialize.rs             | C++ serialize             |
 |-----------------------|--------------------------|---------------------------|

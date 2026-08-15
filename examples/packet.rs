@@ -15,7 +15,7 @@ struct Player {
 }
 
 impl Serialize for Player {
-    fn serialize<S: Stream>(&mut self, stream: &mut S) -> Result {
+    fn serialize<S: Stream>(&mut self, stream: &mut S) -> Result<(), S::Error> {
         stream.serialize_int(&mut self.id, 0, 65535)?;
         stream.serialize_compressed_float(&mut self.x, -1000.0, 1000.0, 0.01)?;
         stream.serialize_compressed_float(&mut self.y, -1000.0, 1000.0, 0.01)?;
@@ -33,7 +33,7 @@ struct WorldStatePacket {
 }
 
 impl Serialize for WorldStatePacket {
-    fn serialize<S: Stream>(&mut self, stream: &mut S) -> Result {
+    fn serialize<S: Stream>(&mut self, stream: &mut S) -> Result<(), S::Error> {
         stream.serialize_u16(&mut self.sequence)?;
 
         // a serialized value that controls a loop must be validated before use: serialize_int
@@ -82,15 +82,16 @@ fn main() -> Result {
         map_name: "pressure".to_string(),
     };
 
-    // measure how many bytes the packet needs (conservative: aligns count as 7 bits)
+    // measure how many bytes the packet needs (conservative: aligns count as 7 bits).
+    // measures cannot fail — the error type is uninhabited, so Ok is the only pattern
     let mut measure = MeasureStream::new();
-    packet.serialize(&mut measure)?;
+    let Ok(()) = packet.serialize(&mut measure);
     println!("measured packet size: {} bytes", measure.bytes_processed());
 
-    // write the packet
+    // write the packet. writes cannot fail either: the writer is trusted
     let mut buffer = [0u8; 256]; // multiple of 8 bytes, comfortably above the measure
     let mut writer = WriteStream::new(&mut buffer);
-    packet.serialize(&mut writer)?;
+    let Ok(()) = packet.serialize(&mut writer);
     writer.flush();
     let packet_bytes = writer.bytes_processed() as usize;
     println!("wrote packet: {packet_bytes} bytes");

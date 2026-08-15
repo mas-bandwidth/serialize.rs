@@ -18,8 +18,8 @@ mint a new one — it is the wrong machine account. Either Glenn publishes from 
 account, or he moves the token into the mas keychain with the prompting form
 (`security add-generic-password -U -a rowan -s crates-io-token -w`, no value after -w).
 
-STATE as verified 2026-08-15: Cargo.toml is at 1.6.0, `cargo package` packages and compiles
-clean, and the crate has still never been published — v1.0.0 through v1.6.0 are git tags and
+STATE as verified 2026-08-15 (post infallible-writes-v2): Cargo.toml is at 2.0.0, `cargo
+package` packages and compiles clean, and the crate has still never been published — v1.0.0 through v1.6.0 are git tags and
 GitHub releases only, nothing on crates.io. The repo itself is already public. This is a
 publish-NEW, so a token needs the `publish-new` scope — the other two Rust ports are
 publish-UPDATE.
@@ -49,20 +49,28 @@ zero unsafe, BSD-3.
    float is the literal `3.1415926` (bit pattern 0x40490FDA) — NOT `f32::consts::PI`, which
    differs in the last bit.
 2. **Malicious packet data never panics.** Every ReadStream operation is bounds checked and
-   range validated and fails with an `Error`. Panics are reserved for API misuse only (bits
-   out of [1,32]/[1,64], min > max, write buffer not a multiple of 8 bytes, writing past the
-   end of a buffer). A degenerate range (min == max) is NOT misuse: the format defines it as
+   range validated and fails with an `Error`. Hard panics are reserved for read-side API
+   misuse (bits out of [1,32]/[1,64], min > max) plus the two structural write cases (write
+   buffer not a multiple of 8 bytes, writing past the end of a buffer — the slice bounds
+   check). As of 2.0 all other write/measure-side misuse is `debug_assert!` only, compiled
+   out in release (writer-trusted: the #52 ruling). A degenerate range (min == max) is NOT
+   misuse: the format defines it as
    zero bits, `serialize_int`/`int64`/`int128` accept it, and `tests/degenerate.rs` pins that
    — and since #36 `serialize_fixed` accepts it too, on every storage width (the ruling pins
    `min == max` at zero bits; the raw value is `min_units << fraction_bits`).
    `serialize_compressed_float` still requires a strictly increasing range — its quantization
    divides by the range. `tests/differential.rs::test_hostile_read` enforces the no-panic
    property — keep it passing.
-3. **Error control flow.** Serialize methods return `Result` and callers propagate with `?`,
-   so the first failure aborts the whole serialize function. This is the safety property that
+3. **Error control flow, read side; infallibility, write side.** Serialize methods return
+   `Result<(), Self::Error>` where `Stream::Error` is `Error` on ReadStream and `Infallible`
+   on WriteStream/MeasureStream (2.0, the #52 ruling). On read, callers propagate with `?`
+   so the first failure aborts the whole serialize function — the safety property that
    replaces the C++ early-return macros and the Go port's sticky errors: a serialized value
    that controls a loop is always validated before use. Do not add APIs that return
-   unvalidated values.
+   unvalidated values. On write and measure the error type is uninhabited: no write can
+   fail, and no fallibility may be added back to the write path (the canonical generic
+   signature is `-> Result<(), S::Error>`; read-side validation in custom serialize
+   functions goes through `Stream::fail` under an `IS_READING` guard).
 4. **Write buffers are multiples of 8 bytes** (the writer stores qwords; enforced by a panic).
    The reader takes (buffer, bytes) and uses branchless 64 bit window loads when the buffer
    extends ≥ 8 bytes past the packet data, with a guarded-copy fallback when it doesn't. No
@@ -74,10 +82,12 @@ zero unsafe, BSD-3.
   `bits_required128`, zigzag (all const fn)
 - `src/bitpacker.rs` — `BitWriter` (64 bit scratch, LE qword stores), `BitReader` (branchless
   windows, `read_byte_slice` returns borrowed subslices for zero-copy strings)
-- `src/stream.rs` — `Stream` trait: required primitives per stream (bits/bytes/align/strings)
-  plus default methods for everything derivable (int/int64/int128/bits64/bool/u8-u64/u128/
+- `src/stream.rs` — `Stream` trait: `type Error` (Error on read, Infallible on write/measure)
+  and `fail()`, required primitives per stream (bits/bytes/align/strings) plus default
+  methods for everything derivable (int/int64/int128/bits64/bool/u8-u64/u128/
   f32/f64/compressed float/fixed point/int relative). `IS_WRITING`/`IS_READING` are associated
-  consts, so the branches monomorphize away. `FixedPointStorage` is the storage trait behind
+  consts, so the branches monomorphize away, and `misuse_check!` keeps argument misuse a hard
+  assert on read but debug-only on the writer-trusted paths. `FixedPointStorage` is the storage trait behind
   `serialize_fixed` (i8..i128 and their unsigned twins). `Serialize` trait for objects.
 - `src/write_stream.rs` / `src/read_stream.rs` / `src/measure_stream.rs` — the three streams.
   Context is `Option<&'a dyn Any>` (the C++ void* context; copy out of it before serializing).
@@ -170,7 +180,8 @@ Rejected, with reasons — do not propose again:
 ## Releases
 
 v1.0.0 released 2026-07-12 (opened at 1.0.0 deliberately — the wire format is a decade old
-and frozen, like the Go port); latest is v1.6.0, released 2026-08-15. Release process: bump
+and frozen, like the Go port); latest released tag is v1.6.0 (2026-08-15); main carries
+2.0.0, the infallible write path (semver major, CHANGELOG.md has the migration notes). Release process: bump
 `version` in Cargo.toml, refresh both lockfiles (`cargo update -p serialize` at the root and
 in fuzz/ — both are committed, and a stale one is the step that gets skipped), verify
 `cargo package`, push, wait for CI fully green, then `git tag -a vX.Y.Z` + `gh release create`

@@ -1,18 +1,21 @@
 //! [`MeasureStream`]: the [`Stream`] that counts bits instead of writing them.
 
 use core::any::Any;
+use core::convert::Infallible;
 
-use crate::Result;
 use crate::stream::Stream;
 use crate::write_stream::string_length;
+use crate::{Error, Result};
 
 /// Stream for estimating how many bits it would take to serialize something.
 ///
 /// Acts like a write stream (`IS_WRITING` is true, `IS_READING` is false), but instead of
-/// writing data it counts how many bits would be written. When the serialization includes
-/// alignment to byte boundaries the measurement is an estimate, not exact: every align counts
-/// as the worst case 7 bits, so the estimate is guaranteed to be conservative — a buffer sized
-/// from a measurement always fits the real write.
+/// writing data it counts how many bits would be written. It shares the write path's trust
+/// model: the error type is [`Infallible`], so no serialize method on this stream can fail,
+/// and misuse is a debug assertion. When the serialization includes alignment to byte
+/// boundaries the measurement is an estimate, not exact: every align counts as the worst
+/// case 7 bits, so the estimate is guaranteed to be conservative — a buffer sized from a
+/// measurement always fits the real write.
 #[derive(Default, Clone)]
 pub struct MeasureStream<'a> {
     bits_written: u64,
@@ -51,9 +54,20 @@ impl Stream for MeasureStream<'_> {
     const IS_WRITING: bool = true;
     const IS_READING: bool = false;
 
+    /// Measures cannot fail: the error type is uninhabited, exactly as on
+    /// [`crate::WriteStream`] — the measure path shares the write path's trust model.
+    type Error = Infallible;
+
     #[inline]
-    fn serialize_bits(&mut self, _value: &mut u32, bits: u32) -> Result {
-        assert!(
+    fn fail(error: Error) -> Result<(), Infallible> {
+        unreachable!(
+            "a measure stream cannot fail: fail({error:?}) must only be reachable under an IS_READING guard"
+        )
+    }
+
+    #[inline]
+    fn serialize_bits(&mut self, _value: &mut u32, bits: u32) -> Result<(), Infallible> {
+        debug_assert!(
             bits.wrapping_sub(1) < 32,
             "bits must be in [1,32] (got {bits})"
         );
@@ -62,21 +76,25 @@ impl Stream for MeasureStream<'_> {
     }
 
     #[inline]
-    fn serialize_bytes(&mut self, data: &mut [u8]) -> Result {
+    fn serialize_bytes(&mut self, data: &mut [u8]) -> Result<(), Infallible> {
         self.serialize_align()?;
         self.bits_written += data.len() as u64 * 8;
         Ok(())
     }
 
     #[inline]
-    fn serialize_align(&mut self) -> Result {
+    fn serialize_align(&mut self) -> Result<(), Infallible> {
         self.bits_written += u64::from(self.align_bits());
         Ok(())
     }
 
     #[inline]
-    fn serialize_string(&mut self, value: &mut String, buffer_size: usize) -> Result {
-        let mut length = string_length(value.len(), buffer_size)?;
+    fn serialize_string(
+        &mut self,
+        value: &mut String,
+        buffer_size: usize,
+    ) -> Result<(), Infallible> {
+        let mut length = string_length(value.len(), buffer_size);
         self.serialize_int(&mut length, 0, buffer_size as i32 - 1)?;
         self.serialize_align()?;
         self.bits_written += value.len() as u64 * 8;
@@ -84,9 +102,13 @@ impl Stream for MeasureStream<'_> {
     }
 
     #[inline]
-    fn serialize_wide_string(&mut self, value: &mut String, buffer_size: usize) -> Result {
+    fn serialize_wide_string(
+        &mut self,
+        value: &mut String,
+        buffer_size: usize,
+    ) -> Result<(), Infallible> {
         let count = value.chars().count();
-        let mut length = string_length(count, buffer_size)?;
+        let mut length = string_length(count, buffer_size);
         self.serialize_int(&mut length, 0, buffer_size as i32 - 1)?;
         self.bits_written += count as u64 * 32;
         Ok(())

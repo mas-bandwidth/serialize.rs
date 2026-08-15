@@ -98,7 +98,10 @@ fn golden_wire_init() -> GoldenWireData {
     }
 }
 
-fn golden_wire_serialize<S: Stream>(stream: &mut S, data: &mut GoldenWireData) -> Result {
+fn golden_wire_serialize<S: Stream>(
+    stream: &mut S,
+    data: &mut GoldenWireData,
+) -> Result<(), S::Error> {
     let relative_base = 100;
     stream.serialize_bits(&mut data.bits4, 4)?;
     stream.serialize_bits(&mut data.bits11, 11)?;
@@ -166,7 +169,10 @@ fn extended_interop_init() -> ExtendedInteropData {
     }
 }
 
-fn extended_interop_serialize<S: Stream>(stream: &mut S, data: &mut ExtendedInteropData) -> Result {
+fn extended_interop_serialize<S: Stream>(
+    stream: &mut S,
+    data: &mut ExtendedInteropData,
+) -> Result<(), S::Error> {
     // the extended section starts byte aligned: the golden prefix stays pinned
     stream.serialize_align()?;
     stream.serialize_bits(&mut data.marker, 11)?;
@@ -216,23 +222,22 @@ const GOLDEN_WIRE_BYTES: [u8; 112] = [
     0x2B, 0x1A, 0x09, 0x04,
 ];
 
-fn encode() -> std::result::Result<Vec<u8>, String> {
+fn encode() -> Vec<u8> {
     let mut buffer = vec![0u8; 256];
     let mut stream = WriteStream::new(&mut buffer);
     let mut data = golden_wire_init();
-    golden_wire_serialize(&mut stream, &mut data)
-        .map_err(|e| format!("golden serialize (write) failed: {e}"))?;
+    // writes are infallible as of 2.0: Ok is the only pattern
+    let Ok(()) = golden_wire_serialize(&mut stream, &mut data);
     let mut extended = extended_interop_init();
-    extended_interop_serialize(&mut stream, &mut extended)
-        .map_err(|e| format!("extended serialize (write) failed: {e}"))?;
+    let Ok(()) = extended_interop_serialize(&mut stream, &mut extended);
     stream.flush();
     let bytes = stream.bytes_processed() as usize;
     buffer.truncate(bytes);
-    Ok(buffer)
+    buffer
 }
 
 fn write_file(path: &str) -> std::result::Result<(), String> {
-    let bytes = encode()?;
+    let bytes = encode();
     if bytes.len() <= GOLDEN_WIRE_BYTES.len()
         || bytes[..GOLDEN_WIRE_BYTES.len()] != GOLDEN_WIRE_BYTES
     {
@@ -278,10 +283,8 @@ fn read_file(path: &str) -> std::result::Result<(), String> {
     let mut round_extended = extended.clone();
     let mut out = vec![0u8; 256];
     let mut out_stream = WriteStream::new(&mut out);
-    golden_wire_serialize(&mut out_stream, &mut round)
-        .map_err(|e| format!("golden serialize (re-encode) failed: {e}"))?;
-    extended_interop_serialize(&mut out_stream, &mut round_extended)
-        .map_err(|e| format!("extended serialize (re-encode) failed: {e}"))?;
+    let Ok(()) = golden_wire_serialize(&mut out_stream, &mut round);
+    let Ok(()) = extended_interop_serialize(&mut out_stream, &mut round_extended);
     out_stream.flush();
     let out_bytes = out_stream.bytes_processed() as usize;
     if out[..out_bytes] != input {

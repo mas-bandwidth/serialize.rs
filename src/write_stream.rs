@@ -1,18 +1,20 @@
 //! [`WriteStream`]: the [`Stream`] that writes bitpacked data to a buffer.
 
 use core::any::Any;
+use core::convert::Infallible;
 
 use crate::bitpacker::BitWriter;
 use crate::stream::Stream;
-use crate::{Error, Result, cold_error};
+use crate::{Error, Result};
 
 /// Stream for writing bitpacked data.
 ///
 /// A wrapper around [`BitWriter`] implementing the unified [`Stream`] interface. The write
-/// path is trusted: values are checked with debug assertions, and in release correctness is
-/// the caller's responsibility — size buffers conservatively or pre-measure with
-/// [`crate::MeasureStream`]. Writing past the end of the buffer panics via the slice bounds
-/// check rather than being undefined behavior as in C++.
+/// path is trusted and infallible: the error type is [`Infallible`], so no serialize method
+/// on this stream can fail, values are checked with debug assertions, and in release
+/// correctness is the caller's responsibility — size buffers conservatively or pre-measure
+/// with [`crate::MeasureStream`]. Writing past the end of the buffer panics via the slice
+/// bounds check rather than being undefined behavior as in C++.
 pub struct WriteStream<'a> {
     writer: BitWriter<'a>,
     context: Option<&'a dyn Any>,
@@ -73,18 +75,12 @@ impl<'a> WriteStream<'a> {
     /// in — which forces a write-side caller holding only shared data (say, a fixed array
     /// behind `&T`) to copy it somewhere mutable first, paying the whole array even when
     /// only a short prefix goes to the wire. The write side never mutates the data, so this
-    /// method takes `&[u8]` and skips that copy.
-    ///
-    /// # Errors
-    ///
-    /// None today — the write path is trusted and does not error (writing past the end of
-    /// the buffer panics, as with every write). Returns [`Result`] so call sites compose
-    /// with `?` exactly like [`Stream::serialize_bytes`].
+    /// method takes `&[u8]` and skips that copy. Like every write, it cannot fail and
+    /// returns nothing.
     #[inline]
-    pub fn write_bytes(&mut self, data: &[u8]) -> Result {
+    pub fn write_bytes(&mut self, data: &[u8]) {
         self.writer.write_align();
         self.writer.write_bytes(data);
-        Ok(())
     }
 }
 
@@ -92,28 +88,44 @@ impl Stream for WriteStream<'_> {
     const IS_WRITING: bool = true;
     const IS_READING: bool = false;
 
+    /// Writes cannot fail: the error type is uninhabited, so `Ok(())` is the only value of
+    /// the result type and every error branch in a serialize function monomorphized for this
+    /// stream is compiled out.
+    type Error = Infallible;
+
+    #[inline]
+    fn fail(error: Error) -> Result<(), Infallible> {
+        unreachable!(
+            "a write stream cannot fail: fail({error:?}) must only be reachable under an IS_READING guard"
+        )
+    }
+
     #[inline(always)]
-    fn serialize_bits(&mut self, value: &mut u32, bits: u32) -> Result {
+    fn serialize_bits(&mut self, value: &mut u32, bits: u32) -> Result<(), Infallible> {
         self.writer.write_bits(*value, bits);
         Ok(())
     }
 
     #[inline]
-    fn serialize_bytes(&mut self, data: &mut [u8]) -> Result {
+    fn serialize_bytes(&mut self, data: &mut [u8]) -> Result<(), Infallible> {
         self.serialize_align()?;
         self.writer.write_bytes(data);
         Ok(())
     }
 
     #[inline]
-    fn serialize_align(&mut self) -> Result {
+    fn serialize_align(&mut self) -> Result<(), Infallible> {
         self.writer.write_align();
         Ok(())
     }
 
     #[inline]
-    fn serialize_string(&mut self, value: &mut String, buffer_size: usize) -> Result {
-        let mut length = string_length(value.len(), buffer_size)?;
+    fn serialize_string(
+        &mut self,
+        value: &mut String,
+        buffer_size: usize,
+    ) -> Result<(), Infallible> {
+        let mut length = string_length(value.len(), buffer_size);
         self.serialize_int(&mut length, 0, buffer_size as i32 - 1)?;
         self.serialize_align()?;
         self.writer.write_bytes(value.as_bytes());
@@ -121,8 +133,12 @@ impl Stream for WriteStream<'_> {
     }
 
     #[inline]
-    fn serialize_wide_string(&mut self, value: &mut String, buffer_size: usize) -> Result {
-        let mut length = string_length(value.chars().count(), buffer_size)?;
+    fn serialize_wide_string(
+        &mut self,
+        value: &mut String,
+        buffer_size: usize,
+    ) -> Result<(), Infallible> {
+        let mut length = string_length(value.chars().count(), buffer_size);
         self.serialize_int(&mut length, 0, buffer_size as i32 - 1)?;
         for c in value.chars() {
             let mut char_value = c as u32;
@@ -153,15 +169,18 @@ impl Stream for WriteStream<'_> {
 }
 
 /// Shared write/measure-side handling of string lengths: the length must fit the wire range
-/// `[0,buffer_size-1]`. A too-long string is API misuse on the trusted write path, but it is
-/// cheap to catch exactly, so it fails with an error rather than corrupting the stream.
-pub(crate) fn string_length(length: usize, buffer_size: usize) -> Result<i32> {
-    assert!(
+/// `[0,buffer_size-1]`. Both violations are write-contract violations on trusted paths —
+/// debug assertions, compiled out in release, where the wrapped length encodes a malformed
+/// stream that checked readers reject (never memory unsafety).
+pub(crate) fn string_length(length: usize, buffer_size: usize) -> i32 {
+    debug_assert!(
         buffer_size >= 2 && i32::try_from(buffer_size).is_ok(),
         "string buffer_size must be in [2,i32::MAX] (got {buffer_size})"
     );
-    if length >= buffer_size {
-        return cold_error(Error::ValueOutOfRange);
-    }
-    Ok(length as i32)
+    debug_assert!(
+        length < buffer_size,
+        "string of {length} bytes/code points does not fit buffer_size {buffer_size} (max {})",
+        buffer_size.saturating_sub(1)
+    );
+    length as i32
 }

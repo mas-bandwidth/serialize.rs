@@ -170,7 +170,10 @@ fn random_value(rng: &mut Rng) -> Value {
     }
 }
 
-fn serialize_value<S: Stream>(stream: &mut S, value: &mut Value) -> serialize::Result {
+fn serialize_value<S: Stream>(
+    stream: &mut S,
+    value: &mut Value,
+) -> serialize::Result<(), S::Error> {
     match value {
         Value::Bits { value, bits } => stream.serialize_bits(value, *bits),
         Value::Bits64 { value, bits } => stream.serialize_bits64(value, *bits),
