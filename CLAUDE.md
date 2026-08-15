@@ -18,8 +18,8 @@ mint a new one — it is the wrong machine account. Either Glenn publishes from 
 account, or he moves the token into the mas keychain with the prompting form
 (`security add-generic-password -U -a rowan -s crates-io-token -w`, no value after -w).
 
-STATE as verified 2026-08-15: Cargo.toml is at 1.5.1, `cargo package` packages and compiles
-clean, and the crate has still never been published — v1.0.0 through v1.5.1 are git tags and
+STATE as verified 2026-08-15: Cargo.toml is at 1.6.0, `cargo package` packages and compiles
+clean, and the crate has still never been published — v1.0.0 through v1.6.0 are git tags and
 GitHub releases only, nothing on crates.io. The repo itself is already public. This is a
 publish-NEW, so a token needs the `publish-new` scope — the other two Rust ports are
 publish-UPDATE.
@@ -52,10 +52,12 @@ zero unsafe, BSD-3.
    range validated and fails with an `Error`. Panics are reserved for API misuse only (bits
    out of [1,32]/[1,64], min > max, write buffer not a multiple of 8 bytes, writing past the
    end of a buffer). A degenerate range (min == max) is NOT misuse: the format defines it as
-   zero bits, `serialize_int`/`int64`/`int128` accept it, and `tests/degenerate.rs` pins that.
-   `serialize_compressed_float` and `serialize_fixed` still require a strictly increasing
-   range. `tests/differential.rs::test_hostile_read` enforces the no-panic property — keep it
-   passing.
+   zero bits, `serialize_int`/`int64`/`int128` accept it, and `tests/degenerate.rs` pins that
+   — and since #36 `serialize_fixed` accepts it too, on every storage width (the ruling pins
+   `min == max` at zero bits; the raw value is `min_units << fraction_bits`).
+   `serialize_compressed_float` still requires a strictly increasing range — its quantization
+   divides by the range. `tests/differential.rs::test_hostile_read` enforces the no-panic
+   property — keep it passing.
 3. **Error control flow.** Serialize methods return `Result` and callers propagate with `?`,
    so the first failure aborts the whole serialize function. This is the safety property that
    replaces the C++ early-return macros and the Go port's sticky errors: a serialized value
@@ -168,7 +170,7 @@ Rejected, with reasons — do not propose again:
 ## Releases
 
 v1.0.0 released 2026-07-12 (opened at 1.0.0 deliberately — the wire format is a decade old
-and frozen, like the Go port); latest is v1.5.1, released 2026-08-15. Release process: bump
+and frozen, like the Go port); latest is v1.6.0, released 2026-08-15. Release process: bump
 `version` in Cargo.toml, refresh both lockfiles (`cargo update -p serialize` at the root and
 in fuzz/ — both are committed, and a stale one is the step that gets skipped), verify
 `cargo package`, push, wait for CI fully green, then `git tag -a vX.Y.Z` + `gh release create`
