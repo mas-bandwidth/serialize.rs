@@ -102,7 +102,7 @@ fn inverted_range_still_panics() {
 /// 2026-08-15) pins `min == max` legal at zero bits on every storage width;
 /// the raw value is `min_units << fraction_bits`, recovered from the range
 /// alone. Q112.16 and Q64.64 are the shapes where a port computing the wide
-/// bit count as unit-range-bits + fraction_bits would emit fraction_bits of
+/// bit count as unit-range-bits + `fraction_bits` would emit `fraction_bits` of
 /// zeros instead -- the 64/128 self-disagreement the Go and C# halves fixed.
 #[test]
 fn degenerate_fixed_costs_nothing_on_every_width() {
