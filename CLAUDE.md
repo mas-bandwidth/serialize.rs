@@ -198,6 +198,11 @@ automatically on publish.
 
 - Endianness is handled entirely by `to_le_bytes`/`from_le_bytes`; there is no byte-swap
   code and no platform detection. The s390x CI job is the proof.
-- `serialize_string` validates UTF-8 on read (C++ strings are raw bytes — only valid UTF-8
-  interoperates). `serialize_wide_string` is the C++ `wchar_t` format: 32 bits per code
-  point, validated through `char::from_u32` on read.
+- `serialize_string` refuses invalid UTF-8 and interior NULs on read (STANDARD.md's refusal
+  rules, adopted 2026-08-15). `serialize_wide_string` is the family `wchar_t` format: each
+  32 bit group is one UTF-16 CODE UNIT — astral chars travel as surrogate pairs, split on
+  write (`encode_utf16`) and recombined on read — and the reader refuses groups above
+  0xFFFF, interior NUL groups, and unpaired/misordered surrogates in every build mode. The
+  family conformance pin ("a" + U+1F600, 8-unit buffer, 13 bytes) is
+  `test_wstring_utf16_code_units`, byte-identical across serialize, serialize.c and
+  serialize.cs.

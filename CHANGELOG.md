@@ -1,5 +1,32 @@
 # Changelog
 
+## Unreleased
+
+**Wire bytes move for astral text: `serialize_wide_string` now transmits UTF-16 CODE
+UNITS, not code points** — the same intentional family break that shipped in serialize
+v1.9.0, serialize.c v1.3.0 and serialize.cs v1.3.0 (STANDARD.md "wstring", adopted
+2026-08-15). An astral char is a surrogate pair on the wire: split on write
+(`char::encode_utf16`), recombined on read. The length field and `buffer_size` count
+units. BMP-only text is byte-identical in both models — only strings carrying characters
+above U+FFFF change bytes. The family conformance pin ("a" + U+1F600 in an 8-unit buffer,
+13 bytes) is `test_wstring_utf16_code_units`, byte-identical across serialize,
+serialize.c and serialize.cs; interop certifies at the family's v1.7.0 interop pins.
+
+**Readers refuse malformed string payloads in every build mode** (the serialize #8
+ruling, STANDARD.md refusal rules, adopted 2026-08-15):
+
+- `serialize_wide_string` on read refuses a group above 0xFFFF (not a UTF-16 code unit —
+  including 0x10000..=0x10FFFF, the old model's astral groups), an interior NUL group,
+  an unpaired or misordered surrogate, and a dangling high surrogate as the final group.
+  Well-formed pairs pass. (A Rust `String` cannot hold a lone surrogate, so refusal is
+  the only faithful behavior.)
+- `serialize_string` on read refuses an interior NUL byte — well-formed UTF-8, but it
+  gives the payload two lengths (wire length versus the `strlen` a consumer computes),
+  the smuggling primitive the ruling closes. Invalid UTF-8 was already refused.
+
+All refusals surface as `Error::InvalidString`. Writers are trusted, unchanged (the 2.0
+contract): a unit count that does not fit `buffer_size - 1` is a debug assertion.
+
 ## 2.0.0 — 2026-08-15
 
 **Semver major: the write path is now infallible.** Ruled in serialize issue #52 (the

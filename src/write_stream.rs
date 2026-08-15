@@ -138,11 +138,16 @@ impl Stream for WriteStream<'_> {
         value: &mut String,
         buffer_size: usize,
     ) -> Result<(), Infallible> {
-        let mut length = string_length(value.chars().count(), buffer_size);
+        // each 32 bit group carries one UTF-16 CODE UNIT (STANDARD.md "wstring", adopted
+        // 2026-08-15): the length counts units, and an astral char rides as its surrogate
+        // pair — encode_utf16 performs the split, so the bytes match what a 2 byte wchar_t
+        // platform produces. A Rust String cannot hold unpaired surrogates, so the
+        // well-formed-UTF-16 writer contract holds by construction.
+        let mut length = string_length(value.encode_utf16().count(), buffer_size);
         self.serialize_int(&mut length, 0, buffer_size as i32 - 1)?;
-        for c in value.chars() {
-            let mut char_value = c as u32;
-            self.serialize_bits(&mut char_value, 32)?;
+        for unit in value.encode_utf16() {
+            let mut group = u32::from(unit);
+            self.serialize_bits(&mut group, 32)?;
         }
         Ok(())
     }
@@ -179,7 +184,7 @@ pub(crate) fn string_length(length: usize, buffer_size: usize) -> i32 {
     );
     debug_assert!(
         length < buffer_size,
-        "string of {length} bytes/code points does not fit buffer_size {buffer_size} (max {})",
+        "string of {length} bytes/UTF-16 code units does not fit buffer_size {buffer_size} (max {})",
         buffer_size.saturating_sub(1)
     );
     length as i32

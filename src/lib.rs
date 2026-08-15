@@ -108,7 +108,10 @@ pub enum Error {
     ValueOutOfRange,
     /// The zero padding of an alignment contained nonzero bits.
     Align,
-    /// String bytes were not valid UTF-8, or a wide string code point was not a valid char.
+    /// A malformed string payload, refused per STANDARD.md's read refusal rules (adopted
+    /// 2026-08-15): string bytes that are not valid UTF-8 or contain an interior NUL, or a
+    /// wide string whose 32 bit groups are not well-formed UTF-16 code units — a group
+    /// above 0xFFFF, an interior NUL group, or an unpaired/misordered surrogate.
     InvalidString,
 }
 

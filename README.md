@@ -141,9 +141,11 @@ non-conforming and debug-assert on write, as does a compressed float declaration
   and propagate with `?`. No macros needed. On the write and measure paths the error type is
   uninhabited (`Infallible`), which is Rust for the C++ writer's contract: it cannot fail,
   and the compiler knows it.
-- `serialize_string` operates on `String` and validates UTF-8 on read (C++ strings are raw
-  bytes, so only valid UTF-8 interoperates). `serialize_wide_string` matches the `wchar_t`
-  wire format (32 bits per code point) and validates code points on read.
+- `serialize_string` operates on `String` and refuses invalid UTF-8 and interior NULs on
+  read (STANDARD.md's refusal rules). `serialize_wide_string` matches the `wchar_t` wire
+  format — each 32 bit group is one UTF-16 code unit, so astral chars travel as surrogate
+  pairs (split on write, recombined on read) — and refuses malformed UTF-16 on read: groups
+  above 0xFFFF, interior NUL groups, and unpaired or misordered surrogates.
 - The stream context is `&dyn Any` instead of `void*`. There is no allocator pointer — Rust
   serialize functions can carry whatever state they need.
 - 128 bit values use Rust's native `i128`/`u128` on every platform; there is no equivalent
