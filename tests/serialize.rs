@@ -250,7 +250,7 @@ impl TestObject {
 }
 
 impl Serialize for TestObject {
-    fn serialize<S: Stream>(&mut self, stream: &mut S) -> Result {
+    fn serialize<S: Stream>(&mut self, stream: &mut S) -> Result<(), S::Error> {
         let context = *stream
             .context()
             .unwrap()
@@ -707,7 +707,7 @@ fn test_write_bytes_wire_identical() {
         let mut write_stream = WriteStream::new(&mut via_write);
         let mut bits = 5u32;
         write_stream.serialize_bits(&mut bits, 3).unwrap();
-        write_stream.write_bytes(&payload).unwrap(); // no mutable copy of the source
+        write_stream.write_bytes(&payload); // no mutable copy of the source, no Result: writes cannot fail
         write_stream.flush();
         write_stream.bytes_processed() as usize
     };
@@ -871,27 +871,105 @@ fn test_compressed_float_validation() {
             .unwrap();
         assert!((value - written).abs() <= 4096.0);
     }
+}
 
-    // a NaN value must not reach the u32 conversion (it clamps to the low end of the range)
+// The write path is trusted as of 2.0: a deliberately-invalid write is a debug assertion
+// (compiled out in release), never an `Err`. These tests pin that the asserts really fire in
+// a debug build; `test_compressed_float_nan_clamps_in_release` below pins the release
+// backstop for the same misuse.
+
+#[test]
+#[cfg(debug_assertions)]
+#[should_panic(expected = "*value <= max")]
+fn test_write_out_of_range_int_asserts_in_debug() {
+    // 200 does not fit [0,100]: a write-contract violation, caught loudly in debug
+    let mut buffer = [0u8; 8];
+    let mut write_stream = WriteStream::new(&mut buffer);
+    let mut out_of_range = 200i32;
+    let Ok(()) = write_stream.serialize_int(&mut out_of_range, 0, 100);
+}
+
+#[test]
+#[cfg(debug_assertions)]
+#[should_panic(expected = "does not fit buffer_size")]
+fn test_write_too_long_string_asserts_in_debug() {
+    // 1.x returned Err(ValueOutOfRange) here — the one write-side error the library had.
+    // As of 2.0 the write path cannot fail: the same misuse is a debug assertion.
+    let mut buffer = [0u8; 64];
+    let mut write_stream = WriteStream::new(&mut buffer);
+    let Ok(()) = write_stream.serialize_string(&mut "this string is too long".to_string(), 8);
+}
+
+// The fork #6 ruling (Glenn, 2026-08-15): "it's non-conforming. also, attempting to send NaN
+// or INF or anything else through compressed float is non-conforming and should assert out
+// on write too." Value validity is asserted at intake, declaration validity at the param
+// computation site; all compile out in release.
+
+#[test]
+#[cfg(debug_assertions)]
+#[should_panic(expected = "written value must be finite")]
+fn test_compressed_float_nan_write_asserts_in_debug() {
+    let mut buffer = [0u8; 8];
+    let mut write_stream = WriteStream::new(&mut buffer);
+    let mut value = f32::from_bits(0x7fc00000); // quiet NaN bit pattern
+    let Ok(()) = write_stream.serialize_compressed_float(&mut value, 0.0, 10.0, 0.01);
+}
+
+#[test]
+#[cfg(debug_assertions)]
+#[should_panic(expected = "written value must be finite")]
+fn test_compressed_float_infinity_write_asserts_in_debug() {
+    let mut buffer = [0u8; 8];
+    let mut write_stream = WriteStream::new(&mut buffer);
+    let mut value = f32::INFINITY;
+    let Ok(()) = write_stream.serialize_compressed_float(&mut value, 0.0, 10.0, 0.01);
+}
+
+#[test]
+#[cfg(debug_assertions)]
+#[should_panic(expected = "max - min must be finite")]
+fn test_compressed_float_non_finite_declaration_asserts_in_debug() {
+    // the declaration itself is non-conforming: max - min overflows to infinity
+    let mut buffer = [0u8; 8];
+    let mut write_stream = WriteStream::new(&mut buffer);
+    let mut value = 0.0f32;
+    let Ok(()) = write_stream.serialize_compressed_float(&mut value, -f32::MAX, f32::MAX, 0.01);
+}
+
+#[test]
+#[cfg(debug_assertions)]
+#[should_panic(expected = "/ resolution must be finite")]
+fn test_compressed_float_non_finite_quantum_count_asserts_in_debug() {
+    // finite delta, but the quantum count delta / resolution overflows to infinity
+    let mut buffer = [0u8; 8];
+    let mut write_stream = WriteStream::new(&mut buffer);
+    let mut value = 0.0f32;
+    let Ok(()) = write_stream.serialize_compressed_float(&mut value, 0.0, f32::MAX, 1.0e-38);
+}
+
+// the release backstop for non-conforming values: with the debug asserts compiled out, a NaN
+// value must not reach the u32 conversion — it clamps to the low end of the range and the
+// stream stays well formed. (in a debug build the same write asserts; see above.)
+#[test]
+#[cfg(not(debug_assertions))]
+fn test_compressed_float_nan_clamps_in_release() {
+    let mut buffer = [0u8; 8 + 8];
+
     {
-        let mut buffer = [0u8; 8 + 8];
-
-        {
-            let mut write_stream = WriteStream::new(&mut buffer[..8]);
-            let mut value = f32::from_bits(0x7fc00000); // quiet NaN bit pattern
-            write_stream
-                .serialize_compressed_float(&mut value, 0.0, 10.0, 0.01)
-                .unwrap();
-            write_stream.flush();
-        }
-
-        let mut read_stream = ReadStream::new(&buffer, 8);
-        let mut value = -1.0f32;
-        read_stream
+        let mut write_stream = WriteStream::new(&mut buffer[..8]);
+        let mut value = f32::from_bits(0x7fc00000); // quiet NaN bit pattern
+        write_stream
             .serialize_compressed_float(&mut value, 0.0, 10.0, 0.01)
             .unwrap();
-        assert!((0.0..=10.0).contains(&value));
+        write_stream.flush();
     }
+
+    let mut read_stream = ReadStream::new(&buffer, 8);
+    let mut value = -1.0f32;
+    read_stream
+        .serialize_compressed_float(&mut value, 0.0, 10.0, 0.01)
+        .unwrap();
+    assert!((0.0..=10.0).contains(&value));
 }
 
 // The fixed point case helpers, ported from the C++ suite's check_fixed_* templates. The case
@@ -1113,12 +1191,23 @@ fn test_serialize_fixed() {
 }
 
 // the C++ library refuses these configurations at compile time with static_asserts; the Q
-// format and bounds are runtime arguments here, so the refusals are panics (API misuse,
-// exactly like bits out of range or min >= max)
+// format and bounds are runtime arguments here, so the refusals are validated (API misuse,
+// exactly like bits out of range or min >= max): a hard panic on the read path in every
+// build, and a debug assertion on the writer-trusted paths as of 2.0
 
 #[test]
 #[should_panic(expected = "must equal the storage width")]
 fn test_serialize_fixed_q_format_must_fill_storage() {
+    let buffer = [0u8; 8];
+    let mut stream = ReadStream::new(&buffer, 8);
+    let mut value = 0i32;
+    let _ = stream.serialize_fixed(&mut value, 16, 8, 0, 100); // 16 + 8 != 32
+}
+
+#[test]
+#[cfg(debug_assertions)]
+#[should_panic(expected = "must equal the storage width")]
+fn test_serialize_fixed_q_format_must_fill_storage_write_debug() {
     let mut buffer = [0u8; 8];
     let mut stream = WriteStream::new(&mut buffer);
     let mut value = 0i32;
@@ -1128,10 +1217,20 @@ fn test_serialize_fixed_q_format_must_fill_storage() {
 #[test]
 #[should_panic(expected = "do not fit the Q format")]
 fn test_serialize_fixed_bounds_must_fit_q_format() {
+    let buffer = [0u8; 8];
+    let mut stream = ReadStream::new(&buffer, 8);
+    let mut value = 0i32;
+    // bounds exceed the Q16.16 whole unit capacity [-32768,32767]
+    let _ = stream.serialize_fixed(&mut value, 16, 16, -40000, 40000);
+}
+
+#[test]
+#[cfg(debug_assertions)]
+#[should_panic(expected = "do not fit the Q format")]
+fn test_serialize_fixed_bounds_must_fit_q_format_write_debug() {
     let mut buffer = [0u8; 8];
     let mut stream = WriteStream::new(&mut buffer);
     let mut value = 0i32;
-    // bounds exceed the Q16.16 whole unit capacity [-32768,32767]
     let _ = stream.serialize_fixed(&mut value, 16, 16, -40000, 40000);
 }
 
@@ -1140,6 +1239,16 @@ fn test_serialize_fixed_bounds_must_fit_q_format() {
 fn test_serialize_fixed_min_must_not_exceed_max() {
     // an INVERTED range is API misuse. a degenerate range (min == max) is NOT:
     // it is legal and costs zero bits -- see tests/degenerate.rs
+    let buffer = [0u8; 8];
+    let mut stream = ReadStream::new(&buffer, 8);
+    let mut value = 0i32;
+    let _ = stream.serialize_fixed(&mut value, 16, 16, 200, 100);
+}
+
+#[test]
+#[cfg(debug_assertions)]
+#[should_panic(expected = "must not be greater than max_units")]
+fn test_serialize_fixed_min_must_not_exceed_max_write_debug() {
     let mut buffer = [0u8; 8];
     let mut stream = WriteStream::new(&mut buffer);
     let mut value = 0i32;
@@ -1789,7 +1898,10 @@ fn golden_wire_init() -> GoldenWireData {
     }
 }
 
-fn golden_wire_serialize<S: Stream>(stream: &mut S, data: &mut GoldenWireData) -> Result {
+fn golden_wire_serialize<S: Stream>(
+    stream: &mut S,
+    data: &mut GoldenWireData,
+) -> Result<(), S::Error> {
     let relative_base = 100;
     stream.serialize_bits(&mut data.bits4, 4)?;
     stream.serialize_bits(&mut data.bits11, 11)?;

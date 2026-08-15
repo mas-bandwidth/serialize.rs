@@ -11,7 +11,10 @@
 //!
 //! Write one serialize function against the [`Stream`] trait and it handles write, read and
 //! measure. The stream type is a generic parameter, so `IS_WRITING`/`IS_READING` branches are
-//! resolved at compile time, exactly like the C++ library's templated serialize methods:
+//! resolved at compile time, exactly like the C++ library's templated serialize methods. The
+//! stream also decides the error type: reads are fallible ([`enum@Error`]), writes and
+//! measures are infallible ([`core::convert::Infallible`]), so the write instantiation of
+//! your serialize function has no error paths at all:
 //!
 //! ```
 //! use serialize::{Stream, WriteStream, ReadStream, Result};
@@ -24,7 +27,7 @@
 //! }
 //!
 //! impl Packet {
-//!     fn serialize<S: Stream>(&mut self, stream: &mut S) -> Result {
+//!     fn serialize<S: Stream>(&mut self, stream: &mut S) -> Result<(), S::Error> {
 //!         stream.serialize_int(&mut self.position, -1000, 1000)?;
 //!         stream.serialize_int(&mut self.health, 0, 100)?;
 //!         stream.serialize_bool(&mut self.alive)?;
@@ -36,30 +39,36 @@
 //!
 //! let mut packet = Packet { position: -20, health: 55, alive: true };
 //! let mut stream = WriteStream::new(&mut buffer);
-//! packet.serialize(&mut stream)?;
+//! let Ok(()) = packet.serialize(&mut stream);          // writes cannot fail
 //! stream.flush();
 //! let bytes_written = stream.bytes_processed() as usize;
 //!
 //! let mut read_packet = Packet::default();
 //! let mut stream = ReadStream::new(&buffer, bytes_written);
-//! read_packet.serialize(&mut stream)?;
+//! read_packet.serialize(&mut stream)?;                 // reads are checked, ? aborts
 //! assert_eq!(read_packet.position, -20);
 //! # Ok::<(), serialize::Error>(())
 //! ```
 //!
 //! # The trust model
 //!
-//! The write path is trusted: correctness is checked with debug assertions, and in release it
-//! is the caller's responsibility (size buffers conservatively, or pre-measure with
-//! [`MeasureStream`]). The read path is the trust boundary: packet data comes from the network
-//! and may be malicious, so every read is bounds checked and range validated at runtime and
-//! fails with an [`Error`] instead of panicking. The `?` operator aborts the entire serialize
-//! function on the first error, so a truncated or hostile packet can never drive a loop with
-//! unvalidated data.
+//! The write path is trusted and infallible: field-level writes return
+//! `Result<(), Infallible>` — an error value cannot exist, so `?` compiles away and the
+//! monomorphized write function carries no error control flow. Invalid arguments and out of
+//! range values are debug assertions, compiled out in release, where correctness is the
+//! caller's responsibility (size buffers conservatively, or pre-measure with
+//! [`MeasureStream`]; a violated write contract in release produces a malformed stream that
+//! checked readers reject — never memory unsafety). The read path is the trust boundary:
+//! packet data comes from the network and may be malicious, so every read is bounds checked
+//! and range validated at runtime and fails with an [`Error`] instead of panicking. The `?`
+//! operator aborts the entire serialize function on the first error, so a truncated or
+//! hostile packet can never drive a loop with unvalidated data.
 //!
-//! Panics are reserved for API misuse: bits out of `[1,32]` or `[1,64]`, `min > max`, a write
-//! buffer size that is not a multiple of 8 bytes, or writing past the end of a buffer (a debug
-//! assertion first, then the slice bounds check in release — where the C++ library makes this
+//! Panics on the read path are reserved for API misuse: bits out of `[1,32]` or `[1,64]`,
+//! `min > max`. On the write path those same misuses are debug assertions. Two panics remain
+//! on write in every build, by construction rather than by check: a write buffer size that is
+//! not a multiple of 8 bytes, and writing past the end of a buffer (a debug assertion first,
+//! then the language's own slice bounds check in release — where the C++ library makes this
 //! the caller's problem, Rust makes it a panic rather than undefined behavior).
 //!
 //! # Buffer contracts
@@ -85,10 +94,10 @@ pub use write_stream::WriteStream;
 
 /// The error type for stream reads that fail.
 ///
-/// Reads fail cleanly on malicious or truncated data. Writes and measures produce errors only
-/// for a string longer than its `buffer_size` (matching the Go port); their other failure
-/// modes are API misuse, which panics. All variants abort the enclosing serialize function via
-/// the `?` operator.
+/// Reads fail cleanly on malicious or truncated data. Writes and measures never error — their
+/// error type is [`core::convert::Infallible`], and write-side misuse (including a string
+/// longer than its `buffer_size`) is a debug assertion instead. All variants abort the
+/// enclosing serialize function via the `?` operator.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum Error {
@@ -116,9 +125,20 @@ impl core::fmt::Display for Error {
 
 impl std::error::Error for Error {}
 
-/// A specialized result type for serialization. Defaults to `Result<(), Error>`, the return
-/// type of every serialize method.
-pub type Result<T = ()> = core::result::Result<T, Error>;
+/// A write or measure stream error can never exist, so it converts to [`enum@Error`] freely:
+/// this is what lets a function returning [`Result`] use `?` on an infallible stream
+/// operation — the conversion (and the branch that would need it) compiles to nothing.
+impl From<core::convert::Infallible> for Error {
+    fn from(infallible: core::convert::Infallible) -> Self {
+        match infallible {}
+    }
+}
+
+/// A specialized result type for serialization. `Result` alone is `Result<(), Error>`, the
+/// return type of every fallible (read stream) serialize method. Serialize functions generic
+/// over the stream name the stream's own error instead — `Result<(), S::Error>` — so their
+/// write and measure instantiations are statically infallible.
+pub type Result<T = (), E = Error> = core::result::Result<T, E>;
 
 // Every data-dependent failure funnels through this constructor so LLVM sees the error
 // edges as cold. #[cold] is load-bearing the same way the #[inline] attributes are:

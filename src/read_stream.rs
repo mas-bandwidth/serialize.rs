@@ -62,6 +62,15 @@ impl Stream for ReadStream<'_> {
     const IS_WRITING: bool = false;
     const IS_READING: bool = true;
 
+    /// Reads are the trust boundary and stay fully fallible: every operation is bounds
+    /// checked and range validated, exactly as in 1.x.
+    type Error = Error;
+
+    #[inline(always)]
+    fn fail(error: Error) -> Result {
+        cold_error(error)
+    }
+
     #[inline(always)]
     fn serialize_bits(&mut self, value: &mut u32, bits: u32) -> Result {
         assert!(

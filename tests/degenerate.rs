@@ -83,10 +83,23 @@ fn degenerate_range_64_and_128() {
 }
 
 /// Relaxing the guard was meant to admit the degenerate case, not to stop
-/// validating: an inverted range is still API misuse.
+/// validating: an inverted range is still API misuse. As of 2.0 the panic lives on the read
+/// path in every build; the writer-trusted paths assert the same misuse in debug only.
 #[test]
 #[should_panic(expected = "must not be greater than max")]
-fn inverted_range_still_panics() {
+fn inverted_range_still_panics_on_read() {
+    let buffer = [0u8; 64];
+    let mut r = ReadStream::new(&buffer, 8);
+    let mut v = 0i32;
+    let _ = r.serialize_int(&mut v, 10, 5);
+}
+
+/// The write-side twin: the same inverted range is a debug assertion on the trusted write
+/// path (compiled out in release, where the 1.x hard panic no longer exists — GIGO instead).
+#[test]
+#[cfg(debug_assertions)]
+#[should_panic(expected = "must not be greater than max")]
+fn inverted_range_still_asserts_on_write_in_debug() {
     let mut buffer = [0u8; 64];
     let mut w = WriteStream::new(&mut buffer);
     let mut v = 0i32;
@@ -185,10 +198,22 @@ fn degenerate_fixed_costs_nothing_on_every_width() {
     }
 }
 
-/// An inverted fixed range is still API misuse.
+/// An inverted fixed range is still API misuse: a hard panic on the read path in every
+/// build, a debug assertion on the writer-trusted paths as of 2.0.
 #[test]
 #[should_panic(expected = "must not be greater than max_units")]
-fn inverted_fixed_range_still_panics() {
+fn inverted_fixed_range_still_panics_on_read() {
+    let buffer = [0u8; 64];
+    let mut r = ReadStream::new(&buffer, 8);
+    let mut v = 0i64;
+    let _ = r.serialize_fixed(&mut v, 48, 16, 7, -7);
+}
+
+/// The write-side twin, debug builds only.
+#[test]
+#[cfg(debug_assertions)]
+#[should_panic(expected = "must not be greater than max_units")]
+fn inverted_fixed_range_still_asserts_on_write_in_debug() {
     let mut buffer = [0u8; 64];
     let mut w = WriteStream::new(&mut buffer);
     let mut v = 0i64;

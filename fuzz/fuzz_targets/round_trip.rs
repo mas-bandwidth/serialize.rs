@@ -139,7 +139,14 @@ fn parse(cursor: &mut Cursor) -> Option<Value> {
         4 => Value::Bool(cursor.u8()? & 1 == 1),
         5 => Value::Float(f32::from_bits(cursor.u32()?)),
         6 => Value::Double(f64::from_bits(cursor.u64()?)),
-        7 => Value::Compressed(f32::from_bits(cursor.u32()?)),
+        7 => {
+            // non-finite values through a compressed float are non-conforming on write as
+            // of 2.0 (debug asserted, and fuzz builds keep debug assertions on): the round
+            // trip models a trusted writer, so generated values are kept finite. Finite
+            // out-of-range values stay — the write-side clamp is still exercised.
+            let raw = f32::from_bits(cursor.u32()?);
+            Value::Compressed(if raw.is_finite() { raw } else { 0.0 })
+        }
         8 => {
             let len = usize::from(cursor.u8()?) % 32;
             let mut bytes = Vec::with_capacity(len);
@@ -200,7 +207,7 @@ fn parse(cursor: &mut Cursor) -> Option<Value> {
     })
 }
 
-fn serialize_value<S: Stream>(stream: &mut S, value: &mut Value) -> Result {
+fn serialize_value<S: Stream>(stream: &mut S, value: &mut Value) -> Result<(), S::Error> {
     match value {
         Value::Bits { value, bits } => stream.serialize_bits(value, *bits),
         Value::Bits64 { value, bits } => stream.serialize_bits64(value, *bits),
@@ -286,11 +293,10 @@ fn matches(written: &Value, read: &Value) -> bool {
         (Value::Float(a), Value::Float(b)) => a.to_bits() == b.to_bits(),
         (Value::Double(a), Value::Double(b)) => a.to_bits() == b.to_bits(),
         (Value::Compressed(written), Value::Compressed(read)) => {
-            let clamped = if written.is_nan() {
-                COMPRESSED_MIN
-            } else {
-                written.clamp(COMPRESSED_MIN, COMPRESSED_MAX)
-            };
+            // written compressed values are always finite (parse filters non-finite bit
+            // patterns, which are non-conforming to write as of 2.0); finite out-of-range
+            // values still clamp on write
+            let clamped = written.clamp(COMPRESSED_MIN, COMPRESSED_MAX);
             (read - clamped).abs() <= COMPRESSED_RESOLUTION * 2.0
         }
         _ => written == read,

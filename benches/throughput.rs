@@ -143,7 +143,7 @@ impl BenchPacket {
         packet
     }
 
-    fn serialize<S: Stream>(&mut self, stream: &mut S) -> Result {
+    fn serialize<S: Stream>(&mut self, stream: &mut S) -> Result<(), S::Error> {
         stream.serialize_int(&mut self.a, -100, 100)?;
         stream.serialize_int(&mut self.b, 0, 65535)?;
         stream.serialize_int(&mut self.c, -1000000, 1000000)?;
