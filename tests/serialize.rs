@@ -1136,12 +1136,14 @@ fn test_serialize_fixed_bounds_must_fit_q_format() {
 }
 
 #[test]
-#[should_panic(expected = "must be less than max_units")]
-fn test_serialize_fixed_min_must_be_below_max() {
+#[should_panic(expected = "must not be greater than max_units")]
+fn test_serialize_fixed_min_must_not_exceed_max() {
+    // an INVERTED range is API misuse. a degenerate range (min == max) is NOT:
+    // it is legal and costs zero bits -- see tests/degenerate.rs
     let mut buffer = [0u8; 8];
     let mut stream = WriteStream::new(&mut buffer);
     let mut value = 0i32;
-    let _ = stream.serialize_fixed(&mut value, 16, 16, 100, 100);
+    let _ = stream.serialize_fixed(&mut value, 16, 16, 200, 100);
 }
 
 #[test]

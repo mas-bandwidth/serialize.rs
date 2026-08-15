@@ -92,3 +92,105 @@ fn inverted_range_still_panics() {
     let mut v = 0i32;
     let _ = w.serialize_int(&mut v, 10, 5);
 }
+
+/// A degenerate FIXED range costs zero bits too -- on every storage width.
+///
+/// `serialize_fixed` was the one operation the relaxation sweep missed: it
+/// still asserted `min_units < max_units`, in release too, panicking on
+/// exactly the case the format defines (serialize#54's audit called this
+/// port's behavior "the degenerate panic"). The ruling (schema enactment,
+/// 2026-08-15) pins `min == max` legal at zero bits on every storage width;
+/// the raw value is `min_units << fraction_bits`, recovered from the range
+/// alone. Q112.16 and Q64.64 are the shapes where a port computing the wide
+/// bit count as unit-range-bits + fraction_bits would emit fraction_bits of
+/// zeros instead -- the 64/128 self-disagreement the Go and C# halves fixed.
+#[test]
+fn degenerate_fixed_costs_nothing_on_every_width() {
+    // narrow storage: Q48.16 at -7.0, with a following field proving
+    // downstream bits do not shift
+    let mut buffer = [0u8; 64];
+    let bytes;
+    {
+        let mut w = WriteStream::new(&mut buffer);
+        let mut degenerate = (-7i64) << 16;
+        let mut after = 3i32;
+        w.serialize_fixed(&mut degenerate, 48, 16, -7, -7).unwrap();
+        assert_eq!(
+            w.bits_processed(),
+            0,
+            "a degenerate fixed range must write no bits"
+        );
+        w.serialize_int(&mut after, 0, 7).unwrap();
+        assert_eq!(w.bits_processed(), 3);
+        w.flush();
+        bytes = w.bytes_processed() as usize;
+    }
+    {
+        let mut r = ReadStream::new(&buffer, bytes);
+        let mut degenerate = 0i64;
+        let mut after = 0i32;
+        r.serialize_fixed(&mut degenerate, 48, 16, -7, -7).unwrap();
+        assert_eq!(degenerate, (-7i64) << 16, "recovered from the range alone");
+        assert_eq!(r.bits_processed(), 0);
+        r.serialize_int(&mut after, 0, 7).unwrap();
+        assert_eq!(after, 3);
+    }
+    {
+        let mut m = MeasureStream::new();
+        let mut measured = (-7i64) << 16;
+        m.serialize_fixed(&mut measured, 48, 16, -7, -7).unwrap();
+        assert_eq!(m.bits_processed(), 0, "measure must agree it is free");
+    }
+
+    // wide storage: Q112.16, positive and negative, and Q64.64 -- where the
+    // fraction alone spans a full 64 bit field
+    for (integer_bits, fraction_bits, unit) in [(112u32, 16u32, 9i64), (112, 16, -9), (64, 64, 0)] {
+        let mut buffer = [0u8; 64];
+        let raw = i128::from(unit) << fraction_bits;
+        let bytes;
+        {
+            let mut w = WriteStream::new(&mut buffer);
+            let mut degenerate = raw;
+            let mut after = 3i32;
+            w.serialize_fixed(&mut degenerate, integer_bits, fraction_bits, unit, unit)
+                .unwrap();
+            assert_eq!(
+                w.bits_processed(),
+                0,
+                "Q{integer_bits}.{fraction_bits} [{unit},{unit}]: zero bits, not fraction_bits"
+            );
+            w.serialize_int(&mut after, 0, 7).unwrap();
+            assert_eq!(w.bits_processed(), 3);
+            w.flush();
+            bytes = w.bytes_processed() as usize;
+        }
+        {
+            let mut r = ReadStream::new(&buffer, bytes);
+            let mut degenerate = 0i128;
+            let mut after = 0i32;
+            r.serialize_fixed(&mut degenerate, integer_bits, fraction_bits, unit, unit)
+                .unwrap();
+            assert_eq!(degenerate, raw, "recovered from the range alone");
+            assert_eq!(r.bits_processed(), 0);
+            r.serialize_int(&mut after, 0, 7).unwrap();
+            assert_eq!(after, 3);
+        }
+        {
+            let mut m = MeasureStream::new();
+            let mut measured = raw;
+            m.serialize_fixed(&mut measured, integer_bits, fraction_bits, unit, unit)
+                .unwrap();
+            assert_eq!(m.bits_processed(), 0, "measure must agree it is free");
+        }
+    }
+}
+
+/// An inverted fixed range is still API misuse.
+#[test]
+#[should_panic(expected = "must not be greater than max_units")]
+fn inverted_fixed_range_still_panics() {
+    let mut buffer = [0u8; 64];
+    let mut w = WriteStream::new(&mut buffer);
+    let mut v = 0i64;
+    let _ = w.serialize_fixed(&mut v, 48, 16, 7, -7);
+}

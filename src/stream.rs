@@ -522,12 +522,16 @@ pub trait Stream {
     /// The Q format and the bounds are constants of the call site and part of the wire
     /// format, exactly like a ranged integer's bounds: both sides must agree on all four.
     ///
+    /// A degenerate range (`min_units == max_units`) is legal and costs **zero bits** on
+    /// every storage width: nothing is written, and the reader recovers the value from the
+    /// range alone — the raw value `min_units << fraction_bits`.
+    ///
     /// # Panics
     ///
     /// Panics on API misuse, matching the C++ library's `static_assert`s: `integer_bits`
     /// of zero, `integer_bits + fraction_bits` not equal to the storage width,
-    /// `min_units >= max_units`, or bounds that do not fit the Q format's whole unit
-    /// capacity.
+    /// `min_units > max_units` (an inverted range), or bounds that do not fit the Q
+    /// format's whole unit capacity.
     ///
     /// # Errors
     ///
@@ -553,8 +557,8 @@ pub trait Stream {
             T::BITS
         );
         assert!(
-            min_units < max_units,
-            "serialize_fixed: min_units ({min_units}) must be less than max_units ({max_units})"
+            min_units <= max_units,
+            "serialize_fixed: min_units ({min_units}) must not be greater than max_units ({max_units})"
         );
 
         // the whole unit capacity of the Q format (the C++ static asserts, as panics: the Q
@@ -581,8 +585,24 @@ pub trait Stream {
         let raw_min = (i128::from(min_units) as u128) << fraction_bits;
         let raw_range = ((i128::from(max_units) - i128::from(min_units)) as u128) << fraction_bits;
 
+        if min_units == max_units {
+            // degenerate range: the value IS the range, nothing to send (STANDARD.md:
+            // min == max costs zero bits, on every storage width). this used to panic --
+            // in release too -- rejecting exactly the case the format defines
+            if Self::IS_WRITING {
+                debug_assert!(
+                    value.to_unsigned() == raw_min,
+                    "serialize_fixed: value outside [min_units,max_units]"
+                );
+            }
+            if Self::IS_READING {
+                *value = T::from_unsigned(raw_min);
+            }
+            return Ok(());
+        }
+
         // the wire cost: the bit length of the raw range, exactly bits_required128 of the
-        // raw bounds. at least 1 because min_units < max_units
+        // raw bounds. at least 1 because the degenerate case returned above
         let bits = 128 - raw_range.leading_zeros();
 
         let mut offset = 0u128;
