@@ -938,11 +938,13 @@ fn doctor_wide_stream(units: &[u32], buffer: &mut [u8; 24]) -> usize {
 
 #[test]
 fn test_wstring_utf16_code_units() {
-    // THE FAMILY CONFORMANCE PIN: "a" + U+1F600 in an 8-unit buffer is exactly these
+    // A FAMILY CONFORMANCE PIN: "a" + U+1F600 in an 8-unit buffer is exactly these
     // 13 bytes — a 3-bit length of 3 (UNITS: 0x0061, then the surrogate pair 0xD83D
-    // 0xDE00), then three unaligned 32-bit groups. Byte-for-byte what the C++ library
-    // (test_wstring_utf16_code_units), serialize.c and serialize.cs pin for the same
-    // string. Never regenerate these.
+    // 0xDE00), then three unaligned 32-bit groups. Byte-for-byte the literal serialize.cs
+    // pins (tests/Tests.cs) and the group sequence serialize.go decodes for the same
+    // string. The C++ library and serialize.c exercise the OTHER family vector — emoji
+    // first, then U+0041 — pinned as exact bytes in test_wstring_family_vector_emoji_first
+    // below. Never regenerate these.
     //
     // Before the code-unit model this pin was doubly unreachable: the writer emitted
     // CODE POINTS (a length of 2, groups 0x0061 and 0x1F600), and the reader refused
@@ -993,6 +995,69 @@ fn test_wstring_utf16_code_units() {
             .serialize_wide_string(&mut value, BUFFER_SIZE)
             .unwrap();
         assert_eq!(value, astral);
+    }
+}
+
+#[test]
+fn test_wstring_family_vector_emoji_first() {
+    // THE NORMATIVE-CONTENT PIN, as exact bytes: U+1F600 then U+0041 is the content the
+    // C++ suite (test_wstring_utf16_code_units) and serialize.c (test/roundtrip.c) both
+    // exercise — but each derives its expected bytes through its own primitives, so no
+    // family test pinned that content as a literal. This one does, closing the
+    // exact-vector cross-compare gap: a 3-bit length of 3, then the unaligned 32-bit
+    // groups 0xD83D 0xDE00 0x0041 land as exactly these 13 bytes (99 bits). Derived by
+    // hand from the wire rules and confirmed against the C++ library's own output,
+    // 2026-08-16. Never regenerate these.
+    #[rustfmt::skip]
+    const EMOJI_FIRST_WIRE_BYTES: [u8; 13] = [
+        0xEB, 0xC1, 0x06, 0x00, 0x00, 0xF0, 0x06, 0x00,
+        0x08, 0x02, 0x00, 0x00, 0x00,
+    ];
+    const BUFFER_SIZE: usize = 8;
+    let emoji_first = "\u{1F600}A";
+
+    // write side: the writer must emit exactly the bytes the C++ library emits
+    let bits_written;
+    {
+        let mut buffer = [0u8; 64];
+        let mut stream = WriteStream::new(&mut buffer);
+        let mut value = emoji_first.to_string();
+        stream
+            .serialize_wide_string(&mut value, BUFFER_SIZE)
+            .unwrap();
+        stream.flush();
+        assert_eq!(
+            stream.bytes_processed() as usize,
+            EMOJI_FIRST_WIRE_BYTES.len()
+        );
+        bits_written = stream.bits_processed();
+        assert_eq!(
+            buffer[..EMOJI_FIRST_WIRE_BYTES.len()],
+            EMOJI_FIRST_WIRE_BYTES
+        );
+    }
+
+    // the measure agrees: 3 + 3 * 32 = 99 bits
+    {
+        let mut measure_stream = MeasureStream::new();
+        let mut value = emoji_first.to_string();
+        measure_stream
+            .serialize_wide_string(&mut value, BUFFER_SIZE)
+            .unwrap();
+        assert_eq!(measure_stream.bits_processed(), 99);
+        assert_eq!(measure_stream.bits_processed(), bits_written);
+    }
+
+    // read side: the canonical bytes decode back, the pair recombining ahead of the BMP unit
+    {
+        let mut buffer = [0u8; 13 + 8]; // + 8: keep reads on the branchless fast path
+        buffer[..13].copy_from_slice(&EMOJI_FIRST_WIRE_BYTES);
+        let mut stream = ReadStream::new(&buffer, EMOJI_FIRST_WIRE_BYTES.len());
+        let mut value = String::new();
+        stream
+            .serialize_wide_string(&mut value, BUFFER_SIZE)
+            .unwrap();
+        assert_eq!(value, emoji_first);
     }
 }
 
