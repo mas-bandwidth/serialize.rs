@@ -1480,10 +1480,11 @@ fn test_serialize_fixed() {
 
 // the C++ library refuses these configurations at compile time with static_asserts; the Q
 // format and bounds are runtime arguments here, so the refusals are validated (API misuse,
-// exactly like bits out of range or min >= max): a hard panic on the read path in every
-// build, and a debug assertion on the writer-trusted paths as of 2.0
+// exactly like bits out of range or min >= max): debug assertions on every stream,
+// compiled out in release per the family standard
 
 #[test]
+#[cfg(debug_assertions)]
 #[should_panic(expected = "must equal the storage width")]
 fn test_serialize_fixed_q_format_must_fill_storage() {
     let buffer = [0u8; 8];
@@ -1503,6 +1504,7 @@ fn test_serialize_fixed_q_format_must_fill_storage_write_debug() {
 }
 
 #[test]
+#[cfg(debug_assertions)]
 #[should_panic(expected = "do not fit the Q format")]
 fn test_serialize_fixed_bounds_must_fit_q_format() {
     let buffer = [0u8; 8];
@@ -1523,6 +1525,7 @@ fn test_serialize_fixed_bounds_must_fit_q_format_write_debug() {
 }
 
 #[test]
+#[cfg(debug_assertions)]
 #[should_panic(expected = "must not be greater than max_units")]
 fn test_serialize_fixed_min_must_not_exceed_max() {
     // an INVERTED range is API misuse. a degenerate range (min == max) is NOT:
@@ -2503,6 +2506,7 @@ fn test_read_bits_group() {
 }
 
 #[test]
+#[cfg(debug_assertions)]
 #[should_panic(expected = "all widths must be in [1,32]")]
 fn test_read_bits_group_validates_widths() {
     let buffer = [0u8; 16];
@@ -2511,6 +2515,7 @@ fn test_read_bits_group_validates_widths() {
 }
 
 #[test]
+#[cfg(debug_assertions)]
 #[should_panic(expected = "all widths must be in [1,32]")]
 fn test_read_bits_group_validates_wide_widths() {
     let buffer = [0u8; 16];

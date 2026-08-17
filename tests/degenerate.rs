@@ -83,15 +83,30 @@ fn degenerate_range_64_and_128() {
 }
 
 /// Relaxing the guard was meant to admit the degenerate case, not to stop
-/// validating: an inverted range is still API misuse. As of 2.0 the panic lives on the read
-/// path in every build; the writer-trusted paths assert the same misuse in debug only.
+/// validating: an inverted range is still API misuse — a debug assertion on every stream,
+/// compiled out in release per the family standard (minimal runtime checking; misuse
+/// checks match the C++ library's `serialize_assert`).
 #[test]
+#[cfg(debug_assertions)]
 #[should_panic(expected = "must not be greater than max")]
-fn inverted_range_still_panics_on_read() {
+fn inverted_range_asserts_on_read_in_debug() {
     let buffer = [0u8; 64];
     let mut r = ReadStream::new(&buffer, 8);
     let mut v = 0i32;
     let _ = r.serialize_int(&mut v, 10, 5);
+}
+
+/// The release twin: with the debug assert compiled out, the same read-side misuse must
+/// NOT panic — the misuse check is gone from the release binary (the enactment's proof),
+/// and the read stays memory safe: garbage in, garbage out, never unsafety. This is the
+/// class representative for every misuse check the 2026-08-16 audit moved.
+#[test]
+#[cfg(not(debug_assertions))]
+fn inverted_range_misuse_check_absent_in_release() {
+    let buffer = [0u8; 64];
+    let mut r = ReadStream::new(&buffer, 8);
+    let mut v = 0i32;
+    let _ = r.serialize_int(&mut v, 10, 5); // completes without panicking; result is GIGO
 }
 
 /// The write-side twin: the same inverted range is a debug assertion on the trusted write
@@ -198,11 +213,12 @@ fn degenerate_fixed_costs_nothing_on_every_width() {
     }
 }
 
-/// An inverted fixed range is still API misuse: a hard panic on the read path in every
-/// build, a debug assertion on the writer-trusted paths as of 2.0.
+/// An inverted fixed range is still API misuse: a debug assertion on every stream,
+/// compiled out in release.
 #[test]
+#[cfg(debug_assertions)]
 #[should_panic(expected = "must not be greater than max_units")]
-fn inverted_fixed_range_still_panics_on_read() {
+fn inverted_fixed_range_asserts_on_read_in_debug() {
     let buffer = [0u8; 64];
     let mut r = ReadStream::new(&buffer, 8);
     let mut v = 0i64;

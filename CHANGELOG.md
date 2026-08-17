@@ -2,6 +2,21 @@
 
 ## Unreleased
 
+**API misuse checks are debug assertions on every stream — the eight hard `assert!`
+sites, plus the shared misuse macro's hard read leg, move to `debug_assert!`** (the
+2026-08-16 six-language check-model audit,
+issue #45; the family standard, verbatim: "the caller is responsible for well formed
+writes... We want MINIMAL runtime checking in release"). The read path's 1.x hard panics
+on invalid *arguments* — bit widths out of `[1,32]`, `min > max`, `buffer_size` below 2,
+`BitReader::new` bytes beyond the buffer — were this port's invention: the C++ library
+compiles every `serialize_assert` out in release, read and write alike. They now compile
+out here too. This also closes the doc/code contradiction where the crate docs claimed
+the write-spine width assert was debug-only while `BitWriter::new`/`write_bits` made it
+hard. Unchanged, in every build: all packet data validation (buffer-end `Error::Overflow`,
+`Error::Align`, `Error::ValueOutOfRange`, and the string/wstring content refusals) — those
+validate the wire, never arguments — and safe Rust's own slice bounds checks, the named
+language cost of `unsafe_code = "forbid"`. Wire bytes are identical.
+
 **Wire bytes move for astral text: `serialize_wide_string` now transmits UTF-16 CODE
 UNITS, not code points** — the same intentional family break that shipped in serialize
 v1.9.0, serialize.c v1.3.0 and serialize.cs v1.3.0 (STANDARD.md "wstring", adopted

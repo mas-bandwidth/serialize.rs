@@ -64,12 +64,17 @@
 //! operator aborts the entire serialize function on the first error, so a truncated or
 //! hostile packet can never drive a loop with unvalidated data.
 //!
-//! Panics on the read path are reserved for API misuse: bits out of `[1,32]` or `[1,64]`,
-//! `min > max`. On the write path those same misuses are debug assertions. Two panics remain
-//! on write in every build, by construction rather than by check: a write buffer size that is
-//! not a multiple of 8 bytes, and writing past the end of a buffer (a debug assertion first,
-//! then the language's own slice bounds check in release — where the C++ library makes this
-//! the caller's problem, Rust makes it a panic rather than undefined behavior).
+//! API misuse — bits out of `[1,32]` or `[1,64]`, `min > max`, a `buffer_size` below 2, a
+//! write buffer size that is not a multiple of 8 bytes — is a debug assertion everywhere,
+//! read and write alike, compiled out in release exactly like the C++ library's
+//! `serialize_assert` (the family standard: minimal runtime checking in release; the hard
+//! checks release keeps are the read path's buffer-end and content refusals above, which
+//! validate packet data, never arguments). What release cannot compile out is the language
+//! itself: writing past the end of a buffer stops at safe Rust's own slice bounds check —
+//! where the C++ library makes an out-of-bounds write the caller's problem, Rust makes it
+//! a panic rather than undefined behavior. Those slice bounds checks are the named cost of
+//! the `unsafe_code = "forbid"` guarantee, and the primitives are shaped so each one rides
+//! a word-wide load or store, not the bit-level arithmetic.
 //!
 //! # Buffer contracts
 //!

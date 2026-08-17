@@ -38,9 +38,8 @@ impl<'a> ReadStream<'a> {
     /// `buffer` is the full allocation view: pass a slice extending at least 8 bytes past the
     /// packet data to keep every read on the branchless fast path. See [`BitReader::new`].
     ///
-    /// # Panics
-    ///
-    /// Panics if `bytes` exceeds the buffer length.
+    /// `bytes` must not exceed the buffer length — a caller contract, debug asserted and
+    /// compiled out in release. See [`BitReader::new`].
     #[must_use]
     #[inline]
     pub fn new(buffer: &'a [u8], bytes: usize) -> Self {
@@ -73,7 +72,7 @@ impl Stream for ReadStream<'_> {
 
     #[inline(always)]
     fn serialize_bits(&mut self, value: &mut u32, bits: u32) -> Result {
-        assert!(
+        debug_assert!(
             bits.wrapping_sub(1) < 32,
             "bits must be in [1,32] (got {bits})"
         );
@@ -109,7 +108,7 @@ impl Stream for ReadStream<'_> {
 
     #[inline]
     fn serialize_string(&mut self, value: &mut String, buffer_size: usize) -> Result {
-        assert!(
+        debug_assert!(
             buffer_size >= 2 && i32::try_from(buffer_size).is_ok(),
             "string buffer_size must be in [2,i32::MAX] (got {buffer_size})"
         );
@@ -142,7 +141,7 @@ impl Stream for ReadStream<'_> {
 
     #[inline]
     fn serialize_wide_string(&mut self, value: &mut String, buffer_size: usize) -> Result {
-        assert!(
+        debug_assert!(
             buffer_size >= 2 && i32::try_from(buffer_size).is_ok(),
             "string buffer_size must be in [2,i32::MAX] (got {buffer_size})"
         );
