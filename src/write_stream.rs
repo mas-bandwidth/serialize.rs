@@ -32,10 +32,9 @@ impl core::fmt::Debug for WriteStream<'_> {
 impl<'a> WriteStream<'a> {
     /// Creates a write stream that writes to `buffer`.
     ///
-    /// # Panics
-    ///
-    /// Panics if the buffer size is not a multiple of 8 bytes (the bit writer stores 64 bit
-    /// words to memory).
+    /// The buffer size must be a multiple of 8 bytes (the bit writer stores 64 bit words to
+    /// memory) — a caller contract, debug asserted and compiled out in release. See
+    /// [`BitWriter::new`].
     #[must_use]
     #[inline]
     pub fn new(buffer: &'a mut [u8]) -> Self {

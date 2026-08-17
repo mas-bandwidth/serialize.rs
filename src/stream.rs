@@ -18,17 +18,15 @@ pub trait Serialize {
 }
 
 // API misuse checks in the shared serialize methods (invalid arguments — never packet data).
-// The read path keeps its 1.x hard assert: misuse panics in every build, and the read
-// codegen is untouched. The write and measure paths are writer-trusted as of 2.0: the same
-// misuse is a debug assertion, compiled out in release, where a violated contract produces
-// a malformed stream that checked readers reject — never memory unsafety.
+// Debug assertions in every stream, compiled out in release, matching the C++ library's
+// serialize_assert exactly (the family standard: the caller is responsible for well formed
+// calls; release carries minimal runtime checking). Packet data validation is separate and
+// unaffected: readers bounds check and range validate wire data in every build, returning
+// Error. In release a violated call contract produces a malformed stream on write and
+// garbage-in-garbage-out values on read — never memory unsafety.
 macro_rules! misuse_check {
     ($cond:expr, $($arg:tt)+) => {
-        if Self::IS_READING {
-            assert!($cond, $($arg)+);
-        } else {
-            debug_assert!($cond, $($arg)+);
-        }
+        debug_assert!($cond, $($arg)+);
     };
 }
 
@@ -86,10 +84,8 @@ pub trait Stream {
 
     /// Serialize `bits` bits of an unsigned integer value in `[0,(1<<bits)-1]`.
     ///
-    /// # Panics
-    ///
-    /// On read, panics if `bits` is not in `[1,32]`. On write and measure the same misuse is
-    /// a debug assertion.
+    /// `bits` outside `[1,32]` is API misuse — a debug assertion on every stream, compiled
+    /// out in release.
     ///
     /// # Errors
     ///
@@ -188,10 +184,8 @@ pub trait Stream {
     /// malicious packet can smuggle an out of range value into the bit headroom of the
     /// encoding, so the range is validated, not assumed.
     ///
-    /// # Panics
-    ///
-    /// On read, panics if `min > max`; on write and measure the same misuse is a debug
-    /// assertion. A degenerate range (`min == max`) is legal and costs zero bits.
+    /// `min > max` is API misuse — a debug assertion on every stream, compiled out in
+    /// release. A degenerate range (`min == max`) is legal and costs zero bits.
     ///
     /// # Errors
     ///
@@ -237,10 +231,8 @@ pub trait Stream {
     /// Serialize a 64 bit integer value in `[min,max]`. The full 64 bit range is supported, and
     /// the minimal number of bits for the range is used on the wire.
     ///
-    /// # Panics
-    ///
-    /// On read, panics if `min > max`; on write and measure the same misuse is a debug
-    /// assertion. A degenerate range (`min == max`) is legal and costs zero bits.
+    /// `min > max` is API misuse — a debug assertion on every stream, compiled out in
+    /// release. A degenerate range (`min == max`) is legal and costs zero bits.
     ///
     /// # Errors
     ///
@@ -303,10 +295,8 @@ pub trait Stream {
     /// bits without changing the wire. Do not confuse this with [`Stream::serialize_u128`],
     /// which is not ranged — it is a raw 128 bit field and always costs 128 bits.
     ///
-    /// # Panics
-    ///
-    /// On read, panics if `min > max`; on write and measure the same misuse is a debug
-    /// assertion. A degenerate range (`min == max`) is legal and costs zero bits.
+    /// `min > max` is API misuse — a debug assertion on every stream, compiled out in
+    /// release. A degenerate range (`min == max`) is legal and costs zero bits.
     ///
     /// # Errors
     ///
@@ -356,10 +346,8 @@ pub trait Stream {
     /// Serialize `bits` bits of an unsigned 64 bit integer value in `[0,(1<<bits)-1]`. Values
     /// wider than 32 bits are serialized as the low dword then the high remainder.
     ///
-    /// # Panics
-    ///
-    /// On read, panics if `bits` is not in `[1,64]`. On write and measure the same misuse is
-    /// a debug assertion.
+    /// `bits` outside `[1,64]` is API misuse — a debug assertion on every stream, compiled
+    /// out in release.
     ///
     /// # Errors
     ///
@@ -523,11 +511,9 @@ pub trait Stream {
     /// 1.x clamps still apply — a NaN value writes as `min` rather than corrupting the
     /// stream — but that behavior is a safety net for a violated contract, not part of it.
     ///
-    /// # Panics
-    ///
-    /// On read, panics if `min >= max` or `resolution <= 0`; on write and measure the same
-    /// misuse is a debug assertion, as are non-finite declarations and non-finite written
-    /// values.
+    /// `min >= max` and `resolution <= 0` are API misuse — debug assertions on every
+    /// stream, compiled out in release, as are non-finite declarations and non-finite
+    /// written values.
     ///
     /// # Errors
     ///
@@ -638,13 +624,11 @@ pub trait Stream {
     /// every storage width: nothing is written, and the reader recovers the value from the
     /// range alone — the raw value `min_units << fraction_bits`.
     ///
-    /// # Panics
-    ///
-    /// On read, panics on API misuse, matching the C++ library's `static_assert`s:
-    /// `integer_bits` of zero, `integer_bits + fraction_bits` not equal to the storage
-    /// width, `min_units > max_units` (an inverted range), or bounds that do not fit the Q
-    /// format's whole unit capacity. On write and measure the same misuse is a debug
-    /// assertion.
+    /// API misuse — the conditions the C++ library rejects with `static_assert`s — is a
+    /// debug assertion on every stream, compiled out in release: `integer_bits` of zero,
+    /// `integer_bits + fraction_bits` not equal to the storage width, `min_units >
+    /// max_units` (an inverted range), or bounds that do not fit the Q format's whole unit
+    /// capacity.
     ///
     /// # Errors
     ///

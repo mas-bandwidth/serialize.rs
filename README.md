@@ -114,15 +114,18 @@ caller's responsibility — size buffers conservatively or pre-measure with `Mea
 (its estimate is guaranteed conservative). A violated write contract in release produces a
 malformed stream that checked readers reject; it is never memory unsafety, and writing past
 the end of a buffer still panics via the slice bounds check rather than being undefined
-behavior. Readers are unchanged: fully fallible, every check kept.
+behavior. Readers keep every packet data check: fully fallible, in every build.
 
-Panics in every build are reserved for read-side API misuse (bits out of [1,32]/[1,64],
-`min > max`) and the two write-side structural cases above (buffer not a multiple of 8
-bytes, writing past the end). A degenerate range where `min == max` is not misuse — the
-format defines it as costing zero bits, and the ranged integer methods accept it and recover
-the value from the range alone. Non-finite values through `serialize_compressed_float` are
-non-conforming and debug-assert on write, as does a compressed float declaration whose
-`max - min` or quantum count is not finite.
+API misuse (bits out of [1,32]/[1,64], `min > max`, a `buffer_size` below 2, a write
+buffer not a multiple of 8 bytes) is a debug assertion on every stream, read and write
+alike, compiled out in release exactly like the C++ library's `serialize_assert` — the
+family standard is minimal runtime checking in release, and the hard checks release keeps
+are the read path's buffer-end and content refusals, which validate packet data, never
+arguments. A degenerate range where `min == max` is not misuse — the format defines it as
+costing zero bits, and the ranged integer methods accept it and recover the value from the
+range alone. Non-finite values through `serialize_compressed_float` are non-conforming and
+debug-assert on write, as does a compressed float declaration whose `max - min` or quantum
+count is not finite.
 
 ## Buffer contracts
 
@@ -150,10 +153,10 @@ non-conforming and debug-assert on write, as does a compressed float declaration
   serialize functions can carry whatever state they need.
 - 128 bit values use Rust's native `i128`/`u128` on every platform; there is no equivalent
   of the C++ library's emulated 128 bit pair, and none is needed. The wire is identical.
-- `serialize_fixed` takes its Q format and bounds as runtime arguments checked by panics
-  (the storage type is generic over `FixedPointStorage`, so `stream.serialize_fixed(&mut
-  value, 48, 16, min, max)` mirrors the C++ call shape); the C++ library checks the same
-  constraints at compile time with `static_assert`s. The wire is identical, and the C++
+- `serialize_fixed` takes its Q format and bounds as runtime arguments checked by debug
+  assertions (the storage type is generic over `FixedPointStorage`, so
+  `stream.serialize_fixed(&mut value, 48, 16, min, max)` mirrors the C++ call shape); the
+  C++ library checks the same constraints at compile time with `static_assert`s. The wire is identical, and the C++
   contract notes about 128 bit division do not apply: the codec never divides in either
   implementation.
 - Buffer sizes and bit counts are `u64` internally, matching the C++ library's 64 bit
