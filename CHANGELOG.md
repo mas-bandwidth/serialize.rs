@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 2.1.2 — 2026-08-19
 
 **API misuse checks are debug assertions on every stream — the eight hard `assert!`
 sites, plus the shared misuse macro's hard read leg, move to `debug_assert!`** (the
@@ -16,6 +16,17 @@ hard. Unchanged, in every build: all packet data validation (buffer-end `Error::
 `Error::Align`, `Error::ValueOutOfRange`, and the string/wstring content refusals) — those
 validate the wire, never arguments — and safe Rust's own slice bounds checks, the named
 language cost of `unsafe_code = "forbid"`. Wire bytes are identical.
+
+## 2.1.1 — 2026-08-17
+
+No library change. STANDARD.md mirrors upstream verbatim at the Implementation Law
+revision (#46): that law governs implementation practice, not the wire format, so no
+code change is implied. The emoji-first family conformance vector is pinned as exact
+bytes (#43) — U+1F600 then U+0041 through an 8-unit wstring buffer, 13 bytes and 99
+bits, derived by hand from the wire rules and confirmed against the C++ library's own
+output — closing the one exact-vector cross-compare gap the a-first pin left open.
+
+## 2.1.0 — 2026-08-15
 
 **Wire bytes move for astral text: `serialize_wide_string` now transmits UTF-16 CODE
 UNITS, not code points** — the same intentional family break that shipped in serialize
