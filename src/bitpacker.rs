@@ -35,13 +35,14 @@ impl core::fmt::Debug for BitWriter<'_> {
 impl<'a> BitWriter<'a> {
     /// Creates a bit writer that writes to `data`.
     ///
-    /// # Panics
-    ///
-    /// Panics if the buffer size is not a multiple of 8 bytes.
+    /// The buffer size must be a multiple of 8 bytes: the writer flushes whole 64 bit words.
+    /// A misaligned buffer is a caller contract violation — a debug assertion, and in release
+    /// the final word flush surfaces it as the language's own slice bounds panic instead of
+    /// the undefined behavior C++ would make of it.
     #[must_use]
     #[inline]
     pub fn new(data: &'a mut [u8]) -> Self {
-        assert!(
+        debug_assert!(
             data.len() % 8 == 0,
             "write buffer size must be a multiple of 8 bytes (got {})",
             data.len()
@@ -67,13 +68,13 @@ impl<'a> BitWriter<'a> {
     /// When you have finished writing, call [`BitWriter::flush_bits`], otherwise the last word
     /// of data is not stored to memory.
     ///
-    /// # Panics
-    ///
-    /// Panics if `bits` is not in `[1,32]`, or (via the slice bounds check) if the write passes
-    /// the end of the buffer.
+    /// `bits` must be in `[1,32]` and the write must not pass the end of the buffer — both are
+    /// caller contract, debug assertions compiled out in release (the write path is trusted).
+    /// In release a width outside `[1,32]` corrupts the stream and a write past the end
+    /// surfaces as the language's own slice bounds panic on the word flush.
     #[inline(always)]
     pub fn write_bits(&mut self, value: u32, bits: u32) {
-        assert!(
+        debug_assert!(
             bits.wrapping_sub(1) < 32,
             "bits must be in [1,32] (got {bits})"
         );
@@ -250,13 +251,15 @@ impl<'a> BitReader<'a> {
     /// accepted, and the buffer needs no particular alignment — packet payloads typically
     /// start at an unaligned offset once the transport header is stripped.
     ///
-    /// # Panics
-    ///
-    /// Panics if `bytes` exceeds the buffer length.
+    /// `bytes` must not exceed the buffer length — a caller contract (this is the size of
+    /// data the caller received, not packet content), debug asserted and compiled out in
+    /// release, where a lying `bytes` makes bit reads past the real data return zeros via
+    /// the guarded tail path and byte reads surface as the language's own slice bounds
+    /// panic — never memory unsafety.
     #[must_use]
     #[inline]
     pub fn new(buffer: &'a [u8], bytes: usize) -> Self {
-        assert!(
+        debug_assert!(
             bytes <= buffer.len(),
             "packet bytes ({bytes}) exceed the buffer length ({})",
             buffer.len()
@@ -306,16 +309,13 @@ impl<'a> BitReader<'a> {
 
     /// Read bits from the bit buffer.
     ///
-    /// This function debug asserts if the read passes the end of the buffer. In production
-    /// the higher level [`crate::ReadStream`] checks all packet data and never calls this
-    /// function if it would read past the end of the buffer.
-    ///
-    /// # Panics
-    ///
-    /// Panics if `bits` is not in `[1,32]`.
+    /// This function debug asserts if `bits` is outside `[1,32]` or if the read passes the
+    /// end of the buffer — both are API contract, not packet data. In production the higher
+    /// level [`crate::ReadStream`] checks all packet data and never calls this function
+    /// with a bad width or a read past the end of the buffer.
     #[inline]
     pub fn read_bits(&mut self, bits: u32) -> u32 {
-        assert!(
+        debug_assert!(
             bits.wrapping_sub(1) < 32,
             "bits must be in [1,32] (got {bits})"
         );
@@ -343,24 +343,24 @@ impl<'a> BitReader<'a> {
     /// change). Larger groups, or reads without buffer slack near the end of the data, fall
     /// back to the per-call path automatically — same values, just slower.
     ///
-    /// This function debug asserts if the group reads past the end of the buffer, exactly
-    /// like [`BitReader::read_bits`].
-    ///
-    /// # Panics
-    ///
-    /// Panics if any width is not in `[1,32]`.
+    /// This function debug asserts if any width is outside `[1,32]` or if the group reads
+    /// past the end of the buffer, exactly like [`BitReader::read_bits`] — API contract,
+    /// not packet data.
     #[must_use]
     #[inline]
+    // the only release panic path is the slice-to-array conversion below, statically
+    // infallible: `get` returned a slice of exactly 40 bytes
+    #[allow(clippy::missing_panics_doc)]
     pub fn read_bits_group<const N: usize>(&mut self, widths: &[u32; N]) -> [u32; N] {
-        // hoisted validation: one branchless reduction over the widths, then a single test.
-        // (bits - 1 >= 32 exactly when bits is 0 or bits > 32)
+        // hoisted debug validation: one branchless reduction over the widths, then a single
+        // test. (bits - 1 >= 32 exactly when bits is 0 or bits > 32)
         let mut worst = 0u32;
         let mut total = 0u64;
         for &bits in widths {
             worst = worst.max(bits.wrapping_sub(1));
             total += u64::from(bits);
         }
-        assert!(worst < 32, "all widths must be in [1,32]");
+        debug_assert!(worst < 32, "all widths must be in [1,32]");
         debug_assert!(self.bits_read + total <= self.num_bits);
 
         let mut output = [0u32; N];

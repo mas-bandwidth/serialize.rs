@@ -18,17 +18,15 @@ pub trait Serialize {
 }
 
 // API misuse checks in the shared serialize methods (invalid arguments — never packet data).
-// The read path keeps its 1.x hard assert: misuse panics in every build, and the read
-// codegen is untouched. The write and measure paths are writer-trusted as of 2.0: the same
-// misuse is a debug assertion, compiled out in release, where a violated contract produces
-// a malformed stream that checked readers reject — never memory unsafety.
+// Debug assertions in every stream, compiled out in release, matching the C++ library's
+// serialize_assert exactly (the family standard: the caller is responsible for well formed
+// calls; release carries minimal runtime checking). Packet data validation is separate and
+// unaffected: readers bounds check and range validate wire data in every build, returning
+// Error. In release a violated call contract produces a malformed stream on write and
+// garbage-in-garbage-out values on read — never memory unsafety.
 macro_rules! misuse_check {
     ($cond:expr, $($arg:tt)+) => {
-        if Self::IS_READING {
-            assert!($cond, $($arg)+);
-        } else {
-            debug_assert!($cond, $($arg)+);
-        }
+        debug_assert!($cond, $($arg)+);
     };
 }
 
@@ -86,10 +84,8 @@ pub trait Stream {
 
     /// Serialize `bits` bits of an unsigned integer value in `[0,(1<<bits)-1]`.
     ///
-    /// # Panics
-    ///
-    /// On read, panics if `bits` is not in `[1,32]`. On write and measure the same misuse is
-    /// a debug assertion.
+    /// `bits` outside `[1,32]` is API misuse — a debug assertion on every stream, compiled
+    /// out in release.
     ///
     /// # Errors
     ///
@@ -188,10 +184,8 @@ pub trait Stream {
     /// malicious packet can smuggle an out of range value into the bit headroom of the
     /// encoding, so the range is validated, not assumed.
     ///
-    /// # Panics
-    ///
-    /// On read, panics if `min > max`; on write and measure the same misuse is a debug
-    /// assertion. A degenerate range (`min == max`) is legal and costs zero bits.
+    /// `min > max` is API misuse — a debug assertion on every stream, compiled out in
+    /// release. A degenerate range (`min == max`) is legal and costs zero bits.
     ///
     /// # Errors
     ///
@@ -237,10 +231,8 @@ pub trait Stream {
     /// Serialize a 64 bit integer value in `[min,max]`. The full 64 bit range is supported, and
     /// the minimal number of bits for the range is used on the wire.
     ///
-    /// # Panics
-    ///
-    /// On read, panics if `min > max`; on write and measure the same misuse is a debug
-    /// assertion. A degenerate range (`min == max`) is legal and costs zero bits.
+    /// `min > max` is API misuse — a debug assertion on every stream, compiled out in
+    /// release. A degenerate range (`min == max`) is legal and costs zero bits.
     ///
     /// # Errors
     ///
@@ -303,10 +295,8 @@ pub trait Stream {
     /// bits without changing the wire. Do not confuse this with [`Stream::serialize_u128`],
     /// which is not ranged — it is a raw 128 bit field and always costs 128 bits.
     ///
-    /// # Panics
-    ///
-    /// On read, panics if `min > max`; on write and measure the same misuse is a debug
-    /// assertion. A degenerate range (`min == max`) is legal and costs zero bits.
+    /// `min > max` is API misuse — a debug assertion on every stream, compiled out in
+    /// release. A degenerate range (`min == max`) is legal and costs zero bits.
     ///
     /// # Errors
     ///
@@ -356,10 +346,8 @@ pub trait Stream {
     /// Serialize `bits` bits of an unsigned 64 bit integer value in `[0,(1<<bits)-1]`. Values
     /// wider than 32 bits are serialized as the low dword then the high remainder.
     ///
-    /// # Panics
-    ///
-    /// On read, panics if `bits` is not in `[1,64]`. On write and measure the same misuse is
-    /// a debug assertion.
+    /// `bits` outside `[1,64]` is API misuse — a debug assertion on every stream, compiled
+    /// out in release.
     ///
     /// # Errors
     ///
@@ -523,11 +511,9 @@ pub trait Stream {
     /// 1.x clamps still apply — a NaN value writes as `min` rather than corrupting the
     /// stream — but that behavior is a safety net for a violated contract, not part of it.
     ///
-    /// # Panics
-    ///
-    /// On read, panics if `min >= max` or `resolution <= 0`; on write and measure the same
-    /// misuse is a debug assertion, as are non-finite declarations and non-finite written
-    /// values.
+    /// `min >= max` and `resolution <= 0` are API misuse — debug assertions on every
+    /// stream, compiled out in release, as are non-finite declarations and non-finite
+    /// written values.
     ///
     /// # Errors
     ///
@@ -542,49 +528,81 @@ pub trait Stream {
         max: f32,
         resolution: f32,
     ) -> Result<(), Self::Error> {
+        // derive the wire constants, then run the one audited home of the quantization
+        // arithmetic. this body IS the pre-#82 function, split at the line schema issue
+        // mas-bandwidth/schema#82 names: everything that depends only on the declaration
+        // lives in serialize_compressed_float_params, everything that touches the value or
+        // the wire lives in serialize_compressed_float_precomputed, statement for statement.
+        // test_compressed_float_precomputed_differential holds this composition to byte and
+        // bit identity against a frozen copy of the original unsplit body.
+        let params = serialize_compressed_float_params(min, max, resolution);
+        self.serialize_compressed_float_precomputed(
+            value,
+            params.max_integer_value,
+            params.bits,
+            params.delta,
+            min,
+        )
+    }
+
+    /// Serialize a float value compressed to a quantized integer from precomputed wire
+    /// constants (write, read or measure).
+    ///
+    /// The precomputed companion to [`Stream::serialize_compressed_float`], and the audited
+    /// home of the compressed float quantization arithmetic: `serialize_compressed_float`
+    /// derives its constants per call and forwards here, while generated code passes
+    /// constants a schema compiler derived at generation time with the same arithmetic as
+    /// [`serialize_compressed_float_params`], skipping the per-field divide, clamp, ceil and
+    /// [`bits_required`]. The two entry points are wire identical by construction, and
+    /// `test_compressed_float_precomputed_differential` holds both, plus a frozen copy of
+    /// the pre-split function, to byte and bit identity across the declaration corpus.
+    ///
+    /// On write, the value is clamped into the declared range and quantized; writing a
+    /// non-finite value is non-conforming (STANDARD.md) and a debug assertion. The constants
+    /// must be exactly what [`serialize_compressed_float_params`] derives for a conforming
+    /// declaration — anything else is API misuse, a debug assertion on every stream,
+    /// compiled out in release (writer-trusted).
+    ///
+    /// # Errors
+    ///
+    /// On read, [`Error::Overflow`] if the read would pass the end of the buffer, or
+    /// [`Error::ValueOutOfRange`] if the quantized integer is above `max_integer_value` — a
+    /// malicious packet can smuggle one into the bit headroom of the encoding. Writes and
+    /// measures cannot error.
+    #[inline]
+    fn serialize_compressed_float_precomputed(
+        &mut self,
+        value: &mut f32,
+        max_integer_value: u32,
+        bits: u32,
+        delta: f32,
+        min: f32,
+    ) -> Result<(), Self::Error> {
         misuse_check!(
-            min < max && resolution > 0.0,
-            "serialize_compressed_float: requires min < max and resolution > 0"
+            max_integer_value >= 1,
+            "serialize_compressed_float_precomputed: max_integer_value must be at least 1"
         );
-
-        let delta = max - min;
-
-        // declaration validity (the fork #6 ruling, Glenn, 2026-08-15: "it's non-conforming.
-        // also, attempting to send NaN or INF or anything else through compressed float is
-        // non-conforming and should assert out on write too."): a declaration whose delta or
-        // quantum count is not finite asserts at the param computation site, in every stream
-        // kind — the declaration is caller code, never packet data
-        debug_assert!(
+        misuse_check!(
+            bits == bits_required(0, max_integer_value),
+            "serialize_compressed_float_precomputed: bits ({bits}) must equal bits_required(0, {max_integer_value})"
+        );
+        misuse_check!(
+            delta > 0.0,
+            "serialize_compressed_float_precomputed: delta must be positive (got {delta})"
+        );
+        misuse_check!(
             delta.is_finite(),
-            "serialize_compressed_float: max - min must be finite (got {delta})"
+            "serialize_compressed_float_precomputed: delta must be finite (got {delta})"
         );
-
-        // clamp so the u32 conversion below is defined even for pathological delta / resolution
-        // (NaN also lands in the low clamp)
-        let mut values = delta / resolution;
-        debug_assert!(
-            values.is_finite(),
-            "serialize_compressed_float: (max - min) / resolution must be finite (got {values})"
-        );
-        if values.is_nan() || values < 1.0 {
-            values = 1.0;
-        } else if values > 4_294_967_040.0 {
-            // largest float below 2^32
-            values = 4_294_967_040.0;
-        }
-
-        let max_integer_value = values.ceil() as u32;
-
-        let bits = bits_required(0, max_integer_value);
 
         let mut integer_value = 0u32;
 
         if Self::IS_WRITING {
-            // value validity (the same fork #6 ruling): sending a non-finite value through a
+            // value validity (the fork #6 ruling): sending a non-finite value through a
             // compressed float is non-conforming — assert at intake
             debug_assert!(
                 value.is_finite(),
-                "serialize_compressed_float: written value must be finite (got {value})"
+                "serialize_compressed_float_precomputed: written value must be finite (got {value})"
             );
             // clamp NaN into range instead of letting it reach the u32 conversion below
             let mut normalized_value = (*value - min) / delta;
@@ -638,13 +656,11 @@ pub trait Stream {
     /// every storage width: nothing is written, and the reader recovers the value from the
     /// range alone — the raw value `min_units << fraction_bits`.
     ///
-    /// # Panics
-    ///
-    /// On read, panics on API misuse, matching the C++ library's `static_assert`s:
-    /// `integer_bits` of zero, `integer_bits + fraction_bits` not equal to the storage
-    /// width, `min_units > max_units` (an inverted range), or bounds that do not fit the Q
-    /// format's whole unit capacity. On write and measure the same misuse is a debug
-    /// assertion.
+    /// API misuse — the conditions the C++ library rejects with `static_assert`s — is a
+    /// debug assertion on every stream, compiled out in release: `integer_bits` of zero,
+    /// `integer_bits + fraction_bits` not equal to the storage width, `min_units >
+    /// max_units` (an inverted range), or bounds that do not fit the Q format's whole unit
+    /// capacity.
     ///
     /// # Errors
     ///
@@ -819,6 +835,87 @@ pub trait Stream {
         }
 
         Ok(())
+    }
+}
+
+/// The wire constants a compressed float declaration derives to, produced by
+/// [`serialize_compressed_float_params`] and consumed by
+/// [`Stream::serialize_compressed_float_precomputed`].
+///
+/// `min` completes the constant set — it passes from the declaration to the precomputed
+/// entry point unchanged, so it is not duplicated here.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct CompressedFloatParams {
+    /// The quantization step count: `ceil((max - min) / resolution)` in float32, clamped to
+    /// `[1,4294967040]`. Values quantize to integers in `[0,max_integer_value]`.
+    pub max_integer_value: u32,
+    /// The wire width: [`bits_required`]`(0, max_integer_value)`, the number of bits a
+    /// quantized value occupies on the wire, in `[1,32]`.
+    pub bits: u32,
+    /// The range width `max - min`, computed in float32. The quantization arithmetic is
+    /// pinned to float32, so the wire depends on this exact value, not on the real-number
+    /// difference.
+    pub delta: f32,
+}
+
+/// Derive the compressed float wire constants from a `(min,max,resolution)` declaration.
+///
+/// This is the derivation [`Stream::serialize_compressed_float`] performs on every call,
+/// exposed so it can be paid once instead: the constants depend only on the declaration,
+/// never on the value, so a schema compiler runs the same derivation at code generation
+/// time and passes the results to [`Stream::serialize_compressed_float_precomputed`] at
+/// every call site. `serialize_compressed_float` itself derives with exactly this function
+/// and forwards to exactly that entry point, so the two entry points are wire identical by
+/// construction.
+///
+/// A declaration whose `delta = max - min`, or whose `delta / resolution`, is not finite in
+/// float32 is non-conforming (STANDARD.md, adopted 2026-08-15) and a debug assertion, as
+/// are `min >= max` and `resolution <= 0` — API misuse, compiled out in release.
+#[must_use]
+pub fn serialize_compressed_float_params(
+    min: f32,
+    max: f32,
+    resolution: f32,
+) -> CompressedFloatParams {
+    misuse_check!(
+        min < max && resolution > 0.0,
+        "serialize_compressed_float_params: requires min < max and resolution > 0"
+    );
+
+    let delta = max - min;
+
+    // declaration validity (the fork #6 ruling, Glenn, 2026-08-15: "it's non-conforming.
+    // also, attempting to send NaN or INF or anything else through compressed float is
+    // non-conforming and should assert out on write too."): a declaration whose delta or
+    // quantum count is not finite asserts at the param computation site, in every stream
+    // kind — the declaration is caller code, never packet data
+    debug_assert!(
+        delta.is_finite(),
+        "serialize_compressed_float_params: max - min must be finite (got {delta})"
+    );
+
+    // clamp so the u32 conversion below is defined even for pathological delta / resolution
+    // (NaN also lands in the low clamp)
+    let mut values = delta / resolution;
+    debug_assert!(
+        values.is_finite(),
+        "serialize_compressed_float_params: (max - min) / resolution must be finite (got {values})"
+    );
+    if values.is_nan() || values < 1.0 {
+        values = 1.0;
+    } else if values > 4_294_967_040.0 {
+        // largest float below 2^32
+        values = 4_294_967_040.0;
+    }
+
+    let max_integer_value = values.ceil() as u32;
+
+    let bits = bits_required(0, max_integer_value);
+
+    CompressedFloatParams {
+        max_integer_value,
+        bits,
+        delta,
     }
 }
 
