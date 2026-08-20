@@ -85,7 +85,11 @@ zero unsafe, BSD-3.
 - `src/stream.rs` — `Stream` trait: `type Error` (Error on read, Infallible on write/measure)
   and `fail()`, required primitives per stream (bits/bytes/align/strings) plus default
   methods for everything derivable (int/int64/int128/bits64/bool/u8-u64/u128/
-  f32/f64/compressed float/fixed point/int relative). `IS_WRITING`/`IS_READING` are associated
+  f32/f64/compressed float/fixed point/int relative). `serialize_compressed_float_precomputed`
+  is the audited home of the compressed float quantization arithmetic (schema#82):
+  `serialize_compressed_float` derives its constants per call with the free function
+  `serialize_compressed_float_params` and forwards there, and generated code passes constants
+  a schema compiler derived at generation time. `IS_WRITING`/`IS_READING` are associated
   consts, so the branches monomorphize away, and `misuse_check!` keeps argument misuse a hard
   assert on read but debug-only on the writer-trusted paths. `FixedPointStorage` is the storage trait behind
   `serialize_fixed` (i8..i128 and their unsigned twins). `Serialize` trait for objects.

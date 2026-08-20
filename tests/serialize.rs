@@ -6,9 +6,9 @@
 #![allow(clippy::float_cmp)]
 
 use serialize::{
-    BitReader, BitWriter, Error, FixedPointStorage, MeasureStream, ReadStream, Result, Serialize,
-    Stream, WriteStream, bits_required, bits_required64, bits_required128, signed_to_unsigned,
-    unsigned_to_signed,
+    BitReader, BitWriter, CompressedFloatParams, Error, FixedPointStorage, MeasureStream,
+    ReadStream, Result, Serialize, Stream, WriteStream, bits_required, bits_required64,
+    bits_required128, serialize_compressed_float_params, signed_to_unsigned, unsigned_to_signed,
 };
 
 #[test]
@@ -873,6 +873,69 @@ fn test_compressed_float_validation() {
     }
 }
 
+#[test]
+fn test_compressed_float_precomputed_validation() {
+    // the constants serialize_compressed_float derives on every call, derived once instead:
+    // the precomputed read path must refuse the same smuggled integers and accept the same
+    // conforming ones as the derive-per-call path.
+    let params = serialize_compressed_float_params(0.0, 10.0, 0.01);
+    assert_eq!(params.max_integer_value, 1000);
+    assert_eq!(params.bits, 10);
+    assert_eq!(params.delta, 10.0);
+
+    // a malicious packet can encode integer values above max_integer_value in the bit
+    // headroom. reads must reject them.
+    {
+        let mut buffer = [0u8; 8 + 8];
+
+        {
+            let mut write_stream = WriteStream::new(&mut buffer[..8]);
+            // max_integer_value is 1000 for [0,10] at resolution 0.01 -> 10 bits
+            let mut out_of_range = 1023u32;
+            write_stream.serialize_bits(&mut out_of_range, 10).unwrap();
+            write_stream.flush();
+        }
+
+        let mut read_stream = ReadStream::new(&buffer, 8);
+        let mut value = 0.0f32;
+        assert_eq!(
+            read_stream.serialize_compressed_float_precomputed(
+                &mut value,
+                params.max_integer_value,
+                params.bits,
+                params.delta,
+                0.0
+            ),
+            Err(Error::ValueOutOfRange)
+        );
+    }
+
+    // the highest conforming integer still decodes
+    {
+        let mut buffer = [0u8; 8 + 8];
+
+        {
+            let mut write_stream = WriteStream::new(&mut buffer[..8]);
+            let mut top_of_range = 1000u32;
+            write_stream.serialize_bits(&mut top_of_range, 10).unwrap();
+            write_stream.flush();
+        }
+
+        let mut read_stream = ReadStream::new(&buffer, 8);
+        let mut value = 0.0f32;
+        read_stream
+            .serialize_compressed_float_precomputed(
+                &mut value,
+                params.max_integer_value,
+                params.bits,
+                params.delta,
+                0.0,
+            )
+            .unwrap();
+        assert_eq!(value, 10.0); // 1000 / 1000 * 10 + 0: exact at the top of the range
+    }
+}
+
 // The write path is trusted as of 2.0: a deliberately-invalid write is a debug assertion
 // (compiled out in release), never an `Err`. These tests pin that the asserts really fire in
 // a debug build; `test_compressed_float_nan_clamps_in_release` below pins the release
@@ -1233,6 +1296,35 @@ fn test_compressed_float_non_finite_quantum_count_asserts_in_debug() {
     let mut write_stream = WriteStream::new(&mut buffer);
     let mut value = 0.0f32;
     let Ok(()) = write_stream.serialize_compressed_float(&mut value, 0.0, f32::MAX, 1.0e-38);
+}
+
+// The precomputed entry point carries the same write-side contract as
+// serialize_compressed_float (a non-finite value asserts, STANDARD.md) plus its own:
+// constants that are not what serialize_compressed_float_params derives are a caller bug.
+
+#[test]
+#[cfg(debug_assertions)]
+#[should_panic(expected = "written value must be finite")]
+fn test_compressed_float_precomputed_nan_write_asserts_in_debug() {
+    // the same non-conforming NaN write, through the precomputed entry point directly
+    let mut buffer = [0u8; 8];
+    let mut write_stream = WriteStream::new(&mut buffer);
+    let mut value = f32::from_bits(0x7fc00000); // quiet NaN bit pattern
+    let Ok(()) =
+        write_stream.serialize_compressed_float_precomputed(&mut value, 1000, 10, 10.0, 0.0);
+}
+
+#[test]
+#[cfg(debug_assertions)]
+#[should_panic(expected = "must equal bits_required")]
+fn test_compressed_float_precomputed_inconsistent_bits_asserts_in_debug() {
+    // a wire width that disagrees with the step count is a caller bug: the field would not
+    // occupy the width every other conforming implementation of the declaration expects
+    let mut buffer = [0u8; 8];
+    let mut write_stream = WriteStream::new(&mut buffer);
+    let mut value = 5.0f32;
+    let Ok(()) =
+        write_stream.serialize_compressed_float_precomputed(&mut value, 1000, 11, 10.0, 0.0);
 }
 
 // the release backstop for non-conforming values: with the debug asserts compiled out, a NaN
@@ -2116,6 +2208,718 @@ fn test_serialize_int128() {
             .unwrap();
         assert_eq!(read_back, golden_value);
     }
+}
+
+// The non-zero-min conformance vector, through the PRECOMPUTED entry point, with the
+// constants a schema compiler derives for [-100,100] at resolution 0.01 written as literals —
+// exactly what generated code would pass. Same pinned bytes, same pinned decoded bit patterns
+// as the C++ suite's test_compressed_float_precomputed_conformance: the precomputed path is
+// held to the conformance law directly, independently of the differential below.
+
+fn compressed_float_precomputed_conformance_serialize<S: Stream>(
+    stream: &mut S,
+    a: &mut f32,
+    b: &mut f32,
+    c: &mut f32,
+) -> Result<(), S::Error> {
+    stream.serialize_compressed_float_precomputed(a, 20000, 15, 200.0, -100.0)?;
+    stream.serialize_compressed_float_precomputed(b, 20000, 15, 200.0, -100.0)?;
+    stream.serialize_compressed_float_precomputed(c, 20000, 15, 200.0, -100.0)?;
+    stream.serialize_align()?;
+    Ok(())
+}
+
+#[test]
+fn test_compressed_float_precomputed_conformance() {
+    const PINNED_BYTES: [u8; 6] = [0x10, 0xA7, 0x06, 0x80, 0x82, 0x06];
+
+    // write side: the precomputed quantization must produce exactly the pinned bytes
+    {
+        let mut buffer = [0u8; 64];
+        let mut stream = WriteStream::new(&mut buffer);
+        let mut a = 0.0f32;
+        let mut b = -99.875f32;
+        let mut c = -33.34f32;
+        compressed_float_precomputed_conformance_serialize(&mut stream, &mut a, &mut b, &mut c)
+            .unwrap();
+        stream.flush();
+        assert_eq!(stream.bytes_processed() as usize, PINNED_BYTES.len());
+        assert_eq!(buffer[..PINNED_BYTES.len()], PINNED_BYTES);
+    }
+
+    // read side: the decoded floats are pinned bit-exactly, as in the C++ suite's
+    // derive-per-call vector for the same declaration
+    {
+        let mut buffer = [0u8; 64];
+        buffer[..PINNED_BYTES.len()].copy_from_slice(&PINNED_BYTES);
+        let mut stream = ReadStream::new(&buffer, PINNED_BYTES.len());
+        let mut a = -1.0f32;
+        let mut b = -1.0f32;
+        let mut c = -1.0f32;
+        compressed_float_precomputed_conformance_serialize(&mut stream, &mut a, &mut b, &mut c)
+            .unwrap();
+        assert_eq!(a.to_bits(), 0x00000000);
+        assert_eq!(b.to_bits(), 0xC2C7BD71);
+        assert_eq!(c.to_bits(), 0xC2055C2A);
+    }
+}
+
+// The mas-bandwidth/schema#82 differential, ported from the C++ suite's
+// test_compressed_float_precomputed_differential: the derive-per-call compressed float
+// against the precomputed one. Three implementations must be indistinguishable in measured
+// bits, wire bytes, read acceptance and decoded BIT PATTERNS on every input:
+//
+//   frozen      -- serialize_compressed_float_frozen_reference below, a verbatim copy of the
+//                  Stream::serialize_compressed_float body as it stood BEFORE it was split
+//                  into serialize_compressed_float_params plus the precomputed home. FROZEN:
+//                  never edit it. it is the code the audited home replaced, kept so the
+//                  differential proves the split changed nothing, forever.
+//   legacy      -- serialize_compressed_float(value, min, max, resolution), which since the
+//                  split derives the constants per call and forwards to the audited home.
+//   precomputed -- serialize_compressed_float_precomputed(..) with constants derived once
+//                  per declaration by serialize_compressed_float_params, exactly as a schema
+//                  compiler derives them at generation time.
+//
+// the declaration corpus is every compressed float declaration the schema compiler's
+// examples, bench corpus and test data emit (harvested from the mas-bandwidth/schema PR #79
+// differential, which proved the same property for the Go generation-time fold), plus the
+// family's golden, conformance, fuzz and example declarations, plus shapes at the edges of
+// the derivation itself: resolution coarser than the range, a step count that exactly fills
+// its wire width, a million steps, and the clamp at the largest float below 2^32.
+//
+// inputs per declaration: a dense sweep with overshoot past both bounds, the quantization
+// step edges and midpoints with their one-ulp neighbors (the midpoints are where a fused or
+// widened writer diverges — STANDARD.md's 0.005-over-[0,10] class), specials (bounds and
+// their one-ulp neighbors, negative zero, subnormals, float extremes), LCG uniform in-range
+// values and LCG uniform float32 bit patterns — and on the read side every representable
+// wire integer including the bit headroom, exhaustively up to 16-bit widths and sampled with
+// the boundary codes pinned above that. decoded values compare by BIT PATTERN, never by
+// tolerance: the divergence a fused or widened decode produces is one ulp, invisible to any
+// tolerance.
+
+fn serialize_compressed_float_frozen_reference<S: Stream>(
+    stream: &mut S,
+    value: &mut f32,
+    min: f32,
+    max: f32,
+    resolution: f32,
+) -> Result<(), S::Error> {
+    // verbatim pre-split Stream::serialize_compressed_float, comments elided, statements
+    // identical (misuse_check! is spelled as the debug_assert! it expands to; the float
+    // locals and expressions are what pin the two roundings). DO NOT EDIT.
+    debug_assert!(
+        min < max && resolution > 0.0,
+        "serialize_compressed_float: requires min < max and resolution > 0"
+    );
+
+    let delta = max - min;
+
+    debug_assert!(
+        delta.is_finite(),
+        "serialize_compressed_float: max - min must be finite (got {delta})"
+    );
+
+    let mut values = delta / resolution;
+    debug_assert!(
+        values.is_finite(),
+        "serialize_compressed_float: (max - min) / resolution must be finite (got {values})"
+    );
+    if values.is_nan() || values < 1.0 {
+        values = 1.0;
+    } else if values > 4_294_967_040.0 {
+        // largest float below 2^32
+        values = 4_294_967_040.0;
+    }
+
+    let max_integer_value = values.ceil() as u32;
+
+    let bits = bits_required(0, max_integer_value);
+
+    let mut integer_value = 0u32;
+
+    if S::IS_WRITING {
+        debug_assert!(
+            value.is_finite(),
+            "serialize_compressed_float: written value must be finite (got {value})"
+        );
+        let mut normalized_value = (*value - min) / delta;
+        if normalized_value.is_nan() || normalized_value < 0.0 {
+            normalized_value = 0.0;
+        } else if normalized_value > 1.0 {
+            normalized_value = 1.0;
+        }
+        integer_value = (normalized_value * max_integer_value as f32 + 0.5).floor() as u32;
+    }
+
+    stream.serialize_bits(&mut integer_value, bits)?;
+
+    if S::IS_READING {
+        if integer_value > max_integer_value {
+            return S::fail(Error::ValueOutOfRange);
+        }
+        let normalized_value = integer_value as f32 / max_integer_value as f32;
+        *value = normalized_value * delta + min;
+    }
+
+    Ok(())
+}
+
+// one-ulp neighbors: f32::next_up/next_down stabilized in Rust 1.86, past the 1.85 MSRV, so
+// the step is taken on the bit pattern. finite inputs only, which is all the corpus feeds them.
+
+fn ulp_up(x: f32) -> f32 {
+    if x == 0.0 {
+        f32::from_bits(1) // the smallest positive subnormal, from either zero
+    } else if x > 0.0 {
+        f32::from_bits(x.to_bits() + 1)
+    } else {
+        f32::from_bits(x.to_bits() - 1)
+    }
+}
+
+fn ulp_down(x: f32) -> f32 {
+    if x == 0.0 {
+        f32::from_bits(0x8000_0001) // the smallest negative subnormal, from either zero
+    } else if x > 0.0 {
+        f32::from_bits(x.to_bits() - 1)
+    } else {
+        f32::from_bits(x.to_bits() + 1)
+    }
+}
+
+// every failed condition names the input that produced it, so a red run reproduces directly;
+// the count is the coverage floor's evidence
+macro_rules! differential_check {
+    ($checks:expr, $cond:expr, $($context:tt)+) => {
+        assert!($cond, $($context)+);
+        *$checks += 1;
+    };
+}
+
+// one written value through all three implementations: measured bits, wire bytes and decoded
+// bit patterns must agree exactly
+// the three implementations run measure, write and read in lockstep, mirroring the C++
+// suite's check_compressed_float_value_agrees; splitting it would separate the three legs
+// from the comparisons that are the whole point of driving them together
+#[allow(clippy::too_many_lines)]
+fn check_compressed_float_value_agrees(
+    checks: &mut u64,
+    value: f32,
+    min: f32,
+    max: f32,
+    resolution: f32,
+    params: CompressedFloatParams,
+) {
+    let context = format!(
+        "value {value} ({:#010X}) over [{min},{max}] at resolution {resolution}",
+        value.to_bits()
+    );
+
+    // measure: all three forms agree on cost
+    let mut measure_frozen = MeasureStream::new();
+    let mut measure_value = value;
+    let Ok(()) = serialize_compressed_float_frozen_reference(
+        &mut measure_frozen,
+        &mut measure_value,
+        min,
+        max,
+        resolution,
+    );
+    let mut measure_legacy = MeasureStream::new();
+    measure_value = value;
+    let Ok(()) =
+        measure_legacy.serialize_compressed_float(&mut measure_value, min, max, resolution);
+    let mut measure_precomputed = MeasureStream::new();
+    measure_value = value;
+    let Ok(()) = measure_precomputed.serialize_compressed_float_precomputed(
+        &mut measure_value,
+        params.max_integer_value,
+        params.bits,
+        params.delta,
+        min,
+    );
+    differential_check!(
+        checks,
+        measure_frozen.bits_processed() == measure_legacy.bits_processed(),
+        "{context}"
+    );
+    differential_check!(
+        checks,
+        measure_frozen.bits_processed() == measure_precomputed.bits_processed(),
+        "{context}"
+    );
+
+    // write: byte identical wire from all three
+    let mut buffer_frozen = [0u8; 8 + 8]; // + 8: read buffer allocations extend 8 bytes past the data
+    let mut buffer_legacy = [0u8; 8 + 8];
+    let mut buffer_precomputed = [0u8; 8 + 8];
+
+    let bits_frozen;
+    {
+        let mut stream = WriteStream::new(&mut buffer_frozen[..8]);
+        let mut write_value = value;
+        let Ok(()) = serialize_compressed_float_frozen_reference(
+            &mut stream,
+            &mut write_value,
+            min,
+            max,
+            resolution,
+        );
+        stream.flush();
+        bits_frozen = stream.bits_processed();
+    }
+    let bits_legacy;
+    {
+        let mut stream = WriteStream::new(&mut buffer_legacy[..8]);
+        let mut write_value = value;
+        let Ok(()) = stream.serialize_compressed_float(&mut write_value, min, max, resolution);
+        stream.flush();
+        bits_legacy = stream.bits_processed();
+    }
+    let bits_precomputed;
+    {
+        let mut stream = WriteStream::new(&mut buffer_precomputed[..8]);
+        let mut write_value = value;
+        let Ok(()) = stream.serialize_compressed_float_precomputed(
+            &mut write_value,
+            params.max_integer_value,
+            params.bits,
+            params.delta,
+            min,
+        );
+        stream.flush();
+        bits_precomputed = stream.bits_processed();
+    }
+
+    differential_check!(checks, bits_frozen == bits_legacy, "{context}");
+    differential_check!(checks, bits_frozen == bits_precomputed, "{context}");
+    differential_check!(checks, buffer_frozen == buffer_legacy, "{context}");
+    differential_check!(checks, buffer_frozen == buffer_precomputed, "{context}");
+
+    // read: decoded BIT PATTERNS agree exactly — one ulp of divergence must fail
+    let mut read_frozen = ReadStream::new(&buffer_frozen, 8);
+    let mut decoded_frozen = 0.0f32;
+    differential_check!(
+        checks,
+        serialize_compressed_float_frozen_reference(
+            &mut read_frozen,
+            &mut decoded_frozen,
+            min,
+            max,
+            resolution
+        )
+        .is_ok(),
+        "{context}"
+    );
+    let mut read_legacy = ReadStream::new(&buffer_frozen, 8);
+    let mut decoded_legacy = 0.0f32;
+    differential_check!(
+        checks,
+        read_legacy
+            .serialize_compressed_float(&mut decoded_legacy, min, max, resolution)
+            .is_ok(),
+        "{context}"
+    );
+    let mut read_precomputed = ReadStream::new(&buffer_frozen, 8);
+    let mut decoded_precomputed = 0.0f32;
+    differential_check!(
+        checks,
+        read_precomputed
+            .serialize_compressed_float_precomputed(
+                &mut decoded_precomputed,
+                params.max_integer_value,
+                params.bits,
+                params.delta,
+                min
+            )
+            .is_ok(),
+        "{context}"
+    );
+
+    differential_check!(
+        checks,
+        decoded_frozen.to_bits() == decoded_legacy.to_bits(),
+        "{context}: frozen {:#010X} legacy {:#010X}",
+        decoded_frozen.to_bits(),
+        decoded_legacy.to_bits()
+    );
+    differential_check!(
+        checks,
+        decoded_frozen.to_bits() == decoded_precomputed.to_bits(),
+        "{context}: frozen {:#010X} precomputed {:#010X}",
+        decoded_frozen.to_bits(),
+        decoded_precomputed.to_bits()
+    );
+}
+
+// one wire integer through all three read paths: acceptance must agree (the headroom
+// refusal), and accepted codes must decode to identical bit patterns
+fn check_compressed_float_code_agrees(
+    checks: &mut u64,
+    code: u32,
+    min: f32,
+    max: f32,
+    resolution: f32,
+    params: CompressedFloatParams,
+) {
+    let mut buffer = [0u8; 8 + 8]; // + 8: read buffer allocations extend 8 bytes past the data
+    {
+        let mut stream = WriteStream::new(&mut buffer[..8]);
+        let mut raw = code;
+        let Ok(()) = stream.serialize_bits(&mut raw, params.bits);
+        stream.flush();
+    }
+
+    let mut read_frozen = ReadStream::new(&buffer, 8);
+    let mut decoded_frozen = 0.0f32;
+    let ok_frozen = serialize_compressed_float_frozen_reference(
+        &mut read_frozen,
+        &mut decoded_frozen,
+        min,
+        max,
+        resolution,
+    )
+    .is_ok();
+
+    let mut read_legacy = ReadStream::new(&buffer, 8);
+    let mut decoded_legacy = 0.0f32;
+    let ok_legacy = read_legacy
+        .serialize_compressed_float(&mut decoded_legacy, min, max, resolution)
+        .is_ok();
+
+    let mut read_precomputed = ReadStream::new(&buffer, 8);
+    let mut decoded_precomputed = 0.0f32;
+    let ok_precomputed = read_precomputed
+        .serialize_compressed_float_precomputed(
+            &mut decoded_precomputed,
+            params.max_integer_value,
+            params.bits,
+            params.delta,
+            min,
+        )
+        .is_ok();
+
+    let context = format!("code {code} over [{min},{max}] at resolution {resolution}");
+    differential_check!(checks, ok_frozen == ok_legacy, "{context}");
+    differential_check!(checks, ok_frozen == ok_precomputed, "{context}");
+    // the headroom refusal itself
+    differential_check!(
+        checks,
+        ok_frozen == (code <= params.max_integer_value),
+        "{context}"
+    );
+
+    if ok_frozen {
+        differential_check!(
+            checks,
+            decoded_frozen.to_bits() == decoded_legacy.to_bits(),
+            "{context}"
+        );
+        differential_check!(
+            checks,
+            decoded_frozen.to_bits() == decoded_precomputed.to_bits(),
+            "{context}"
+        );
+    }
+}
+
+// (min, max, resolution, pinned max_integer_value, pinned bits): the constants a schema
+// compiler emits for each declaration — the first eleven rows are the values the schema
+// PR #79 differential published
+#[rustfmt::skip]
+const COMPRESSED_FLOAT_SHAPES: [(f32, f32, f32, u32, u32); 19] = [
+    // the schema compiler's corpus: examples, bench/corpus/RealWorld.schema and its test data
+    (0.0,       2000.0,        0.1,      20000,        15),
+    (-2.0,      2.0,           0.25,     16,           5),
+    (-90.0,     90.0,          0.5,      360,          9),
+    (0.0,       30.0,          0.5,      60,           6),
+    (-100.0,    100.0,         0.25,     800,          10),
+    (0.0,       2000.0,        1.0,      2000,         11),
+    (0.0,       10.0,          0.02,     500,          9),
+    (0.0,       100.0,         0.01,     10000,        14),
+    (-180.0,    180.0,         0.01,     36000,        16),
+    (0.0,       10.0,          0.01,     1000,         10),      // also the family golden wire declaration
+    (-5.0,      5.0,           0.001,    10000,        14),
+    // the C++ suite's own declarations, kept so the suites stay diffable
+    (-100.0,    100.0,         0.01,     20000,        15),      // the non-zero-min conformance vector above
+    (-10.0,     10.0,          0.01,     2000,         11),      // the C++ fuzz harness declaration
+    (-1.0,      1.0,           0.001,    2000,         11),      // example.cpp's orientation declaration
+    // this repo's own declaration: the fuzz round_trip target and examples/packet.rs
+    (-1000.0,   1000.0,        0.01,     200000,       18),
+    // shapes at the edges of the derivation itself
+    (0.0,       1.0,           2.0,      1,            1),       // resolution coarser than the range: values clamps up to 1
+    (0.0,       15.0,          1.0,      15,           4),       // step count exactly fills the wire width: no headroom to refuse
+    (0.0,       1000000.0,     1.0,      1000000,      20),      // a million steps
+    (0.0,       10000000000.0, 1.0,      4294967040,   32),      // values clamps down to the largest float below 2^32
+];
+
+// Miri runs the differential ~100x slower, so trim the sweeps (and sample the shape list)
+// while keeping every input family and check kind exercised; the full counts run everywhere
+// else, including CI
+const DIFFERENTIAL_SWEEP_STEPS: u32 = if cfg!(miri) { 8 } else { 2048 };
+const DIFFERENTIAL_MIDPOINT_SLICES: u32 = if cfg!(miri) { 2 } else { 512 };
+const DIFFERENTIAL_LCG_DRAWS: u32 = if cfg!(miri) { 4 } else { 2048 };
+const DIFFERENTIAL_CODE_PREFIX: u32 = if cfg!(miri) { 16 } else { 1024 };
+const DIFFERENTIAL_CODE_WINDOW: u32 = if cfg!(miri) { 8 } else { 512 };
+const DIFFERENTIAL_CODE_TAIL: u32 = if cfg!(miri) { 4 } else { 64 };
+
+fn next_lcg(lcg: &mut u64) -> u64 {
+    *lcg = lcg
+        .wrapping_mul(6364136223846793005)
+        .wrapping_add(1442695040888963407);
+    *lcg
+}
+
+#[test]
+#[allow(clippy::too_many_lines)] // one test per the C++ suite's structure: the corpus and the
+// sweeps that drive it belong together, exactly as in serialize.h
+fn test_compressed_float_precomputed_differential() {
+    let mut checks: u64 = 0;
+    let mut lcg: u64 = 0xC0FFEE1234567890; // fixed seed: failures reproduce
+
+    for (index, &(min, max, resolution, expected_max_integer_value, expected_bits)) in
+        COMPRESSED_FLOAT_SHAPES.iter().enumerate()
+    {
+        if cfg!(miri) && index % 6 != 0 {
+            continue; // miri samples the shape list; everywhere else every shape runs
+        }
+
+        let params = serialize_compressed_float_params(min, max, resolution);
+
+        // the derived constants are pinned against the schema compiler's generation-time table
+        assert_eq!(
+            params.max_integer_value, expected_max_integer_value,
+            "shape {index}"
+        );
+        assert_eq!(params.bits, expected_bits, "shape {index}");
+        assert_eq!(params.delta, max - min, "shape {index}");
+        checks += 3;
+
+        let dmin = f64::from(min);
+        let ddelta = f64::from(params.delta);
+
+        // dense sweep with overshoot a quarter of the range past both bounds
+        {
+            let lo = dmin - 0.25 * ddelta;
+            let span = 1.5 * ddelta;
+            for i in 0..=DIFFERENTIAL_SWEEP_STEPS {
+                let value = (lo + span * f64::from(i) / f64::from(DIFFERENTIAL_SWEEP_STEPS)) as f32;
+                check_compressed_float_value_agrees(
+                    &mut checks,
+                    value,
+                    min,
+                    max,
+                    resolution,
+                    params,
+                );
+            }
+        }
+
+        // quantization step edges and midpoints, with their one-ulp neighbors. the midpoints
+        // are the discriminating band: 0.005 over [0,10] at 0.01 quantizes to 1 under the
+        // required two roundings and to 0 under a fused or widened writer (STANDARD.md)
+        {
+            let stride = u64::from(params.max_integer_value / DIFFERENTIAL_MIDPOINT_SLICES + 1);
+            let mut k: u64 = 0;
+            while k <= u64::from(params.max_integer_value) {
+                let on_quantum =
+                    (dmin + ddelta * (k as f64 / f64::from(params.max_integer_value))) as f32;
+                let midpoint = (dmin
+                    + ddelta * ((k as f64 + 0.5) / f64::from(params.max_integer_value)))
+                    as f32;
+                for value in [
+                    on_quantum,
+                    ulp_down(on_quantum),
+                    ulp_up(on_quantum),
+                    midpoint,
+                    ulp_down(midpoint),
+                    ulp_up(midpoint),
+                ] {
+                    check_compressed_float_value_agrees(
+                        &mut checks,
+                        value,
+                        min,
+                        max,
+                        resolution,
+                        params,
+                    );
+                }
+                k += stride;
+            }
+        }
+
+        // specials: the bounds and their one-ulp neighbors, both zeros, subnormals, extremes
+        {
+            let specials = [
+                min,
+                max,
+                ulp_down(min),
+                ulp_up(min),
+                ulp_down(max),
+                ulp_up(max),
+                min - resolution,
+                max + resolution,
+                min + resolution * 0.5,
+                max - resolution * 0.5,
+                min - params.delta,
+                max + params.delta,
+                0.0,
+                -0.0,
+                resolution,
+                -resolution,
+                f32::MAX,
+                -f32::MAX,
+                f32::MIN_POSITIVE,
+                -f32::MIN_POSITIVE,
+                f32::from_bits(1), // the smallest subnormal
+                f32::from_bits(0x8000_0001),
+                1.0e30,
+                -1.0e30,
+            ];
+            for value in specials {
+                check_compressed_float_value_agrees(
+                    &mut checks,
+                    value,
+                    min,
+                    max,
+                    resolution,
+                    params,
+                );
+            }
+        }
+
+        // non-finite inputs are non-conforming and assert in debug (proven by the
+        // should_panic tests above), so the release build is where the differential can
+        // drive them: the clamp must force NaN and both infinities to the same wire in all
+        // three implementations
+        #[cfg(not(debug_assertions))]
+        for pattern in [
+            0x7F800000u32,
+            0xFF800000,
+            0x7FC00000,
+            0x7F800001,
+            0xFFC00001,
+        ] {
+            check_compressed_float_value_agrees(
+                &mut checks,
+                f32::from_bits(pattern),
+                min,
+                max,
+                resolution,
+                params,
+            );
+        }
+
+        // LCG uniform values across the range and its overshoot band
+        for _ in 0..DIFFERENTIAL_LCG_DRAWS {
+            let fraction = (next_lcg(&mut lcg) >> 11) as f64 * (1.0 / 9007199254740992.0); // [0,1) in 53 bits
+            let value = (dmin - 0.25 * ddelta + fraction * 1.5 * ddelta) as f32;
+            check_compressed_float_value_agrees(&mut checks, value, min, max, resolution, params);
+        }
+
+        // LCG uniform float32 bit patterns, finite ones (non-finite writes assert in debug;
+        // the release-only block above drives those deliberately)
+        for _ in 0..DIFFERENTIAL_LCG_DRAWS {
+            let value = f32::from_bits((next_lcg(&mut lcg) >> 32) as u32);
+            if value.is_finite() {
+                check_compressed_float_value_agrees(
+                    &mut checks,
+                    value,
+                    min,
+                    max,
+                    resolution,
+                    params,
+                );
+            }
+        }
+
+        // the read side: every representable wire integer, including the bit headroom a
+        // malicious packet can encode into. exhaustive up to 16-bit widths; above that (and
+        // under miri) the boundary codes are pinned and the interior is sampled
+        {
+            let top_code = if params.bits == 32 {
+                u32::MAX
+            } else {
+                (1u32 << params.bits) - 1
+            };
+            if params.bits <= 16 && !cfg!(miri) {
+                for code in 0..=top_code {
+                    check_compressed_float_code_agrees(
+                        &mut checks,
+                        code,
+                        min,
+                        max,
+                        resolution,
+                        params,
+                    );
+                }
+            } else {
+                for code in 0..=top_code.min(DIFFERENTIAL_CODE_PREFIX) {
+                    check_compressed_float_code_agrees(
+                        &mut checks,
+                        code,
+                        min,
+                        max,
+                        resolution,
+                        params,
+                    );
+                }
+                let window_lo = params
+                    .max_integer_value
+                    .saturating_sub(DIFFERENTIAL_CODE_WINDOW);
+                let window_hi = if top_code - params.max_integer_value < DIFFERENTIAL_CODE_WINDOW {
+                    top_code
+                } else {
+                    params.max_integer_value + DIFFERENTIAL_CODE_WINDOW
+                };
+                for code in window_lo..=window_hi {
+                    check_compressed_float_code_agrees(
+                        &mut checks,
+                        code,
+                        min,
+                        max,
+                        resolution,
+                        params,
+                    );
+                }
+                for code in top_code.saturating_sub(DIFFERENTIAL_CODE_TAIL)..=top_code {
+                    check_compressed_float_code_agrees(
+                        &mut checks,
+                        code,
+                        min,
+                        max,
+                        resolution,
+                        params,
+                    );
+                }
+                for _ in 0..DIFFERENTIAL_LCG_DRAWS {
+                    let code = (next_lcg(&mut lcg) >> 32) as u32 & top_code;
+                    check_compressed_float_code_agrees(
+                        &mut checks,
+                        code,
+                        min,
+                        max,
+                        resolution,
+                        params,
+                    );
+                }
+            }
+        }
+    }
+
+    // the coverage floor: if the differential ever silently shrinks below the mass it was
+    // built with, that is a test bug, and it fails here instead of fading quietly
+    if !cfg!(miri) {
+        assert!(
+            checks >= 2_000_000,
+            "differential shrank to {checks} checks"
+        );
+    }
+
+    println!(
+        "({checks} checks, three implementations, {} declarations)",
+        COMPRESSED_FLOAT_SHAPES.len()
+    );
 }
 
 // Golden wire format test. The exact bytes produced by the serializer are pinned down here and

@@ -94,7 +94,9 @@ mod write_stream;
 pub use bitpacker::{BitReader, BitWriter};
 pub use measure_stream::MeasureStream;
 pub use read_stream::ReadStream;
-pub use stream::{FixedPointStorage, Serialize, Stream};
+pub use stream::{
+    CompressedFloatParams, FixedPointStorage, Serialize, Stream, serialize_compressed_float_params,
+};
 pub use write_stream::WriteStream;
 
 /// The error type for stream reads that fail.
