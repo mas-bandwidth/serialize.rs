@@ -2285,7 +2285,8 @@ fn test_compressed_float_precomputed_conformance() {
 // differential, which proved the same property for the Go generation-time fold), plus the
 // family's golden, conformance, fuzz and example declarations, plus shapes at the edges of
 // the derivation itself: resolution coarser than the range, a step count that exactly fills
-// its wire width, a million steps, and the clamp at the largest float below 2^32.
+// its wire width, a million steps, the clamp at the largest float below 2^32, and the
+// fractional quantum counts that pin ceil() against round().
 //
 // inputs per declaration: a dense sweep with overshoot past both bounds, the quantization
 // step edges and midpoints with their one-ulp neighbors (the midpoints are where a fused or
@@ -2627,7 +2628,7 @@ fn check_compressed_float_code_agrees(
 // compiler emits for each declaration — the first eleven rows are the values the schema
 // PR #79 differential published
 #[rustfmt::skip]
-const COMPRESSED_FLOAT_SHAPES: [(f32, f32, f32, u32, u32); 19] = [
+const COMPRESSED_FLOAT_SHAPES: [(f32, f32, f32, u32, u32); 21] = [
     // the schema compiler's corpus: examples, bench/corpus/RealWorld.schema and its test data
     (0.0,       2000.0,        0.1,      20000,        15),
     (-2.0,      2.0,           0.25,     16,           5),
@@ -2649,6 +2650,14 @@ const COMPRESSED_FLOAT_SHAPES: [(f32, f32, f32, u32, u32); 19] = [
     // shapes at the edges of the derivation itself
     (0.0,       1.0,           2.0,      1,            1),       // resolution coarser than the range: values clamps up to 1
     (0.0,       15.0,          1.0,      15,           4),       // step count exactly fills the wire width: no headroom to refuse
+    // fractional quantum counts: the ONLY shapes that pin the derivation's rounding rule.
+    // every other row above divides evenly (or lands within half a step of an integer), so
+    // ceil() and round() agree on them and the differential cannot tell the two apart —
+    // swapping ceil() for round() in serialize_compressed_float_params left the whole suite
+    // green before these rows existed. the first changes the step count alone, the second
+    // straddles a power of two so it changes the WIRE WIDTH too.
+    (0.0,       10.0,          0.3,      34,           6),       // 33.333332 steps: ceil 34, round 33
+    (0.0,       63.3,          1.0,      64,           7),       // 63.3 steps: ceil 64 (7 bits), round 63 (6 bits)
     (0.0,       1000000.0,     1.0,      1000000,      20),      // a million steps
     (0.0,       10000000000.0, 1.0,      4294967040,   32),      // values clamps down to the largest float below 2^32
 ];
