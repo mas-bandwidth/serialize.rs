@@ -176,7 +176,11 @@ fn extended_interop_serialize<S: Stream>(
     // the extended section starts byte aligned: the golden prefix stays pinned
     stream.serialize_align()?;
     stream.serialize_bits(&mut data.marker, 11)?;
-    stream.serialize_compressed_float(&mut data.cf_low, 0.0, 10.0, 0.01)?;
+    // The FMA-boundary field rides the PRECOMPUTED entry point (schema #107): constants
+    // exactly what the derived path computes for (0, 10, 0.01), so this gate proves the
+    // precomputed path byte-identical across the language boundary -- against a C++ side
+    // still deriving per call, the mix a migrating codebase runs.
+    stream.serialize_compressed_float_precomputed(&mut data.cf_low, 1000, 10, 10.0, 0.0)?;
     // zero bits, mid-sequence
     stream.serialize_int(&mut data.degenerate32, 42, 42)?;
     stream.serialize_compressed_float(&mut data.cf_mid_low, 0.0, 10.0, 0.01)?;
