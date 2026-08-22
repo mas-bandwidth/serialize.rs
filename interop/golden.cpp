@@ -71,7 +71,13 @@ template <typename Stream> bool ExtendedInteropSerialize(Stream &stream, Extende
     serialize_compressed_float(stream, data.cf_mid_low, 0.0f, 10.0f, 0.01f);
     serialize_compressed_float(stream, data.cf_mid_high, 0.0f, 10.0f, 0.01f);
     serialize_int64(stream, data.degenerate64, 10000000000LL, 10000000000LL); // zero bits, 64 bit path
-    serialize_compressed_float(stream, data.cf_high, 0.0f, 10.0f, 0.01f);
+    // This field rides the PRECOMPUTED entry point, mirroring wire_interop.rs, which
+    // crosses the other way on cf_low. Each side's precomputed path is therefore held
+    // to the other side's derived path, and neither crossing proves the other.
+    // Constants are exactly serialize_compressed_float_params( 0, 10, 0.01 ):
+    // max_integer_value 1000, bits 10, delta 10 — read out of that function rather
+    // than hand-derived. Requires the C++ library at v1.11.0 or later.
+    serialize_compressed_float_precomputed(stream, data.cf_high, 1000, 10, 10.0f, 0.0f);
     serialize_int(stream, data.post, -100, +100);
     return true;
 }

@@ -106,7 +106,9 @@ jobs:
           # discriminate. Each port pins independently — there is no family-wide
           # tag. Bump deliberately, in its own commit.
           repository: mas-bandwidth/serialize
-          ref: v1.7.0
+          # v1.11.0 is the floor now: it is the first release carrying
+          # serialize_compressed_float_precomputed, which golden.cpp drives.
+          ref: v1.11.0
           path: cpp-serialize
       - uses: dtolnay/rust-toolchain@stable
       # no -DNDEBUG on purpose: serialize_assert stays live, so the degenerate
