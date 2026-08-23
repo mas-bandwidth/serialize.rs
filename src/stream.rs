@@ -612,6 +612,14 @@ pub trait Stream {
                 normalized_value = 1.0;
             }
             integer_value = (normalized_value * max_integer_value as f32 + 0.5).floor() as u32;
+            // STANDARD.md: the integer clamp is normative (2026-08-23, schema#109). once
+            // max_integer_value >= 2^23 the float32 ulp at the top of the range reaches 1,
+            // so the rounded sum can exceed max_integer_value itself: the writer emits a
+            // code its own reader rejects, or one bit wider than the field. clamping after
+            // the floor closes both; no byte changes for any declaration outside [2^23, 2^24).
+            if integer_value > max_integer_value {
+                integer_value = max_integer_value;
+            }
         }
 
         self.serialize_bits(&mut integer_value, bits)?;
