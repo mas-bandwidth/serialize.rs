@@ -265,7 +265,10 @@ fn degenerate_string_buffer_holds_the_empty_string() {
     let mut read_back = String::from("not empty");
     r.serialize_string(&mut read_back, 1)
         .expect("buffer_size 1 must round trip the empty string");
-    assert_eq!(read_back, "", "the empty string must survive the round trip");
+    assert_eq!(
+        read_back, "",
+        "the empty string must survive the round trip"
+    );
 
     let mut m = MeasureStream::new();
     let mut measured = String::new();
@@ -276,6 +279,7 @@ fn degenerate_string_buffer_holds_the_empty_string() {
 // The floor moved to 1; it did NOT disappear. buffer_size 0 admits no length at all, since
 // no `length` satisfies `length < 0`, so it stays a contract violation.
 #[test]
+#[cfg(debug_assertions)]
 #[should_panic(expected = "string buffer_size must be in [1,i32::MAX]")]
 fn string_buffer_size_zero_is_still_refused() {
     let mut buffer = [0u8; 64];
