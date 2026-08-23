@@ -10,6 +10,11 @@
 //!   code eliminated,
 //! - several trials, best one reported, to shave off scheduler noise.
 //!
+//! Plus the string and wstring rows (schema#64 — the family's measure-first rule: rows land
+//! before or with any string/wstring change). Same methodology: a small corpus of
+//! representative strings, the entry picked per iteration by the same serially dependent
+//! LCG so the choice cannot be predicted or folded, one string per fresh stream.
+//!
 //! Run with `cargo bench`. Only release (bench profile) numbers are meaningful.
 
 use std::hint::black_box;
@@ -163,12 +168,15 @@ impl BenchPacket {
 const STREAM_NUM_PACKETS: usize = 1_000_000;
 const NUM_VARIANTS: usize = 64;
 
-// Most packet fields must vary per iteration, driven by a serially dependent generator the
-// compiler cannot fold. Same LCG and field derivations as bench.cpp.
+// The serially dependent generator the compiler cannot fold. Same LCG as bench.cpp.
+fn lcg_next(rng: u64) -> u64 {
+    rng.wrapping_mul(6364136223846793005)
+        .wrapping_add(1442695040888963407)
+}
+
+// Most packet fields must vary per iteration. Same field derivations as bench.cpp.
 fn bench_vary_packet(packet: &mut BenchPacket, rng: u64) -> u64 {
-    let rng = rng
-        .wrapping_mul(6364136223846793005)
-        .wrapping_add(1442695040888963407);
+    let rng = lcg_next(rng);
     packet.a = (((rng >> 8) & 63) as i32) - 32; // [-32,31] within [-100,+100]
     packet.b = ((rng >> 16) as u32 & 65535) as i32; // [0,65535]
     packet.c = (((rng >> 24) & 0xFFFFF) as i32) - 500000; // [-500000,548575] within [-1000000,+1000000]
@@ -260,6 +268,165 @@ fn bench_stream() {
 
 // ------------------------------------------------------------------------------------------
 
+// The string rows (schema#64): until these landed no string or wstring row existed
+// anywhere in the family's benches. A small corpus of representative strings, the entry
+// picked per iteration by the same serially dependent LCG (high bits, uniform over the
+// power-of-two corpus size), one string per fresh stream so every corpus entry has a
+// fixed wire size and the totals can be computed outside the timed loops.
+
+const STRING_NUM_ITEMS: usize = 1_000_000;
+const NUM_STRING_VARIANTS: usize = 8;
+
+// the buffer_size argument to serialize_string/serialize_wide_string: lengths fit [0,255],
+// so the length field is exactly 8 bits and the narrow path's align after it is zero bits
+const STRING_BUFFER_SIZE: usize = 256;
+
+// holds the largest wire image STRING_BUFFER_SIZE permits (wstring: 1 length byte +
+// 255 groups * 4 bytes = 1021), rounded to the writer's multiple-of-8 contract; data this
+// much shorter than the buffer also keeps the reader on its branchless fast path
+const STRING_WIRE_BUFFER_SIZE: usize = 1024;
+
+// ASCII, game-flavored, lengths 2..59 bytes — names, k=v state, chat, a system line
+fn string_corpus() -> [String; NUM_STRING_VARIANTS] {
+    [
+        "gg",
+        "hello",
+        "player_042",
+        "the quick brown fox",
+        "id=12345;hp=100;team=red",
+        "a fairly typical chat message, nothing special",
+        "[system] player_042 has joined the match on map overgrowth",
+        "yes",
+    ]
+    .map(String::from)
+}
+
+// BMP text across several scripts plus astral chars, so the surrogate pair split on write
+// and recombination on read are part of what the wstring rows measure
+fn wide_corpus() -> [String; NUM_STRING_VARIANTS] {
+    [
+        "gg",
+        "héllo wörld",
+        "こんにちは世界",
+        "Привет, мир",
+        "café ☕ break",
+        "good game 😀👍",
+        "𝔘𝔫𝔦𝔠𝔬𝔡𝔢 𝔴𝔦𝔡𝔢",
+        "mixed ascii と 日本語 and 😀",
+    ]
+    .map(String::from)
+}
+
+fn bench_strings<const WIDE: bool>(label: &str, corpus: &mut [String; NUM_STRING_VARIANTS]) {
+    // monomorphized per family, mirroring how generated serialize code calls these
+    fn serialize_one<S: Stream, const WIDE: bool>(
+        stream: &mut S,
+        value: &mut String,
+    ) -> Result<(), S::Error> {
+        if WIDE {
+            stream.serialize_wide_string(value, STRING_BUFFER_SIZE)
+        } else {
+            stream.serialize_string(value, STRING_BUFFER_SIZE)
+        }
+    }
+
+    // one variant buffer per corpus entry, for the read rows
+    let mut variant_buffers = [[0u8; STRING_WIRE_BUFFER_SIZE]; NUM_STRING_VARIANTS];
+    let mut variant_bytes = [0usize; NUM_STRING_VARIANTS];
+    for (entry, (variant, bytes)) in corpus
+        .iter_mut()
+        .zip(variant_buffers.iter_mut().zip(&mut variant_bytes))
+    {
+        let mut stream = WriteStream::new(variant);
+        serialize_one::<_, WIDE>(&mut stream, entry).unwrap();
+        stream.flush();
+        *bytes = stream.bytes_processed() as usize;
+    }
+
+    // every timed loop walks the same deterministic index sequence, so the wire byte
+    // total is computed once here, outside the timing
+    let mut total_bytes = 0u64;
+    {
+        let mut rng = 1u64;
+        for _ in 0..STRING_NUM_ITEMS {
+            rng = lcg_next(rng);
+            let idx = (rng >> 33) as usize & (NUM_STRING_VARIANTS - 1);
+            total_bytes += variant_bytes[idx] as u64;
+        }
+    }
+
+    let mut buffer = [0u8; STRING_WIRE_BUFFER_SIZE];
+
+    let best_write = best_of(|| {
+        let mut rng = 1u64;
+        for _ in 0..STRING_NUM_ITEMS {
+            rng = lcg_next(rng);
+            let idx = (rng >> 33) as usize & (NUM_STRING_VARIANTS - 1);
+            // the stream's borrow of the buffer must end before black_box can observe it
+            let bytes_processed = {
+                let mut stream = WriteStream::new(&mut buffer);
+                serialize_one::<_, WIDE>(&mut stream, &mut corpus[idx]).unwrap();
+                stream.flush();
+                stream.bytes_processed()
+            };
+            black_box(&buffer);
+            black_box(bytes_processed);
+        }
+    });
+
+    // the read target is reused across iterations, so on the narrow path clear +
+    // push_str reuses its capacity: the row measures decode and validation, not the
+    // allocator. (The C# port's read path allocates a fresh string by design — its
+    // rows include that cost; comparable is not identical here.)
+    let best_read = best_of(|| {
+        let mut value = String::new();
+        let mut rng = 1u64;
+        for _ in 0..STRING_NUM_ITEMS {
+            rng = lcg_next(rng);
+            let idx = (rng >> 33) as usize & (NUM_STRING_VARIANTS - 1);
+            let mut stream = ReadStream::new(&variant_buffers[idx], variant_bytes[idx]);
+            serialize_one::<_, WIDE>(&mut stream, &mut value).unwrap();
+            black_box(&value);
+        }
+    });
+
+    // unlike the packet measure row, string measure is real work — the wstring length
+    // is an encode_utf16 count over the value — so this row is worth tracking
+    let best_measure = best_of(|| {
+        let mut rng = 1u64;
+        for _ in 0..STRING_NUM_ITEMS {
+            rng = lcg_next(rng);
+            let idx = (rng >> 33) as usize & (NUM_STRING_VARIANTS - 1);
+            let mut stream = MeasureStream::new();
+            serialize_one::<_, WIDE>(&mut stream, &mut corpus[idx]).unwrap();
+            black_box(stream.bits_processed());
+        }
+    });
+
+    let total_mb = total_bytes as f64 / (1024.0 * 1024.0);
+    let items = STRING_NUM_ITEMS as f64 / 1_000_000.0;
+
+    println!(
+        "{:<18}{:8.1} MB/s  ({:.1} M strings/s)",
+        format!("{label} write:"),
+        total_mb / best_write,
+        items / best_write
+    );
+    println!(
+        "{:<18}{:8.1} MB/s  ({:.1} M strings/s)",
+        format!("{label} read:"),
+        total_mb / best_read,
+        items / best_read
+    );
+    println!(
+        "{:<18}{:19.1} M strings/s",
+        format!("{label} measure:"),
+        items / best_measure
+    );
+}
+
+// ------------------------------------------------------------------------------------------
+
 fn main() {
     println!("\n[serialize.rs benchmark]\n");
 
@@ -273,6 +440,9 @@ fn main() {
     bench_bitpacker(&mut buffer);
 
     bench_stream();
+
+    bench_strings::<false>("string", &mut string_corpus());
+    bench_strings::<true>("wstring", &mut wide_corpus());
 
     println!();
 }
