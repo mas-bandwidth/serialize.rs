@@ -874,6 +874,59 @@ fn test_compressed_float_validation() {
 }
 
 #[test]
+fn test_compressed_float_top_of_range_clamp() {
+    // STANDARD.md's normative integer clamp (2026-08-23, schema#109; ruling: Glenn, live),
+    // ported from the C++ suite's test_compressed_float_top_of_range_clamp (serialize
+    // PR #88). In [2^23, 2^24) the float32 ulp is 1, so scaled + 0.5 lands on a tie and
+    // round-to-even can push the code past max_integer_value. Before the clamp, witness A
+    // wrote a top-of-range code its own reader rejected, and witness B wrote a code one
+    // bit wider than the field.
+
+    // witness A: [0, 8388609] at resolution 1 -> max_integer_value 2^23+1, 24 bits
+    {
+        let mut buffer = [0u8; 16 + 8]; // + 8: read buffer allocations extend 8 bytes past the data
+
+        {
+            let mut write_stream = WriteStream::new(&mut buffer[..16]);
+            let mut written = 8388609.0f32;
+            write_stream
+                .serialize_compressed_float(&mut written, 0.0, 8388609.0, 1.0)
+                .unwrap();
+            write_stream.flush();
+        }
+
+        let mut read_stream = ReadStream::new(&buffer, 16);
+        let mut value = 0.0f32;
+        read_stream
+            .serialize_compressed_float(&mut value, 0.0, 8388609.0, 1.0)
+            .unwrap();
+        assert_eq!(value, 8388609.0);
+    }
+
+    // witness B: [0, 16777215] at resolution 1 -> max_integer_value 2^24-1, 24 bits;
+    // the unclamped code was 2^24, one bit wider than the field
+    {
+        let mut buffer = [0u8; 16 + 8];
+
+        {
+            let mut write_stream = WriteStream::new(&mut buffer[..16]);
+            let mut written = 16777215.0f32;
+            write_stream
+                .serialize_compressed_float(&mut written, 0.0, 16777215.0, 1.0)
+                .unwrap();
+            write_stream.flush();
+        }
+
+        let mut read_stream = ReadStream::new(&buffer, 16);
+        let mut value = 0.0f32;
+        read_stream
+            .serialize_compressed_float(&mut value, 0.0, 16777215.0, 1.0)
+            .unwrap();
+        assert_eq!(value, 16777215.0);
+    }
+}
+
+#[test]
 fn test_compressed_float_precomputed_validation() {
     // the constants serialize_compressed_float derives on every call, derived once instead:
     // the precomputed read path must refuse the same smuggled integers and accept the same
@@ -2350,6 +2403,13 @@ fn serialize_compressed_float_frozen_reference<S: Stream>(
             normalized_value = 1.0;
         }
         integer_value = (normalized_value * max_integer_value as f32 + 0.5).floor() as u32;
+        // STANDARD.md: the integer clamp is normative (2026-08-23, schema#109) -- same
+        // clamp as serialize_compressed_float_precomputed, same reason. the one amendment
+        // the frozen copy carries, exactly as the C++ suite amended its own frozen
+        // reference (serialize PR #88): the law changed the arithmetic itself.
+        if integer_value > max_integer_value {
+            integer_value = max_integer_value;
+        }
     }
 
     stream.serialize_bits(&mut integer_value, bits)?;
@@ -2628,7 +2688,7 @@ fn check_compressed_float_code_agrees(
 // compiler emits for each declaration — the first eleven rows are the values the schema
 // PR #79 differential published
 #[rustfmt::skip]
-const COMPRESSED_FLOAT_SHAPES: [(f32, f32, f32, u32, u32); 21] = [
+const COMPRESSED_FLOAT_SHAPES: [(f32, f32, f32, u32, u32); 23] = [
     // the schema compiler's corpus: examples, bench/corpus/RealWorld.schema and its test data
     (0.0,       2000.0,        0.1,      20000,        15),
     (-2.0,      2.0,           0.25,     16,           5),
@@ -2660,6 +2720,11 @@ const COMPRESSED_FLOAT_SHAPES: [(f32, f32, f32, u32, u32); 21] = [
     (0.0,       63.3,          1.0,      64,           7),       // 63.3 steps: ceil 64 (7 bits), round 63 (6 bits)
     (0.0,       1000000.0,     1.0,      1000000,      20),      // a million steps
     (0.0,       10000000000.0, 1.0,      4294967040,   32),      // values clamps down to the largest float below 2^32
+    // shapes in [2^23, 2^24), where the float32 ulp reaches 1 and the +0.5 rounding could
+    // push the code past max_integer_value before the normative clamp (2026-08-23,
+    // schema#109). the corpus was empty in this band, which is how the defect hid.
+    (0.0,       8388609.0,     1.0,      8388609,      24),      // 2^23+1: the reader-rejects witness
+    (0.0,       16777215.0,    1.0,      16777215,     24),      // 2^24-1: the wire-divergence witness
 ];
 
 // Miri runs the differential ~100x slower, so trim the sweeps (and sample the shape list)
