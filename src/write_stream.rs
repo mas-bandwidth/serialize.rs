@@ -178,8 +178,8 @@ impl Stream for WriteStream<'_> {
 /// stream that checked readers reject (never memory unsafety).
 pub(crate) fn string_length(length: usize, buffer_size: usize) -> i32 {
     debug_assert!(
-        buffer_size >= 2 && i32::try_from(buffer_size).is_ok(),
-        "string buffer_size must be in [2,i32::MAX] (got {buffer_size})"
+        buffer_size >= 1 && i32::try_from(buffer_size).is_ok(),
+        "string buffer_size must be in [1,i32::MAX] (got {buffer_size})"
     );
     debug_assert!(
         length < buffer_size,

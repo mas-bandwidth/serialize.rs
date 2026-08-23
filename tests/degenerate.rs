@@ -235,3 +235,51 @@ fn inverted_fixed_range_still_asserts_on_write_in_debug() {
     let mut v = 0i64;
     let _ = w.serialize_fixed(&mut v, 48, 16, 7, -7);
 }
+
+// STANDARD.md: a string buffer_size of 1 is the DEGENERATE STRING BUFFER -- it holds
+// exactly the empty string, because the length must satisfy `length < buffer_size`.
+//
+// Every stream here used to floor buffer_size at 2, rejecting that case. Go floors at 1
+// (`stream.go`, `bufferSize < 1`) and the C and C++ ports carry no floor at all, asserting
+// only `length < buffer_size` -- so a floor of 2 was an invented check that existed in two
+// ports and nowhere else in the family, and it made the same call abort against one runtime
+// and succeed against another. The floor is now 1 everywhere.
+//
+// These are DEBUG assertions, so this test is only meaningful in a debug build -- which is
+// where `cargo test` runs it.
+#[test]
+fn degenerate_string_buffer_holds_the_empty_string() {
+    let mut buffer = [0u8; 64];
+
+    let bytes;
+    {
+        let mut w = WriteStream::new(&mut buffer);
+        let mut empty = String::new();
+        w.serialize_string(&mut empty, 1)
+            .expect("buffer_size 1 must accept the empty string");
+        w.flush();
+        bytes = w.bytes_processed() as usize;
+    }
+
+    let mut r = ReadStream::new(&buffer, bytes);
+    let mut read_back = String::from("not empty");
+    r.serialize_string(&mut read_back, 1)
+        .expect("buffer_size 1 must round trip the empty string");
+    assert_eq!(read_back, "", "the empty string must survive the round trip");
+
+    let mut m = MeasureStream::new();
+    let mut measured = String::new();
+    m.serialize_string(&mut measured, 1)
+        .expect("measure must agree with write at buffer_size 1");
+}
+
+// The floor moved to 1; it did NOT disappear. buffer_size 0 admits no length at all, since
+// no `length` satisfies `length < 0`, so it stays a contract violation.
+#[test]
+#[should_panic(expected = "string buffer_size must be in [1,i32::MAX]")]
+fn string_buffer_size_zero_is_still_refused() {
+    let mut buffer = [0u8; 64];
+    let mut w = WriteStream::new(&mut buffer);
+    let mut empty = String::new();
+    let _ = w.serialize_string(&mut empty, 0);
+}

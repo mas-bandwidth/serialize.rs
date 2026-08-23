@@ -109,8 +109,8 @@ impl Stream for ReadStream<'_> {
     #[inline]
     fn serialize_string(&mut self, value: &mut String, buffer_size: usize) -> Result {
         debug_assert!(
-            buffer_size >= 2 && i32::try_from(buffer_size).is_ok(),
-            "string buffer_size must be in [2,i32::MAX] (got {buffer_size})"
+            buffer_size >= 1 && i32::try_from(buffer_size).is_ok(),
+            "string buffer_size must be in [1,i32::MAX] (got {buffer_size})"
         );
         let mut length = 0i32;
         self.serialize_int(&mut length, 0, buffer_size as i32 - 1)?;
@@ -142,8 +142,8 @@ impl Stream for ReadStream<'_> {
     #[inline]
     fn serialize_wide_string(&mut self, value: &mut String, buffer_size: usize) -> Result {
         debug_assert!(
-            buffer_size >= 2 && i32::try_from(buffer_size).is_ok(),
-            "string buffer_size must be in [2,i32::MAX] (got {buffer_size})"
+            buffer_size >= 1 && i32::try_from(buffer_size).is_ok(),
+            "string buffer_size must be in [1,i32::MAX] (got {buffer_size})"
         );
         let mut length = 0i32;
         self.serialize_int(&mut length, 0, buffer_size as i32 - 1)?;
