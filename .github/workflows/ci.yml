@@ -97,17 +97,24 @@ jobs:
       - name: Check out the C++ serialize library (pinned release)
         uses: actions/checkout@v7
         with:
-          # v1.7.0 is a floor, not a preference: the harness's extended sequence
-          # carries a degenerate 64 bit range (min == max), and v1.7.0 is the C++
-          # release that stopped serialize_int64 asserting min < max — against
-          # anything older the C++ half aborts on that field. v1.7.0 also pins
+          # THE FAMILY PIN -- ONE POLICY, ONE VERSION. The C++ checkout is pinned to the
+          # latest RELEASED tag of mas-bandwidth/serialize, never main, and to the SAME
+          # tag in all four wire-compat gates, so "compatible with C++" means the same
+          # thing in every port. Never main, because an upstream merge mid-day must not
+          # change what a commit's CI proves -- the sibling-HEAD race broke family gates
+          # three separate times (2026-08-16/17). Find the newest tag with:
+          #   gh release list --repo mas-bandwidth/serialize --limit 1
+          # Bump family-wide, deliberately, in its own commit per repo, and only
+          # alongside the byte-identity check this gate runs.
+          #
+          # THE FLOOR, which is why the tag can never simply go backwards: the
+          # harness's extended sequence carries a degenerate 64 bit range
+          # (min == max), round trippable since v1.6.2; v1.7.0 pinned
           # serialize_compressed_float to float32 double rounding (no FMA
-          # contraction), which the extended sequence's between-quanta values
-          # discriminate. Each port pins independently — there is no family-wide
-          # tag. Bump deliberately, in its own commit.
-          repository: mas-bandwidth/serialize
-          # v1.11.0 is the floor now: it is the first release carrying
+          # contraction), which the between-quanta values discriminate; and
+          # v1.11.0 is the first release carrying
           # serialize_compressed_float_precomputed, which golden.cpp drives.
+          repository: mas-bandwidth/serialize
           ref: v1.11.0
           path: cpp-serialize
       - uses: dtolnay/rust-toolchain@stable
