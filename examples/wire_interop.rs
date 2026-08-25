@@ -174,7 +174,7 @@ fn extended_interop_init() -> ExtendedInteropData {
         // in-language only (serialize#94) -- the gate was green against the pre-clamp
         // v1.11.0 reference because no cross-language value exercised the band.
         clamp_reject_witness: 8_388_609.0, // witness A: top of [0, 8388609] res 1 (2^23+1 steps)
-        clamp_wide_witness: 16_777_215.0, // witness B: top of [0, 16777215] res 1 (2^24-1 steps)
+        clamp_wide_witness: 16_777_215.0,  // witness B: top of [0, 16777215] res 1 (2^24-1 steps)
         post: -37, // live field after both degenerates: proves everything downstream stays put
     }
 }
