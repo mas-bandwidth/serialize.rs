@@ -222,9 +222,11 @@ fn extended_interop_check(data: &ExtendedInteropData) -> bool {
         && cf_ok(data.cf_mid_high, expected.cf_mid_high)
         && cf_ok(data.cf_high, expected.cf_high)
         // the witnesses sit at the top of their ranges, where the decode is exact:
-        // code == max_integer_value reconstructs 1.0 * delta + 0.0 with no rounding
-        && data.clamp_reject_witness == expected.clamp_reject_witness
-        && data.clamp_wide_witness == expected.clamp_wide_witness
+        // code == max_integer_value reconstructs 1.0 * delta + 0.0 with no rounding,
+        // so they compare by BIT PATTERN -- the sharpest form, and the one the
+        // conformance doctrine prefers for decoded floats
+        && data.clamp_reject_witness.to_bits() == expected.clamp_reject_witness.to_bits()
+        && data.clamp_wide_witness.to_bits() == expected.clamp_wide_witness.to_bits()
 }
 
 // bytes 0..72 are the original golden vector; the fixed point tail (72..112) was derived
