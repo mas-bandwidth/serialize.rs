@@ -46,6 +46,8 @@ struct ExtendedInteropData
     float cf_mid_low;
     float cf_mid_high;
     float cf_high;
+    float clampRejectWitness;
+    float clampWideWitness;
     int32_t post;
 };
 
@@ -59,6 +61,8 @@ static void ExtendedInteropInit(ExtendedInteropData &data)
     data.cf_mid_high = 0.105f;         // between quanta: 11 vs 10
     data.degenerate64 = 10000000000LL; // min == max on the 64 bit path, bounds wider than 2^32 (needs C++ v1.7.0+)
     data.cf_high = 9.995f;             // between quanta: 1000 vs 999
+    data.clampRejectWitness = 8388609.0f;  // witness A: top of [0, 8388609] res 1 -- an unclamped writer emits a code its own reader rejects (schema#109; serialize#94)
+    data.clampWideWitness = 16777215.0f;   // witness B: top of [0, 16777215] res 1 -- an unclamped writer emits a code one bit wider than the field
     data.post = -37;                   // live field after both degenerates: proves everything downstream stays put
 }
 
@@ -78,6 +82,12 @@ template <typename Stream> bool ExtendedInteropSerialize(Stream &stream, Extende
     // max_integer_value 1000, bits 10, delta 10 — read out of that function rather
     // than hand-derived. Requires the C++ library at v1.11.0 or later.
     serialize_compressed_float_precomputed(stream, data.cf_high, 1000, 10, 10.0f, 0.0f);
+    // the clamp witnesses ride the derived-per-call entry point on both language halves:
+    // the clamp lives in the audited home both entry points share, and writing max makes
+    // it load-bearing -- an unclamped writer on either side changes these bytes.
+    // Requires the C++ library at v1.12.0 or later (the first release carrying the clamp).
+    serialize_compressed_float(stream, data.clampRejectWitness, 0.0f, 8388609.0f, 1.0f);
+    serialize_compressed_float(stream, data.clampWideWitness, 0.0f, 16777215.0f, 1.0f);
     serialize_int(stream, data.post, -100, +100);
     return true;
 }
@@ -96,7 +106,10 @@ static bool ExtendedInteropCheck(const ExtendedInteropData &data)
         && fabsf(data.cf_low - expected.cf_low) <= 0.01f
         && fabsf(data.cf_mid_low - expected.cf_mid_low) <= 0.01f
         && fabsf(data.cf_mid_high - expected.cf_mid_high) <= 0.01f
-        && fabsf(data.cf_high - expected.cf_high) <= 0.01f;
+        && fabsf(data.cf_high - expected.cf_high) <= 0.01f
+        // the witnesses sit at the top of their ranges, where the decode is exact
+        && data.clampRejectWitness == expected.clampRejectWitness
+        && data.clampWideWitness == expected.clampWideWitness;
 }
 
 static int write_file(const char *path)
