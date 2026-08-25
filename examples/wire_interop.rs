@@ -153,6 +153,8 @@ struct ExtendedInteropData {
     cf_mid_low: f32,
     cf_mid_high: f32,
     cf_high: f32,
+    clamp_reject_witness: f32,
+    clamp_wide_witness: f32,
     post: i32,
 }
 
@@ -165,6 +167,14 @@ fn extended_interop_init() -> ExtendedInteropData {
         cf_mid_high: 0.105, // between quanta: 11 vs 10
         degenerate64: 10_000_000_000, // min == max on the 64 bit path, bounds wider than 2^32 (needs C++ v1.7.0+)
         cf_high: 9.995,               // between quanta: 1000 vs 999
+        // the normative integer clamp's witnesses (STANDARD.md, schema#109), writing max.
+        // step counts in [2^23, 2^24) are where the float32 ulp of the scaled product
+        // reaches 1: an unclamped writer emits a code its own reader rejects (A) or one
+        // bit wider than the field (B). until these rows existed the clamp was proven
+        // in-language only (serialize#94) -- the gate was green against the pre-clamp
+        // v1.11.0 reference because no cross-language value exercised the band.
+        clamp_reject_witness: 8_388_609.0, // witness A: top of [0, 8388609] res 1 (2^23+1 steps)
+        clamp_wide_witness: 16_777_215.0, // witness B: top of [0, 16777215] res 1 (2^24-1 steps)
         post: -37, // live field after both degenerates: proves everything downstream stays put
     }
 }
@@ -188,6 +198,11 @@ fn extended_interop_serialize<S: Stream>(
     // zero bits, 64 bit path
     stream.serialize_int64(&mut data.degenerate64, 10_000_000_000, 10_000_000_000)?;
     stream.serialize_compressed_float(&mut data.cf_high, 0.0, 10.0, 0.01)?;
+    // the clamp witnesses ride the derived-per-call entry point on both language halves:
+    // the clamp lives in the audited home both entry points share, and writing max makes
+    // it load-bearing -- an unclamped writer on either side changes these bytes
+    stream.serialize_compressed_float(&mut data.clamp_reject_witness, 0.0, 8_388_609.0, 1.0)?;
+    stream.serialize_compressed_float(&mut data.clamp_wide_witness, 0.0, 16_777_215.0, 1.0)?;
     stream.serialize_int(&mut data.post, -100, 100)?;
     Ok(())
 }
@@ -206,6 +221,10 @@ fn extended_interop_check(data: &ExtendedInteropData) -> bool {
         && cf_ok(data.cf_mid_low, expected.cf_mid_low)
         && cf_ok(data.cf_mid_high, expected.cf_mid_high)
         && cf_ok(data.cf_high, expected.cf_high)
+        // the witnesses sit at the top of their ranges, where the decode is exact:
+        // code == max_integer_value reconstructs 1.0 * delta + 0.0 with no rounding
+        && data.clamp_reject_witness == expected.clamp_reject_witness
+        && data.clamp_wide_witness == expected.clamp_wide_witness
 }
 
 // bytes 0..72 are the original golden vector; the fixed point tail (72..112) was derived
