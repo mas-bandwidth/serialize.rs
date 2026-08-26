@@ -30,7 +30,8 @@ and the 40 byte fixed point tail), while the C port pins sequences of its own th
 checks against the C++ library. Compatibility across the family rests on that shared reference
 and that shared specification, not on any Rust-to-Go or Rust-to-C# test.
 
-Zero dependencies, no unsafe code, BSD 3-Clause.
+Zero dependencies, no unsafe code, BSD 3-Clause. Install with `cargo add serialize-official`
+(the package name on crates.io; in code it is simply `use serialize::*`).
 
 Values are packed with exactly the number of bits they need: a bool takes 1 bit, an integer in
 [0,31] takes 5 bits. Write one serialize function and it handles write, read and measure —
