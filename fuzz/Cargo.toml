@@ -9,7 +9,9 @@ cargo-fuzz = true
 
 [dependencies]
 libfuzzer-sys = "0.4"
-serialize = { path = ".." }
+# The parent package publishes as serialize-official; the dependency key keeps the
+# crate name `serialize`, matching the lib target, so fuzz targets stay unchanged.
+serialize = { package = "serialize-official", path = ".." }
 
 [[bin]]
 name = "hostile_read"
