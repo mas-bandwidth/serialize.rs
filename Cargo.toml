@@ -1,5 +1,5 @@
 [package]
-name = "serialize"
+name = "serialize-official"
 version = "2.2.1"
 edition = "2024"
 rust-version = "1.85"
@@ -11,6 +11,11 @@ categories = ["game-development", "network-programming", "encoding"]
 # repo infrastructure that does not belong in the crates.io package; the fuzz/ crate is
 # excluded automatically as a nested package
 exclude = [".github/", "interop/", "CLAUDE.md"]
+
+# The package publishes as serialize-official (the bare name is reserved on
+# crates.io); the library keeps its own name, so code says `use serialize::`.
+[lib]
+name = "serialize"
 
 [dependencies]
 
