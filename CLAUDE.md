@@ -118,9 +118,6 @@ zero unsafe, BSD-3.
 - `cargo +nightly fuzz run hostile_read` / `round_trip` — libFuzzer targets in `fuzz/`
   (libfuzzer-sys is a dependency of the fuzz crate only, NOT the library — the zero-dependency
   invariant applies to `[dependencies]` of the `serialize` package, which CI guards)
-- `cargo bench` — benches/throughput.rs, a direct port of the C++ bench.cpp (same widths
-  table, same packet, same LCG). Update the README numbers only from fresh runs on the stated
-  hardware (Apple M3 Ultra) next to a fresh C++ run (clang -O3 of the C++ repo's bench.cpp).
 - **`#[inline]` on the bitpacker and stream methods is load-bearing.** They are non-generic
   and called cross-crate: without the attribute nothing inlines outside this crate (no LTO by
   default) and throughput drops 2-8x (measured — the stream read went from 410 to 38 M
