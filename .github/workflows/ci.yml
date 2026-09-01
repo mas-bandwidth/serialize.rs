@@ -180,8 +180,37 @@ jobs:
       - uses: taiki-e/install-action@v2.86.4
         with:
           tool: cargo-semver-checks
+      # cargo-semver-checks pairs the baseline package with the current one BY
+      # PACKAGE NAME, so a package rename would blind this gate for exactly the
+      # PR that renames. Rather than skip, resolve the baseline by lib target:
+      # both sides build a lib named `serialize`, so we check out the baseline,
+      # normalize only its [package] name, and run the real API comparison via
+      # --baseline-root. The one recognized rename is serialize ->
+      # serialize-official (2026-08-26, PR #63; the bare name is reserved on
+      # crates.io). Any OTHER name mismatch fails loudly so the gate stays
+      # armed. Once main carries serialize-official the rename branch is dead
+      # code and can be removed.
       - name: Check API compatibility against main
-        run: cargo semver-checks check-release --baseline-rev origin/main
+        run: |
+          current_name=$(sed -n 's/^name = "\(.*\)"/\1/p' Cargo.toml | head -1)
+          baseline_name=$(git show origin/main:Cargo.toml | sed -n 's/^name = "\(.*\)"/\1/p' | head -1)
+          if [ "$current_name" = "$baseline_name" ]; then
+            cargo semver-checks check-release --baseline-rev origin/main
+          elif [ "$baseline_name" = "serialize" ] && [ "$current_name" = "serialize-official" ]; then
+            echo "::notice::baseline package is 'serialize', current is 'serialize-official' (the 2026-08-26 rename); comparing the identical lib target by normalizing the baseline package name"
+            baseline_dir=$(mktemp -d)
+            git worktree add --detach "$baseline_dir" origin/main
+            sed -i.bak "0,/^name = \"serialize\"/s//name = \"serialize-official\"/" "$baseline_dir/Cargo.toml"
+            rm "$baseline_dir/Cargo.toml.bak"
+            # the baseline has no [lib] section, so its lib target name follows the
+            # package name; pin it back to `serialize` so both sides build the same
+            # lib target and the comparison sees the API, not the rename
+            printf '\n[lib]\nname = "serialize"\n' >> "$baseline_dir/Cargo.toml"
+            cargo semver-checks check-release --baseline-root "$baseline_dir"
+          else
+            echo "::error::package name changed from '$baseline_name' (main) to '$current_name'; cargo-semver-checks cannot pair packages across a rename by name — handle this rename deliberately in the semver job"
+            exit 1
+          fi
 
   spec-sync:
     name: STANDARD.md matches upstream

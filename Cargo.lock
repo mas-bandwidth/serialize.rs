@@ -3,5 +3,5 @@
 version = 4
 
 [[package]]
-name = "serialize"
-version = "2.2.1"
+name = "serialize-official"
+version = "2.2.2"
