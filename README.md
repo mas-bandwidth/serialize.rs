@@ -2,6 +2,8 @@
 
 [![ci](https://github.com/mas-bandwidth/serialize.rs/actions/workflows/ci.yml/badge.svg)](https://github.com/mas-bandwidth/serialize.rs/actions/workflows/ci.yml)
 
+If this library helps you, please support it: **[Become a supporter](https://www.patreon.com/MasBandwidth/membership)**
+
 A simple bitpacking serializer for Rust.
 
 This is a port of the C++ [serialize](https://github.com/mas-bandwidth/serialize) library and
