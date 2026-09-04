@@ -1,5 +1,20 @@
 # Changelog
 
+## 2.4.0 — 2026-09-04
+
+**The vendored corpus becomes the 351 vector one, and this is the first release carrying
+`Stream::refuse_if_failed`.** `STANDARD.md` and `conformance/` are re-vendored from
+mas-bandwidth/serialize at 39cc8543, released there as v1.16.2. Two vectors are new: the
+whole 112-byte golden message, whose bytes the document now prints in full, and a twin of
+the terminal failure vector whose successor is a degenerate fixed point field. The runner
+already dispatched every step spelling the corpus format lists, so it is unchanged.
+
+The version is a minor rather than a patch because `Stream::refuse_if_failed`, added below
+in 2.3.2 and never published, is new public API: a defaulted trait method an outside
+implementor of `Stream` now inherits.
+
+The live interop job pins the C++ reference at v1.16.2.
+
 ## 2.3.2 — 2026-09-04
 
 **The vendored conformance corpus covers every operation, and the runner drives all of it.**
