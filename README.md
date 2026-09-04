@@ -34,7 +34,14 @@ checks against the C++ library. Compatibility across the family rests on that sh
 and that shared specification, not on any Rust-to-Go or Rust-to-C# test.
 
 Zero dependencies, no unsafe code, BSD 3-Clause. Install with `cargo add serialize-official`
-(the package name on crates.io; in code it is simply `use serialize::*`).
+(the package name on crates.io; in code it is simply `use serialize::*`). The newest version
+published to crates.io is **2.2.2**. This tree is 2.3.0, tagged here but not yet pushed to the
+registry — to build against it before the push, take it from git:
+
+```toml
+[dependencies]
+serialize-official = { git = "https://github.com/mas-bandwidth/serialize.rs", tag = "v2.3.0" }
+```
 
 Values are packed with exactly the number of bits they need: a bool takes 1 bit, an integer in
 [0,31] takes 5 bits. Write one serialize function and it handles write, read and measure —
