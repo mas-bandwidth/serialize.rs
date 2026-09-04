@@ -38,8 +38,8 @@ zero unsafe, BSD-3.
    `golden_wire_bytes` verbatim (bytes 0..72 are the original vector; the fixed point tail
    was derived from STANDARD.md's stated rules independently of both implementations),
    and the `cpp-interop` CI job proves it against the real thing on every push and PR: it
-   builds interop/golden.cpp against the actual C++ library (pinned at v1.7.0 — a floor,
-   not a preference: the harness's extended sequence carries a degenerate 64 bit range that
+   builds interop/golden.cpp against the actual C++ library (pinned at v1.16.0, never going
+   back past v1.7.0: the harness's extended sequence carries a degenerate 64 bit range that
    older releases abort on, plus STANDARD.md's between-quanta compressed float vector, and
    the build keeps asserts live with no -ffp-contract=off), both implementations write the
    golden data plus the extended sequence, the bytes are compared with `cmp`, and each

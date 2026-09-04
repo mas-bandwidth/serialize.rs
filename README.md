@@ -9,15 +9,15 @@ A simple bitpacking serializer for Rust.
 This is a port of the C++ [serialize](https://github.com/mas-bandwidth/serialize) library and
 is **bit-for-bit wire compatible** with it. The golden wire format test pins 112 exact bytes —
 byte for byte the vector `golden_wire_bytes` pins in the C++ test suite — and on every push and
-pull request CI builds the real C++ library at a pinned release (v1.7.0) and runs both
+pull request CI builds the real C++ library at a pinned release (v1.16.0) and runs both
 implementations head to head over the library's own golden serialize function: they write
 byte-identical data and each decodes the other's output. That machine check covers all 112 of
 those bytes, and continues past them into an extended harness-defined sequence covering what
 the golden data does not: degenerate ranges (`min == max`, zero bits on the wire, 32 and 64
 bit, mid-sequence) and compressed floats that land between quanta — STANDARD.md's
 discriminating vector, which fails the byte comparison under FMA contraction or double
-widening where an on-quantum value would pass silently. The pin is a floor, not a preference:
-v1.7.0 is the C++ release that accepts the degenerate 64 bit range (older releases abort on
+widening where an on-quantum value would pass silently. The pin never goes backwards past
+v1.7.0, the C++ release that accepts the degenerate 64 bit range (older releases abort on
 it, asserts live) and pins the compressed float arithmetic to unfused float32.
 
 Nothing here exercises the [C](https://github.com/mas-bandwidth/serialize.c),
