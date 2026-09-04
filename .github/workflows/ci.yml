@@ -126,7 +126,7 @@ jobs:
           # witnesses make load-bearing -- against an older header those rows
           # go red, the cross-language proof serialize#94 found missing.
           repository: mas-bandwidth/serialize
-          ref: v1.16.0
+          ref: v1.16.2
           path: cpp-serialize
       - uses: dtolnay/rust-toolchain@stable
       # no -DNDEBUG on purpose: serialize_assert stays live, so the degenerate
