@@ -131,6 +131,14 @@ impl Stream for ReadStream<'_> {
     }
 
     #[inline(always)]
+    fn refuse_if_failed(&mut self) -> Result {
+        match self.failed {
+            Some(error) => cold_error(error),
+            None => Ok(()),
+        }
+    }
+
+    #[inline(always)]
     fn serialize_bits(&mut self, value: &mut u32, bits: u32) -> Result {
         debug_assert!(
             bits.wrapping_sub(1) < 32,

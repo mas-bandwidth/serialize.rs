@@ -6,6 +6,8 @@
 //! and on `int_relative`'s domain — and then proves that a read which would have succeeded on
 //! an unlatched stream fails instead. Every stream here keeps bits in reserve after the
 //! failure, so the follow-up read is refused by the latch and not by the end of the buffer.
+//! The follow-up reads include the zero-bit ones — a degenerate range on every width, and a
+//! `bytes` call of zero count — which touch no bits at all, so only the latch can refuse them.
 
 use serialize::{Error, ReadStream, Stream};
 
@@ -41,6 +43,44 @@ fn assert_terminal(stream: &mut ReadStream, expected: Error) {
     let mut wide = String::from("untouched");
     assert_eq!(stream.serialize_wide_string(&mut wide, 16), Err(expected));
     assert_eq!(wide, "untouched");
+
+    // the zero-bit reads: STANDARD.md, Reader Obligations, "every read consults the failure
+    // state before it does anything else, zero-bit reads included, so a degenerate ranged
+    // read, an `align` on an already aligned stream, a `bytes` call of zero count and
+    // `object` all refuse on a stream that has already failed". A degenerate range reaches no
+    // bits at all, so nothing about the buffer can refuse it and only the latch can — which
+    // is what makes these the reads a stream that gates on length rather than on failure
+    // accepts.
+    let mut degenerate = -7_i32;
+    assert_eq!(stream.serialize_int(&mut degenerate, 42, 42), Err(expected));
+    assert_eq!(degenerate, -7, "a latched read must write no destination");
+
+    let mut degenerate64 = -7_i64;
+    assert_eq!(
+        stream.serialize_int64(&mut degenerate64, 42, 42),
+        Err(expected)
+    );
+    assert_eq!(degenerate64, -7, "a latched read must write no destination");
+
+    let mut degenerate128 = -7_i128;
+    assert_eq!(
+        stream.serialize_int128(&mut degenerate128, 42, 42),
+        Err(expected)
+    );
+    assert_eq!(
+        degenerate128, -7,
+        "a latched read must write no destination"
+    );
+
+    let mut raw = -7_i32;
+    assert_eq!(
+        stream.serialize_fixed(&mut raw, 16, 16, 7, 7),
+        Err(expected)
+    );
+    assert_eq!(raw, -7, "a latched read must write no destination");
+
+    let mut nothing: [u8; 0] = [];
+    assert_eq!(stream.serialize_bytes(&mut nothing), Err(expected));
 
     assert_eq!(
         stream.bits_processed(),
