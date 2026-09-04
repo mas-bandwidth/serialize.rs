@@ -165,19 +165,13 @@ fn parse(cursor: &mut Cursor) -> Option<Value> {
             Value::String(string)
         }
         11 => {
-            let previous = cursor.u32()? as i32;
+            // the int_relative domain is [0,i32::MAX] and the sequence is strictly increasing
+            // (STANDARD.md, `int_relative`): draw the gap first, then a previous that leaves
+            // room for it, so both ends stay inside the domain
             let gap = cursor.u32()? % (1 << 20) + 1;
-            // int relative requires previous < current in the signed domain on the write side;
-            // fall back to a base of 0 when previous + gap would wrap past i32::MAX
-            let current = (previous as u32).wrapping_add(gap) as i32;
-            if previous < current {
-                Value::IntRelative { previous, current }
-            } else {
-                Value::IntRelative {
-                    previous: 0,
-                    current: gap as i32,
-                }
-            }
+            let previous = (cursor.u32()? % (i32::MAX as u32 - gap + 1)) as i32;
+            let current = previous + gap as i32;
+            Value::IntRelative { previous, current }
         }
         12 => Value::U128(cursor.u128()?),
         13 => {

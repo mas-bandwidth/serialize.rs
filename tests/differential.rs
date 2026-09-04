@@ -122,18 +122,13 @@ fn random_value(rng: &mut Rng) -> Value {
             )
         }
         10 => {
-            let previous = rng.next() as u32 as i32;
+            // the int_relative domain is [0,i32::MAX] and the sequence is strictly increasing
+            // (STANDARD.md, `int_relative`): draw the gap first, then a previous that leaves
+            // room for it, so both ends stay inside the domain
             let gap = rng.range(1 << 20) as u32 + 1;
-            let current = (previous as u32).wrapping_add(gap) as i32;
-            // int relative requires previous < current in the signed domain on the write side
-            if previous < current {
-                Value::IntRelative { previous, current }
-            } else {
-                Value::IntRelative {
-                    previous: 0,
-                    current: gap as i32,
-                }
-            }
+            let previous = (rng.next() as u32 % (i32::MAX as u32 - gap + 1)) as i32;
+            let current = previous + gap as i32;
+            Value::IntRelative { previous, current }
         }
         11 => Value::U128(rng.next128()),
         12 => {
@@ -314,6 +309,13 @@ fn test_hostile_read() {
         let mut stream = ReadStream::new(&buffer, len);
 
         for _ in 0..40 {
+            // failure is terminal, so a latched stream refuses everything after it by design;
+            // re-initialize (the operation that clears the latch) to keep driving the hostile
+            // bytes through the rest of the ops rather than through the latch
+            if stream.failure().is_some() {
+                stream = ReadStream::new(&buffer, len);
+            }
+
             // results are intentionally ignored: hostile data may or may not decode, the only
             // requirement is no panic and no unvalidated value escaping
             let mut op = random_value(&mut rng);

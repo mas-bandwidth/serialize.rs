@@ -1,5 +1,46 @@
 # Changelog
 
+## 2.3.0 — 2026-09-04
+
+**`serialize_int_relative` carries the non-negative int32 domain, and every tier's
+reconstruction is checked** (STANDARD.md format version 1.1, "int_relative", adopted
+2026-09-04). The domain is `0` to `i32::MAX` inclusive, on both `previous` and `current`.
+Each tier — the one-bit fast path, the five bounded tiers and the absolute tier —
+reconstructs `current` in `i64`, a width the ladder cannot wrap, and refuses the read
+unless the result is inside the domain and strictly greater than `previous`. The absolute
+tier's 32 raw bits are read as an unsigned value, so a top bit set is `2^31` or above,
+outside the domain, rather than a negative sequence number, and it now checks before it
+assigns. Previously the read reconstructed by wrapping in the unsigned domain and only the
+absolute tier was checked at all: a stream carrying a difference of 1 against a `previous`
+of `i32::MAX` decoded to `i32::MIN` and returned success. `previous` is the caller's own
+state and never arrives off the wire, so a `previous` outside the domain is API misuse — a
+debug assertion on every stream. Wire bytes are unchanged: every stream a conforming writer
+can produce still round trips byte for byte.
+
+**Failure is terminal.** The first refused read latches `ReadStream`: every later read on it
+fails with the same error, consuming no bits and writing no destination, and the new
+`ReadStream::failure()` reports what stopped it. Nothing after a failing operation has a
+defined position, so the stream enforces that rather than the caller's discipline
+(STANDARD.md, Reader Obligations). The latch clears only by re-initialization, which for
+this type is constructing a new stream. `Stream::refuse(&mut self, error)` is the new hook
+every built-in read refusal goes through, and the one custom serialize functions should
+call; `Stream::fail(error)` remains the error constructor it is built from and does not
+latch.
+
+**A refused read leaves its scalar destination unwritten**, and the docs now say exactly
+where that stops: `serialize_bytes`, `serialize_string` and `serialize_wide_string` fill a
+caller-owned buffer and leave its contents unspecified after a refusal, and a composite read
+may leave earlier members written. The one assign-then-check site — `serialize_int_relative`'s
+absolute tier — is fixed, so the promise is true everywhere it is made.
+
+**The shared conformance corpus is vendored and run.** `conformance/` is a verbatim copy of
+the corpus in mas-bandwidth/serialize, synced by the same CI job that syncs `STANDARD.md`,
+and `tests/conformance.rs` runs every vector through the reader: accepted vectors must yield
+the value and consume the stated bits, refused vectors must be refused with the destination
+unwritten. Nothing regenerates an expectation from this implementation.
+
+`STANDARD.md` is synced to the upstream revision carrying all of the above.
+
 ## 2.1.2 — 2026-08-19
 
 **API misuse checks are debug assertions on every stream — the eight hard `assert!`

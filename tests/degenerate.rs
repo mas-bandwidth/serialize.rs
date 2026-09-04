@@ -82,6 +82,37 @@ fn degenerate_range_64_and_128() {
     assert_eq!(v128, -12345678901234567890i128);
 }
 
+/// The `degenerate-range-zero-bits` vector of `conformance/int128.txt`, driven from the write
+/// and measure sides. The reader side runs from the corpus itself in `tests/conformance.rs`;
+/// this is the other half of the rule (STANDARD.md, "int128 (ranged)"): the writer emits
+/// nothing, the measure adds zero, and `min <= max` is the legal relation on the 128 bit
+/// width exactly as on the narrower ones.
+#[test]
+fn degenerate_int128_corpus_vector() {
+    const BOUND: i128 = 1_267_650_600_228_229_401_496_703_205_383;
+
+    let mut buffer = [0u8; 64];
+    {
+        let mut w = WriteStream::new(&mut buffer);
+        let mut value = BOUND;
+        w.serialize_int128(&mut value, BOUND, BOUND).unwrap();
+        assert_eq!(w.bits_processed(), 0, "the writer emits nothing");
+        w.flush();
+        assert_eq!(w.bytes_processed(), 0);
+    }
+
+    let mut m = MeasureStream::new();
+    let mut measured = BOUND;
+    m.serialize_int128(&mut measured, BOUND, BOUND).unwrap();
+    assert_eq!(m.bits_processed(), 0, "the measure adds zero bits");
+
+    let mut r = ReadStream::new(&buffer, 0);
+    let mut value = 0i128;
+    r.serialize_int128(&mut value, BOUND, BOUND).unwrap();
+    assert_eq!(value, BOUND, "recovered from the range alone");
+    assert_eq!(r.bits_processed(), 0, "the reader consumes nothing");
+}
+
 /// Relaxing the guard was meant to admit the degenerate case, not to stop
 /// validating: an inverted range is still API misuse — a debug assertion on every stream,
 /// compiled out in release per the family standard (minimal runtime checking; misuse

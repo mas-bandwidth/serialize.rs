@@ -213,29 +213,39 @@ jobs:
           fi
 
   spec-sync:
-    name: STANDARD.md matches upstream
+    name: STANDARD.md and conformance/ match upstream
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v7
 
-      # STANDARD.md here is a VERBATIM VENDORED COPY of the wire-format
-      # specification that lives in mas-bandwidth/serialize. This job fails if the
-      # two have diverged.
+      # STANDARD.md and conformance/ here are VERBATIM VENDORED COPIES of the
+      # wire-format specification and the shared conformance corpus that live in
+      # mas-bandwidth/serialize. This job fails if either has diverged.
       #
-      # Why vendor rather than link: an implementer wants the normative text
-      # beside the implementation, at the revision they are reading. Why check:
-      # a duplicated normative document is the same failure as a duplicated
-      # constant, except it drifts silently and the ports are what break.
+      # Why vendor rather than link: an implementer wants the normative text and
+      # the vectors that test it beside the implementation, at the revision they
+      # are reading. Why check: a duplicated normative document is the same
+      # failure as a duplicated constant, except it drifts silently and the ports
+      # are what break. The corpus is the conformance instrument (STANDARD.md,
+      # Provenance) -- every implementation vendors it and runs every vector,
+      # rather than regenerating expectations it already agrees with.
       #
-      # If this fails, the upstream spec changed. Read the diff, port whatever
-      # it implies, then copy the new file across in the same commit.
+      # If this fails, upstream changed. Read the diff, port whatever it implies,
+      # then copy the new files across in the same commit. A NEW vector file also
+      # needs naming in the CORPUS list of tests/conformance.rs, which is fixed on
+      # purpose: an operation nothing dispatches is an untested rule, not a pass.
       - name: Compare against mas-bandwidth/serialize
         run: |
-          curl -fsSL -o /tmp/upstream-STANDARD.md \
-            https://raw.githubusercontent.com/mas-bandwidth/serialize/main/STANDARD.md
-          echo "upstream: mas-bandwidth/serialize@$(git ls-remote https://github.com/mas-bandwidth/serialize.git refs/heads/main | cut -f1)"
-          if ! diff -u /tmp/upstream-STANDARD.md STANDARD.md; then
+          git clone --quiet --depth 1 https://github.com/mas-bandwidth/serialize.git /tmp/upstream
+          echo "upstream: mas-bandwidth/serialize@$(git -C /tmp/upstream rev-parse HEAD)"
+          status=0
+          if ! diff -u /tmp/upstream/STANDARD.md STANDARD.md; then
             echo "::error::STANDARD.md has diverged from mas-bandwidth/serialize"
-            exit 1
+            status=1
           fi
-          echo "STANDARD.md matches upstream"
+          if ! diff -ru /tmp/upstream/conformance conformance; then
+            echo "::error::conformance/ has diverged from mas-bandwidth/serialize"
+            status=1
+          fi
+          test "$status" -eq 0
+          echo "STANDARD.md and conformance/ match upstream"

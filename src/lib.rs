@@ -64,6 +64,17 @@
 //! operator aborts the entire serialize function on the first error, so a truncated or
 //! hostile packet can never drive a loop with unvalidated data.
 //!
+//! Two of STANDARD.md's Reader Obligations shape the read API, and hold in every build.
+//! **A refused read leaves its scalar destination unwritten**, so a caller that trusts the
+//! destination over the return code never proceeds on a value the stream did not carry; the
+//! three operations that fill a caller-owned buffer ([`Stream::serialize_bytes`],
+//! [`Stream::serialize_string`] and [`Stream::serialize_wide_string`]) leave that buffer's
+//! contents unspecified instead. **Failure is terminal**: the first refused read latches the
+//! [`ReadStream`], every later read on it fails, consumes no bits and writes no destination,
+//! and [`ReadStream::failure`] reports what stopped it. Custom serialize functions reject a
+//! decoded value with [`Stream::refuse`], which latches — [`Stream::fail`] is the error
+//! constructor it is built from and does not.
+//!
 //! API misuse — bits out of `[1,32]` or `[1,64]`, `min > max`, a `buffer_size` below 2, a
 //! write buffer size that is not a multiple of 8 bytes — is a debug assertion everywhere,
 //! read and write alike, compiled out in release exactly like the C++ library's
