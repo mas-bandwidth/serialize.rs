@@ -8,20 +8,49 @@
 //! suite that agrees with itself proves only that one reading of the standard travelled to
 //! every port under green results.
 //!
-//! Each file is embedded with `include_str!`, so the vectors travel with the test binary and
-//! run unchanged under Miri and under `cross` in qemu. The file list below is fixed: when
-//! upstream adds an operation the sync job goes red, and the new file is vendored and named
-//! here in the same commit.
+//! The runner discovers the directory rather than naming the files in it (STANDARD.md, "The
+//! shared corpus is the conformance instrument"). A hand written file list runs the vectors
+//! someone remembered to add to it, so a newly vendored file goes untested under green
+//! results, in every port whose list was not edited. An empty directory fails the run, and so
+//! does a vector whose operation this port does not dispatch.
 
 use serialize::{Error, ReadStream, Stream};
+use std::path::{Path, PathBuf};
 
-const CORPUS: &[(&str, &str)] = &[
-    (
-        "int_relative.txt",
-        include_str!("../conformance/int_relative.txt"),
-    ),
-    ("int128.txt", include_str!("../conformance/int128.txt")),
-];
+/// The vendored corpus directory. `CARGO_MANIFEST_DIR` is this crate's root, which is where
+/// the corpus sits under `cargo test`, under Miri, and inside the container `cross` runs in.
+fn corpus_directory() -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR")).join("conformance")
+}
+
+/// Every vector file in the corpus directory, in name order, read at run time.
+fn corpus() -> Vec<(String, String)> {
+    let directory = corpus_directory();
+    let entries = std::fs::read_dir(&directory).unwrap_or_else(|error| {
+        panic!("conformance/ is not readable at {}: {error}", directory.display())
+    });
+    let mut paths = Vec::new();
+    for entry in entries {
+        let path = entry.expect("a conformance/ entry is readable").path();
+        if path.extension().is_some_and(|extension| extension == "txt") {
+            paths.push(path);
+        }
+    }
+    paths.sort();
+    assert!(
+        !paths.is_empty(),
+        "conformance/ at {} holds no vector files: an empty corpus is not a pass",
+        directory.display()
+    );
+    let mut corpus = Vec::new();
+    for path in paths {
+        let name = path.file_name().expect("a discovered file has a name");
+        let name = name.to_string_lossy().into_owned();
+        let text = std::fs::read_to_string(&path).expect("a discovered file is readable");
+        corpus.push((name, text));
+    }
+    corpus
+}
 
 /// A value neither vector file can produce, so an assertion that the destination still holds
 /// it is a real observation that the refused read wrote nothing.
@@ -212,9 +241,10 @@ fn check_int128(vector: &Vector) -> Result<(), String> {
 
 #[test]
 fn every_conformance_vector() {
+    let corpus = corpus();
     let mut run = 0;
     let mut failures = Vec::new();
-    for (file, text) in CORPUS {
+    for (file, text) in &corpus {
         let vectors = parse(file, text);
         assert!(!vectors.is_empty(), "{file} carries no vectors");
         for vector in &vectors {
@@ -233,10 +263,7 @@ fn every_conformance_vector() {
             run += 1;
         }
     }
-    assert_eq!(
-        run, 18,
-        "the corpus grew or shrank: check the vendored files"
-    );
+    assert!(run > 0, "the discovered corpus holds no vectors");
     assert!(
         failures.is_empty(),
         "{} of {run} conformance vectors failed:\n{}",

@@ -3,6 +3,7 @@ name: ci
 on:
   push:
     branches: [main]
+    tags: ['v*']
   pull_request:
     branches: [main]
   workflow_dispatch:
@@ -64,8 +65,14 @@ jobs:
       - uses: dtolnay/rust-toolchain@nightly
         with:
           components: miri
+      # The conformance runner discovers conformance/ at run time rather than embedding a
+      # hand written file list, so it needs a filesystem. Miri refuses read_dir under its
+      # default isolation, which would fail the corpus test for a reason that is nothing to
+      # do with undefined behaviour, the only thing this job exists to find.
       - name: Test under Miri (differential seeds reduced via cfg(miri))
         run: cargo miri test
+        env:
+          MIRIFLAGS: -Zmiri-disable-isolation
 
   fuzz:
     name: fuzz smoke (60s per target)
@@ -231,9 +238,11 @@ jobs:
       # rather than regenerating expectations it already agrees with.
       #
       # If this fails, upstream changed. Read the diff, port whatever it implies,
-      # then copy the new files across in the same commit. A NEW vector file also
-      # needs naming in the CORPUS list of tests/conformance.rs, which is fixed on
-      # purpose: an operation nothing dispatches is an untested rule, not a pass.
+      # then copy the new files across in the same commit. A NEW vector file needs
+      # no edit to tests/conformance.rs: the runner discovers the directory. It
+      # does need a dispatch arm for a new OPERATION, and the runner fails on a
+      # vector it cannot dispatch, because an operation nothing runs is an
+      # untested rule rather than a pass.
       - name: Compare against mas-bandwidth/serialize
         run: |
           git clone --quiet --depth 1 https://github.com/mas-bandwidth/serialize.git /tmp/upstream
@@ -249,3 +258,104 @@ jobs:
           fi
           test "$status" -eq 0
           echo "STANDARD.md and conformance/ match upstream"
+
+  # Version agreement inside the repository cannot see the failure that matters here: a
+  # release tagged and never published. crates.io is where consumers get this crate, so the
+  # newest version in its index is the only version that exists as far as they are concerned,
+  # and the repository can run ahead of it indefinitely with every in-repo check green. That
+  # is the state this job was written in: the index held 2.2.2 while the repository was at
+  # 2.3.0, and nothing said so.
+  #
+  # On main and on a pull request this reports, because publishing is not part of merging.
+  # On a release tag it gates, because a tag is a claim that a release exists: at most ONE
+  # release may be in flight, the one the tag names, and a second unpublished tag behind it
+  # means an earlier release was never published.
+  published-version:
+    name: published version
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0        # every v* tag: the drift is counted in tags, not in commits
+
+      - name: Compare the manifest against the crates.io index
+        run: |
+          set -u
+
+          crate=$(sed -n 's/^name = "\(.*\)"/\1/p' Cargo.toml | head -1)
+          version=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
+          if [ -z "$crate" ] || [ -z "$version" ]; then
+            echo "::error::could not read name and version out of Cargo.toml"
+            exit 1
+          fi
+          echo "crate:      $crate"
+          echo "manifest:   $version"
+
+          # the sparse index path: 1/, 2/, 3/<first letter>/, then <first two>/<next two>/
+          lower=$(printf '%s' "$crate" | tr '[:upper:]' '[:lower:]')
+          case ${#lower} in
+            1) path="1/$lower" ;;
+            2) path="2/$lower" ;;
+            3) path="3/$(printf '%s' "$lower" | cut -c1)/$lower" ;;
+            *) path="$(printf '%s' "$lower" | cut -c1-2)/$(printf '%s' "$lower" | cut -c3-4)/$lower" ;;
+          esac
+
+          published=""
+          if curl -sS -f "https://index.crates.io/$path" -o /tmp/index.json; then
+            published=$(jq -r 'select(.yanked | not) | .vers' /tmp/index.json | sort -V | tail -n1)
+          fi
+          if [ -z "$published" ]; then
+            echo "published:  nothing (the index holds no unyanked version of $crate)"
+          else
+            echo "published:  $published"
+          fi
+
+          # every release tag whose version is ahead of what crates.io holds
+          unpublished=""
+          for tag in $(git tag --list 'v*' --sort=v:refname); do
+            tag_version="${tag#v}"
+            if [ -z "$published" ]; then
+              unpublished="$unpublished $tag"
+            elif [ "$tag_version" != "$published" ] && \
+                 [ "$(printf '%s\n%s\n' "$published" "$tag_version" | sort -V | tail -n1)" = "$tag_version" ]; then
+              unpublished="$unpublished $tag"
+            fi
+          done
+          unpublished="${unpublished# }"
+          count=0
+          [ -n "$unpublished" ] && count=$(printf '%s\n' $unpublished | wc -l | tr -d ' ')
+
+          {
+            echo "## Published version"
+            echo ""
+            echo "| | |"
+            echo "|---|---|"
+            echo "| crate | \`$crate\` |"
+            echo "| manifest | \`$version\` |"
+            echo "| newest on crates.io | \`${published:-none}\` |"
+            echo "| tagged and unpublished | ${unpublished:-none} |"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          case "$GITHUB_REF" in
+            refs/tags/v*)
+              tag_version="${GITHUB_REF_NAME#v}"
+              if [ "$tag_version" != "$version" ]; then
+                echo "::error::tag $GITHUB_REF_NAME does not match version $version in Cargo.toml. Bump the manifest as part of the release"
+                exit 1
+              fi
+              if [ "$count" -gt 1 ]; then
+                echo "::error::$count tagged releases are ahead of crates.io ($unpublished), and the newest on crates.io is ${published:-none}. Only the release this tag names may be in flight. Publish the earlier one(s) first."
+                exit 1
+              fi
+              echo "$GITHUB_REF_NAME is the only release in flight."
+              ;;
+            *)
+              if [ "$version" = "$published" ]; then
+                echo "the manifest matches crates.io."
+              elif [ "$count" -ge 1 ]; then
+                echo "::warning::$count tagged release(s) are ahead of crates.io ($unpublished). The manifest is $version and crates.io holds ${published:-none}: a release is owed."
+              else
+                echo "::notice::the manifest is $version and crates.io holds ${published:-none}. That is the release in flight, not drift."
+              fi
+              ;;
+          esac
