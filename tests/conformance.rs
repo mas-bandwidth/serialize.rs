@@ -27,7 +27,10 @@ fn corpus_directory() -> PathBuf {
 fn corpus() -> Vec<(String, String)> {
     let directory = corpus_directory();
     let entries = std::fs::read_dir(&directory).unwrap_or_else(|error| {
-        panic!("conformance/ is not readable at {}: {error}", directory.display())
+        panic!(
+            "conformance/ is not readable at {}: {error}",
+            directory.display()
+        )
     });
     let mut paths = Vec::new();
     for entry in entries {
