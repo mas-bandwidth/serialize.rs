@@ -278,37 +278,23 @@ jobs:
         with:
           fetch-depth: 0        # every v* tag: the drift is counted in tags, not in commits
 
+      # the same script the consumer job runs, so the two jobs cannot disagree
+      # about what crates.io holds
+      - name: Resolve the published version
+        id: index
+        run: .github/published-version.sh
+
       - name: Compare the manifest against the crates.io index
+        env:
+          CRATE: ${{ steps.index.outputs.crate }}
+          MANIFEST: ${{ steps.index.outputs.manifest }}
+          PUBLISHED: ${{ steps.index.outputs.published }}
         run: |
           set -u
 
-          crate=$(sed -n 's/^name = "\(.*\)"/\1/p' Cargo.toml | head -1)
-          version=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
-          if [ -z "$crate" ] || [ -z "$version" ]; then
-            echo "::error::could not read name and version out of Cargo.toml"
-            exit 1
-          fi
-          echo "crate:      $crate"
-          echo "manifest:   $version"
-
-          # the sparse index path: 1/, 2/, 3/<first letter>/, then <first two>/<next two>/
-          lower=$(printf '%s' "$crate" | tr '[:upper:]' '[:lower:]')
-          case ${#lower} in
-            1) path="1/$lower" ;;
-            2) path="2/$lower" ;;
-            3) path="3/$(printf '%s' "$lower" | cut -c1)/$lower" ;;
-            *) path="$(printf '%s' "$lower" | cut -c1-2)/$(printf '%s' "$lower" | cut -c3-4)/$lower" ;;
-          esac
-
-          published=""
-          if curl -sS -f "https://index.crates.io/$path" -o /tmp/index.json; then
-            published=$(jq -r 'select(.yanked | not) | .vers' /tmp/index.json | sort -V | tail -n1)
-          fi
-          if [ -z "$published" ]; then
-            echo "published:  nothing (the index holds no unyanked version of $crate)"
-          else
-            echo "published:  $published"
-          fi
+          crate="$CRATE"
+          version="$MANIFEST"
+          published="$PUBLISHED"
 
           # every release tag whose version is ahead of what crates.io holds
           unpublished=""
