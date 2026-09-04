@@ -1,0 +1,173 @@
+# The consumer path: the library as an outside user actually gets it.
+#
+# Every other job in this repository builds the working tree. That proves the
+# code is right and proves nothing about distribution, which is what a consumer
+# depends on. A crate can be tagged and never published, published without the
+# specification beside it, or sit at a version behind the newest tag while
+# every in-repo check stays green.
+#
+# So this job never touches the working tree as a library. It builds a fresh
+# crate in a temporary directory outside the checkout, adds this crate from
+# crates.io at the exact published version, encodes a three field message,
+# decodes it, and checks the bytes against a literal written here rather than
+# recomputed by the code under test.
+#
+# The byte literal is the family's, not this port's: the same three values
+# encode to the same four bytes in every implementation, so a change to it is
+# a wire change and belongs in STANDARD.md first.
+#
+# The index is resolved by .github/published-version.sh, the same script the
+# published-version job in ci.yml uses, so the two jobs cannot disagree about
+# what crates.io holds.
+name: consumer
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+    branches: [main]
+  schedule:
+    # nightly, because crates.io can move without a push to this repository:
+    # a release published by hand shows up here the following morning
+    - cron: "41 5 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  consumer:
+    name: consumer
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Resolve the published version
+        id: index
+        run: .github/published-version.sh
+
+      - name: Consume the published crate
+        env:
+          CRATE: ${{ steps.index.outputs.crate }}
+          MANIFEST: ${{ steps.index.outputs.manifest }}
+          PUBLISHED: ${{ steps.index.outputs.published }}
+        run: |
+          set -u
+          status=0
+
+          if [ -z "$PUBLISHED" ]; then
+            echo "::error::crates.io holds no unyanked version of $CRATE. There is no consumer path to check"
+            exit 1
+          fi
+
+          # a fresh consumer, outside the checkout, resolving from the index
+          consumer="$RUNNER_TEMP/consumer"
+          rm -rf "$consumer"
+          cargo init --quiet --vcs none --name consumer "$consumer"
+          cd "$consumer"
+
+          if ! cargo add --quiet "$CRATE@=$PUBLISHED"; then
+            echo "::error::cargo add $CRATE@=$PUBLISHED failed. The index advertises a version that cannot be installed"
+            exit 1
+          fi
+
+          cat > src/main.rs <<'RUST'
+          //! A consumer of the published crate. The library name stays `serialize`
+          //! whatever the package is called on crates.io, so this is what user code
+          //! looks like.
+          use serialize::{ReadStream, Result, Stream, WriteStream};
+
+          // three fields, one function, read and write from the same source
+          fn message<S: Stream>(
+              s: &mut S,
+              alive: &mut bool,
+              health: &mut i32,
+              sequence: &mut u16,
+          ) -> Result<(), S::Error> {
+              s.serialize_bool(alive)?;
+              s.serialize_int(health, 0, 1000)?;
+              s.serialize_u16(sequence)?;
+              Ok(())
+          }
+
+          fn main() {
+              // 1 bit + 10 bits + 16 bits = 27 bits, four bytes on the wire
+              const WANT: [u8; 4] = [121, 149, 132, 0];
+
+              let mut buffer = [0u8; 64];
+              let mut w = WriteStream::new(&mut buffer);
+              message(&mut w, &mut true, &mut 700, &mut 4242).expect("write failed");
+              w.flush();
+              let got = w.data().to_vec();
+              println!("encoded {} bytes: {got:?}", got.len());
+              assert_eq!(got, WANT, "wrong bytes: want {WANT:?}, got {got:?}");
+
+              let mut r = ReadStream::new(&got, got.len());
+              let (mut alive, mut health, mut sequence) = (false, 0i32, 0u16);
+              message(&mut r, &mut alive, &mut health, &mut sequence).expect("read failed");
+              assert!(alive, "wrong value for alive");
+              assert_eq!(health, 700, "wrong value for health");
+              assert_eq!(sequence, 4242, "wrong value for sequence");
+              println!("decoded {alive} {health} {sequence}");
+          }
+          RUST
+
+          if ! cargo run --quiet; then
+            echo "::error::the consumer program failed against $CRATE $PUBLISHED"
+            status=1
+          fi
+
+          # the compatibility check, from the consumer's copy rather than this
+          # checkout: a published package that does not carry the format version
+          # of the release it claims to be cannot be checked by anyone who
+          # installs it
+          dir=$(dirname "$(cargo metadata --format-version 1 | jq -r --arg c "$CRATE" '.packages[] | select(.name == $c) | .manifest_path')")
+          echo "package source: $dir"
+          cd "$GITHUB_WORKSPACE"
+
+          format_version() {
+            v=$(sed -n 's/^\*\*The format version is \([0-9][0-9]*\.[0-9][0-9]*\)\.\*\*.*/\1/p' "$1" | head -1)
+            if [ -z "$v" ]; then
+              v=$(sed -n 's/^# serialize \([0-9][0-9]*\.[0-9][0-9]*\) *$/\1/p' "$1" | head -1)
+            fi
+            printf '%s' "$v"
+          }
+
+          package_format=""
+          if [ ! -f "$dir/STANDARD.md" ]; then
+            echo "::error::$CRATE $PUBLISHED ships no STANDARD.md. The specification must travel with the package"
+            status=1
+          else
+            package_format=$(format_version "$dir/STANDARD.md")
+          fi
+          repo_format=$(format_version STANDARD.md)
+          echo "format version: repository $repo_format, package ${package_format:-unknown}"
+          if [ -n "$package_format" ] && [ "$package_format" != "$repo_format" ]; then
+            echo "::error::format version mismatch: $CRATE $PUBLISHED carries format version $package_format and this repository carries $repo_format"
+            status=1
+          fi
+
+          {
+            echo "## Consumer path"
+            echo ""
+            echo "| | |"
+            echo "|---|---|"
+            echo "| crate | \`$CRATE\` |"
+            echo "| manifest here | \`$MANIFEST\` |"
+            echo "| newest on crates.io | \`$PUBLISHED\` |"
+            echo "| format version here | \`$repo_format\` |"
+            echo "| format version in the package | \`${package_format:-unknown}\` |"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          # the drift gate. A manifest ahead of the index is a release that
+          # exists in this repository and nowhere a consumer can reach
+          if [ "$MANIFEST" != "$PUBLISHED" ] && \
+             [ "$(printf '%s\n%s\n' "$PUBLISHED" "$MANIFEST" | sort -V | tail -n1)" = "$MANIFEST" ]; then
+            echo "::error::published version drift: Cargo.toml is $MANIFEST and crates.io holds $PUBLISHED. Publish $MANIFEST before the consumer path can be checked against it"
+            status=1
+          fi
+
+          exit "$status"
