@@ -1,5 +1,25 @@
 # Changelog
 
+## 2.3.1 — 2026-09-04
+
+**The conformance runner discovers `conformance/` instead of naming the files in it.**
+`tests/conformance.rs` held a fixed two-entry list, so a vector file vendored from upstream
+ran only if someone also remembered to name it here, and one that nobody named went untested
+under green results. The runner now reads the directory at run time, in name order: an empty
+directory fails, and so does a vector whose operation the runner has no dispatch arm for.
+That is what STANDARD.md requires of a runner, and it is what the other ports in the family
+already do. The Miri job runs with `-Zmiri-disable-isolation` because the runner now needs a
+filesystem, and the hand maintained vector count the suite asserted is gone with the list it
+counted.
+
+**A `published version` CI job compares the manifest against the crates.io index.** Version
+agreement inside the repository cannot see a release that was tagged and never published: the
+index held 2.2.2 while this repository was at 2.3.0, with every in-repo check green. The job
+reports the drift on `main` and on pull requests, and gates on a release tag, where at most
+one release may be in flight.
+
+No wire change, and no API change.
+
 ## 2.3.0 — 2026-09-04
 
 **`serialize_int_relative` carries the non-negative int32 domain, and every tier's
