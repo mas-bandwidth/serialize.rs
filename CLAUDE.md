@@ -106,10 +106,14 @@ zero unsafe, BSD-3.
 - `tests/differential.rs` — deterministic differential round trip + hostile read (the C++
   fuzz harness, as seeded tests, no deps)
 - `tests/degenerate.rs` — the zero-bit `min == max` range, write/read/measure
-- `tests/conformance.rs` — every vector in `conformance/` through the reader (value and bits
-  consumed on accepts, refusal plus non-mutation on refuses). Its `CORPUS` list is fixed on
-  purpose: a vendored file nothing names, or an operation nothing dispatches, is an untested
-  rule rather than a pass
+- `tests/conformance.rs` — every vector in `conformance/` through the reader, the writer and
+  the measure. It discovers the directory at run time rather than naming files, and one step
+  machine drives the single operation files and the `sequence`/`object`/`message` ones alike:
+  accepts pin the value (as a 128 bit pattern, never through a float) and the bits consumed,
+  `writer = canonical` pins the emitted stream byte for byte, `measure_at_least` is a floor,
+  and refusals pin non-mutation of the scalar destination plus terminality by behavior. An
+  empty directory, an operation with no dispatch arm, an unknown parameter and a `fixed`
+  storage width with no Rust integer type all FAIL rather than skip
 - `tests/terminal.rs` — the terminal-failure latch across six failure shapes (before
   consumption, after partial consumption, range headroom, alignment, malformed string,
   int_relative), plus re-initialization and clone behavior

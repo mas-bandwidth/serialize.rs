@@ -107,6 +107,26 @@ pub trait Stream {
         Self::fail(error)
     }
 
+    /// The failure gate an operation that touches no bits still passes.
+    ///
+    /// STANDARD.md, Reader Obligations: "every read consults the failure state before it
+    /// does anything else, zero-bit reads included, so a degenerate ranged read, an `align`
+    /// on an already aligned stream, a `bytes` call of zero count and `object` all refuse on
+    /// a stream that has already failed." Every operation that reaches the bit level gets
+    /// the gate for free, because [`ReadStream`](crate::ReadStream) folds the latch into its
+    /// past-end test. A degenerate range reaches no bits at all, so it calls this instead.
+    ///
+    /// On a write or measure stream the answer is always `Ok(())` and the call compiles
+    /// away, because neither stream can fail.
+    ///
+    /// # Errors
+    ///
+    /// On a read stream that has already latched a failure, the latched error.
+    #[inline(always)]
+    fn refuse_if_failed(&mut self) -> Result<(), Self::Error> {
+        Ok(())
+    }
+
     /// Serialize `bits` bits of an unsigned integer value in `[0,(1<<bits)-1]`.
     ///
     /// `bits` outside `[1,32]` is API misuse — a debug assertion on every stream, compiled
@@ -227,7 +247,9 @@ pub trait Stream {
             // Degenerate range: STANDARD.md gives it ZERO BITS -- the value is
             // known from the range alone, so nothing rides and nothing is read.
             // This must not reach serialize_bits, whose bit count has to be at
-            // least 1.
+            // least 1, so the failure gate every other read gets from the bit
+            // level is taken explicitly here.
+            self.refuse_if_failed()?;
             if Self::IS_READING {
                 *value = min;
             }
@@ -274,7 +296,9 @@ pub trait Stream {
             // Degenerate range: STANDARD.md gives it ZERO BITS -- the value is
             // known from the range alone, so nothing rides and nothing is read.
             // This must not reach serialize_bits, whose bit count has to be at
-            // least 1.
+            // least 1, so the failure gate every other read gets from the bit
+            // level is taken explicitly here.
+            self.refuse_if_failed()?;
             if Self::IS_READING {
                 *value = min;
             }
@@ -342,7 +366,9 @@ pub trait Stream {
             // Degenerate range: STANDARD.md gives it ZERO BITS -- the value is
             // known from the range alone, so nothing rides and nothing is read.
             // This must not reach serialize_bits, whose bit count has to be at
-            // least 1.
+            // least 1, so the failure gate every other read gets from the bit
+            // level is taken explicitly here.
+            self.refuse_if_failed()?;
             if Self::IS_READING {
                 *value = min;
             }
@@ -751,8 +777,10 @@ pub trait Stream {
 
         if min_units == max_units {
             // degenerate range: the value IS the range, nothing to send (STANDARD.md:
-            // min == max costs zero bits, on every storage width). this used to panic --
-            // in release too -- rejecting exactly the case the format defines
+            // min == max costs zero bits, on every storage width). nothing reaches the bit
+            // level, so the failure gate is taken explicitly, exactly as in the ranged
+            // integers above
+            self.refuse_if_failed()?;
             if Self::IS_WRITING {
                 debug_assert!(
                     value.to_unsigned() == raw_min,

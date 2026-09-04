@@ -1,6 +1,6 @@
 [package]
 name = "serialize-official"
-version = "2.3.1"
+version = "2.3.2"
 edition = "2024"
 rust-version = "1.85"
 description = "A simple bitpacking serializer for Rust, wire compatible with the C++ serialize library"

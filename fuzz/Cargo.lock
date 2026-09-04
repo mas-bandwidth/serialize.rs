@@ -85,7 +85,7 @@ dependencies = [
 
 [[package]]
 name = "serialize-official"
-version = "2.3.1"
+version = "2.3.2"
 
 [[package]]
 name = "shlex"

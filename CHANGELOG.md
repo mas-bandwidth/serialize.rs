@@ -1,5 +1,41 @@
 # Changelog
 
+## 2.3.2 — 2026-09-04
+
+**The vendored conformance corpus covers every operation, and the runner drives all of it.**
+`conformance/` carries 349 vectors in 18 files, one per covered operation plus `sequence`,
+`object` and the message STANDARD.md works through, and `tests/conformance.rs` is the runner
+STANDARD.md specifies. One step machine drives both the single operation files and the
+composite ones: a single operation vector is a one or two step sequence built from the
+record's own parameters, so the sequence files cannot drift away from the operation files.
+The runner dispatches `bits`, `bool`, `uint128`, `align`, `int`, `int64`, `int128`,
+`int_relative`, `float`, `double`, `compressed_float`, `bytes`, `string`, `wstring`, `fixed`
+and nested objects, compares every integer width and every float and double bit pattern as a
+128 bit two's complement pattern rather than through a float, re-emits a `writer = canonical`
+vector through the write stream and compares the whole stream byte for byte with the flush
+included, runs a `measure_at_least` sequence through the measure stream against the floor,
+and on a refused vector requires the scalar destination to hold exactly what it held before
+the call and the stream to be terminal — every later step of the sequence refused, and a
+further read the vector does not name refused, consuming no bits and writing nothing. A
+vector whose operation the runner cannot drive fails, and so does one naming a parameter the
+runner does not understand or a `fixed` storage width Rust has no integer type for. Every
+stream is presented with the buffer contract's eight bytes of slack, filled with a non-zero
+pattern, so a decode that depends on memory past the end cannot pass by reading zeros.
+
+**Every read consults the failure state before it does anything else, zero-bit reads
+included** (STANDARD.md, Reader Obligations). A read that reaches the bit level gets the gate
+free, because `ReadStream` folds its latch into the past-end test, but a degenerate range
+reaches no bits at all: `serialize_int`, `serialize_int64`, `serialize_int128` and
+`serialize_fixed` over `min == max` returned the value from the range on a stream that had
+already failed, so a zero-bit field after a refusal was the one read the latch did not
+cover. They now take the gate explicitly, through the new `Stream::refuse_if_failed`, whose
+default body is `Ok(())` on the infallible streams and compiles away there. A `bytes` call of
+zero count and an `align` on an already aligned stream were already covered and are unchanged.
+
+No wire change, and no behavior change on a stream that has not failed.
+
+`STANDARD.md` is synced to the upstream revision carrying the corpus expansion.
+
 ## 2.3.1 — 2026-09-04
 
 **The conformance runner discovers `conformance/` instead of naming the files in it.**
