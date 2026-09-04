@@ -726,8 +726,9 @@ fn test_write_bytes_wire_identical() {
 }
 
 #[test]
-fn test_int_relative_validation() {
-    // the 32 bit fallback must reject values that violate the previous < current contract
+fn test_int_relative_absolute_tier_refusals() {
+    // the absolute tier must reject a value that violates the previous < current contract,
+    // and leave the destination unwritten while doing it
     {
         let mut buffer = [0u8; 8 + 8];
 
@@ -743,13 +744,48 @@ fn test_int_relative_validation() {
         }
 
         let mut read_stream = ReadStream::new(&buffer, 8);
-        let mut current = 0i32;
+        let mut current = -1i32;
         assert_eq!(
             read_stream.serialize_int_relative(100, &mut current),
             Err(Error::ValueOutOfRange)
         );
+        assert_eq!(
+            current, -1,
+            "a refused read must leave its destination unwritten"
+        );
     }
 
+    // the absolute tier's 32 raw bits are UNSIGNED: a top bit set is 2^31 or above, outside
+    // the domain, not a negative sequence number (STANDARD.md, `int_relative`)
+    {
+        let mut buffer = [0u8; 8 + 8];
+
+        {
+            let mut write_stream = WriteStream::new(&mut buffer[..8]);
+            let mut six_false_bools = 0u32;
+            write_stream
+                .serialize_bits(&mut six_false_bools, 6)
+                .unwrap();
+            let mut top_bit_set = 0x8000_0000u32;
+            write_stream.serialize_bits(&mut top_bit_set, 32).unwrap();
+            write_stream.flush();
+        }
+
+        let mut read_stream = ReadStream::new(&buffer, 8);
+        let mut current = -1i32;
+        assert_eq!(
+            read_stream.serialize_int_relative(100, &mut current),
+            Err(Error::ValueOutOfRange)
+        );
+        assert_eq!(
+            current, -1,
+            "a refused read must leave its destination unwritten"
+        );
+    }
+}
+
+#[test]
+fn test_int_relative_round_trip() {
     // a legitimate fallback round trip must still succeed
     {
         let mut buffer = [0u8; 8 + 8];
@@ -772,7 +808,7 @@ fn test_int_relative_validation() {
         assert_eq!(current, written);
     }
 
-    // gaps wider than 2^31 overflow if the difference is computed in signed arithmetic
+    // the widest legal gap spans the whole domain, and travels through the absolute tier
     {
         let mut buffer = [0u8; 8 + 8];
 
@@ -781,24 +817,28 @@ fn test_int_relative_validation() {
             let mut write_stream = WriteStream::new(&mut buffer[..8]);
             let mut current = written;
             write_stream
-                .serialize_int_relative(-1000, &mut current)
+                .serialize_int_relative(0, &mut current)
                 .unwrap();
             write_stream.flush();
         }
 
         let mut read_stream = ReadStream::new(&buffer, 8);
         let mut current = 0i32;
-        read_stream
-            .serialize_int_relative(-1000, &mut current)
-            .unwrap();
+        read_stream.serialize_int_relative(0, &mut current).unwrap();
         assert_eq!(current, written);
     }
+}
 
-    // read side reconstructs current = previous + difference; a large previous overflows
-    // signed arithmetic. this must wrap in the unsigned domain rather than panic.
+#[test]
+fn test_int_relative_reconstruction_is_checked_in_every_tier() {
+    // EVERY tier's reconstruction is checked (STANDARD.md, `int_relative`). The same bytes
+    // that decode against a small previous reconstruct past the top of the domain against a
+    // previous near i32::MAX, and the read must be refused there — reconstruction in a width
+    // that cannot wrap is what makes the two readings disagree. The destination stays
+    // unwritten.
     {
-        // difference of 1 exercises the one bit branch, difference of 5 exercises a bucket
-        let differences = [1i32, 5];
+        // one difference per tier: the one-bit fast path, then the five bounded tiers
+        let differences = [1i32, 2, 7, 24, 281, 4378];
 
         for difference in differences {
             let mut buffer = [0u8; 8 + 8];
@@ -814,17 +854,44 @@ fn test_int_relative_validation() {
             }
 
             let mut read_stream = ReadStream::new(&buffer, 8);
-            let previous = i32::MAX; // previous + difference exceeds i32::MAX
-            let mut current = 0i32;
-            read_stream
-                .serialize_int_relative(previous, &mut current)
-                .unwrap();
+            let previous = i32::MAX; // previous + difference leaves the domain
+            let mut current = -1i32;
             assert_eq!(
-                current,
-                (i32::MAX as u32).wrapping_add(difference as u32) as i32
+                read_stream.serialize_int_relative(previous, &mut current),
+                Err(Error::ValueOutOfRange),
+                "difference {difference} must be refused past the top of the domain"
+            );
+            assert_eq!(
+                current, -1,
+                "a refused read must leave its destination unwritten"
             );
         }
     }
+}
+
+#[test]
+#[cfg(debug_assertions)]
+#[should_panic(expected = "is outside the domain")]
+fn test_int_relative_previous_outside_the_domain_asserts_in_debug() {
+    // previous is the caller's own state and never arrives off the wire, so a previous
+    // outside [0,i32::MAX] is caller error with no wire meaning (STANDARD.md,
+    // `int_relative`): a checked build says so
+    let mut buffer = [0u8; 8];
+    let mut write_stream = WriteStream::new(&mut buffer);
+    let mut current = 0i32;
+    let Ok(()) = write_stream.serialize_int_relative(-1000, &mut current);
+}
+
+#[test]
+#[cfg(debug_assertions)]
+#[should_panic(expected = "is outside the domain")]
+fn test_int_relative_previous_outside_the_domain_asserts_on_read_in_debug() {
+    // the same contract on the read side: the assertion is on the caller's parameter, not
+    // on packet data, so it binds on every stream
+    let buffer = [0u8; 16];
+    let mut read_stream = ReadStream::new(&buffer, 8);
+    let mut current = 0i32;
+    let _ = read_stream.serialize_int_relative(-1, &mut current);
 }
 
 #[test]

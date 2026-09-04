@@ -25,8 +25,9 @@ Nothing here exercises the [C](https://github.com/mas-bandwidth/serialize.c),
 [Go](https://github.com/mas-bandwidth/serialize.go) ports, so this repo proves no leg of the
 family beyond the C++ one. What ties the family together is the C++ library as the common
 reference: each port runs its own head-to-head check against it in its own CI, all four ports
-vendor a byte-identical copy of [STANDARD.md](STANDARD.md) — the upstream specification, with a
-CI job in each repo that fails on drift — and the golden vectors line up, the Go port pinning
+vendor a byte-identical copy of [STANDARD.md](STANDARD.md) and of the shared
+[conformance/](conformance) corpus — the upstream specification and its vectors, with a CI job
+in each repo that fails on drift — and the golden vectors line up, the Go port pinning
 this exact 112 byte vector, the C# port pinning the same bytes in two pieces (the 72 byte core
 and the 40 byte fixed point tail), while the C port pins sequences of its own that its CI
 checks against the C++ library. Compatibility across the family rests on that shared reference
@@ -108,6 +109,30 @@ controls a loop (a count, a length) is always validated before it drives anythin
 Rust rendering of the C++ library's early-return serialize macros and the Go port's sticky
 errors, and it is the reason serialize methods take `&mut` values and return `Result`.
 
+Three obligations from STANDARD.md's Reader Obligations hold in every build:
+
+- **A refused read leaves its scalar destination unwritten.** The value the caller passed in
+  is exactly what it holds afterwards, so a caller that trusts the destination over the
+  return code never proceeds on a value the stream did not carry. The three operations that
+  fill a caller-owned buffer — `serialize_bytes`, `serialize_string` and
+  `serialize_wide_string` — leave that buffer's contents unspecified after a refusal, and a
+  composite read may leave earlier members written, because it is a sequence of primitive
+  reads and each one carries the rule alone.
+- **Failure is terminal.** The first refused read latches the `ReadStream`: every later read
+  on it fails with the same error, consuming no bits and writing no destination, and
+  `ReadStream::failure()` reports what stopped it. Nothing after a failing operation has a
+  defined position, so the stream enforces that rather than the caller's discipline. The
+  latch clears only by re-initialization, which here is constructing a new stream. Custom
+  serialize functions reject a decoded value with `stream.refuse(error)`, which latches;
+  `Stream::fail` is the error constructor it is built from and does not.
+- **`serialize_int_relative` carries the non-negative int32 domain, `0` to `i32::MAX`.** Both
+  `previous` and `current` lie in it, and the sequence is strictly increasing — a caller with
+  a wrapping counter unwraps it before serializing. Every tier reconstructs `current` in a
+  width that cannot wrap and then refuses a result outside the domain or not above
+  `previous`, the absolute tier's 32 raw bits included: they are unsigned, so a top bit set
+  is `2^31` or above, not a negative sequence number. `previous` is the caller's own state
+  and never arrives off the wire, so a `previous` outside the domain is a debug assertion.
+
 The write path is trusted and, as of 2.0, **infallible** — the writer-trusted contract the
 whole family shares, matching the C++ library's checkless writer. `WriteStream` and
 `MeasureStream` set `S::Error = Infallible`, so no write or measure can return an error and
@@ -179,16 +204,21 @@ cargo +nightly fuzz run hostile_read         # libFuzzer (also: round_trip)
 ```
 
 The test suite mirrors serialize.h test-for-test, including the adversarial cases
-(out-of-range values smuggled into bit headroom, full-range integers, NaN handling, >2^31
-relative gaps) and the golden wire format test. `tests/differential.rs` adds a deterministic
-differential write→read round trip and a hostile read pass, `tests/degenerate.rs` pins the
-zero-bit `min == max` range across all three streams, and `fuzz/` carries the same two passes
-as real libFuzzer targets, mirroring the C++ library's fuzz harness.
+(out-of-range values smuggled into bit headroom, full-range integers, NaN handling,
+`int_relative` reconstructions that leave the domain) and the golden wire format test.
+`tests/conformance.rs` runs every vector in the vendored [conformance/](conformance) corpus
+through the reader — the shared instrument, not expectations regenerated from this port —
+`tests/terminal.rs` pins the terminal-failure latch across six failure shapes,
+`tests/differential.rs` adds a deterministic differential write→read round trip and a hostile
+read pass, `tests/degenerate.rs` pins the zero-bit `min == max` range across all three
+streams, and `fuzz/` carries the same two passes as real libFuzzer targets, mirroring the C++
+library's fuzz harness.
 
 CI runs the test matrix on Linux/macOS/Windows (debug and release), pedantic clippy, rustfmt,
 rustdoc, an MSRV (1.85) check, the whole suite under Miri, 60 seconds of each fuzz target, a
 zero-dependency guard, big-endian s390x and 32 bit i686 runs under qemu, a wasm32 build check,
-a STANDARD.md drift check against upstream, and `cargo semver-checks` on pull requests.
+a drift check of STANDARD.md and `conformance/` against upstream, and `cargo semver-checks` on
+pull requests.
 
 Unsafe code is forbidden crate-wide and enforced by the compiler: the crate declares
 `unsafe_code = "forbid"` under `[lints.rust]` in `Cargo.toml`, which applies the same

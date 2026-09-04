@@ -24,6 +24,13 @@ fuzz_target!(|data: &[u8]| {
     let mut buffer = [0u8; 32];
 
     for chunk in script[1..].chunks(3) {
+        // failure is terminal, so a latched stream refuses everything after it by design;
+        // re-initialize (the operation that clears the latch) to keep driving the hostile
+        // bytes through the rest of the script rather than through the latch
+        if stream.failure().is_some() {
+            stream = ReadStream::new(packet, bytes);
+        }
+
         let op = chunk[0];
         let a = *chunk.get(1).unwrap_or(&0);
         let b = *chunk.get(2).unwrap_or(&0);
@@ -68,7 +75,10 @@ fuzz_target!(|data: &[u8]| {
                 }
                 1 => stream.serialize_string(&mut string, usize::from(b) % 64 + 2),
                 2 => stream.serialize_wide_string(&mut string, usize::from(b) % 64 + 2),
-                3 => stream.serialize_int_relative(i32::from(a) - i32::from(b), &mut 0),
+                // previous is caller state and must be in the int_relative domain
+                // [0,i32::MAX] (STANDARD.md): the hostile input is the packet, not the bound
+                3 => stream
+                    .serialize_int_relative((i32::from(a) << 8) | i32::from(b), &mut 0),
                 _ => stream.serialize_compressed_float(&mut 0.0, 0.0, f32::from(b) + 1.0, 0.01),
             },
         };

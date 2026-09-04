@@ -64,12 +64,11 @@ pub trait Stream {
     /// (or plain `?`, via `From<Infallible> for Error`, when the stream type is concrete).
     type Error: core::fmt::Debug + Into<Error>;
 
-    /// Report a data validation failure.
+    /// Construct a data validation failure, without touching the stream.
     ///
-    /// This is how the built-in serialize methods reject decoded values that fail validation
-    /// on read, and it is the hook for the same policy in custom serialize functions: guard
-    /// with `if S::IS_READING { ... return S::fail(error); }` and the write and measure
-    /// instantiations compile the guard away.
+    /// This is the error constructor [`Stream::refuse`] is built from. Serialize functions
+    /// call `refuse` instead: failure is terminal, and only the `&mut self` form can latch
+    /// the stream so every later read fails too.
     ///
     /// # Errors
     ///
@@ -81,6 +80,32 @@ pub trait Stream {
     /// On a write or measure stream. Those streams cannot fail — reaching a data validation
     /// failure on one is a bug in the calling code, not a data condition.
     fn fail(error: Error) -> Result<(), Self::Error>;
+
+    /// Refuse the read: report a data validation failure and latch the stream's failure
+    /// state, so every later read on it fails as well.
+    ///
+    /// This is how the built-in serialize methods reject decoded values that fail
+    /// validation on read, and it is the hook for the same policy in custom serialize
+    /// functions: guard with `if S::IS_READING { ... return stream.refuse(error); }` and the
+    /// write and measure instantiations compile the guard away.
+    ///
+    /// Failure is terminal (STANDARD.md, Reader Obligations): nothing after a failing
+    /// operation has a defined position, so the stream — not the caller's discipline —
+    /// enforces that nothing after it is interpretable. [`crate::ReadStream`] overrides this
+    /// to set its latch; write and measure streams cannot fail, so the default body is just
+    /// [`Stream::fail`].
+    ///
+    /// # Errors
+    ///
+    /// On a read stream, always returns `Err(error)`.
+    ///
+    /// # Panics
+    ///
+    /// On a write or measure stream, exactly as [`Stream::fail`] does.
+    #[inline(always)]
+    fn refuse(&mut self, error: Error) -> Result<(), Self::Error> {
+        Self::fail(error)
+    }
 
     /// Serialize `bits` bits of an unsigned integer value in `[0,(1<<bits)-1]`.
     ///
@@ -221,7 +246,7 @@ pub trait Stream {
         self.serialize_bits(&mut unsigned_value, bits)?;
         if Self::IS_READING {
             if unsigned_value > range {
-                return Self::fail(Error::ValueOutOfRange);
+                return self.refuse(Error::ValueOutOfRange);
             }
             *value = unsigned_value.wrapping_add(min as u32) as i32;
         }
@@ -279,7 +304,7 @@ pub trait Stream {
         }
         if Self::IS_READING {
             if unsigned_value > range {
-                return Self::fail(Error::ValueOutOfRange);
+                return self.refuse(Error::ValueOutOfRange);
             }
             *value = unsigned_value.wrapping_add(min as u64) as i64;
         }
@@ -336,7 +361,7 @@ pub trait Stream {
         serialize_offset128(self, &mut offset, bits)?;
         if Self::IS_READING {
             if offset > range {
-                return Self::fail(Error::ValueOutOfRange);
+                return self.refuse(Error::ValueOutOfRange);
             }
             *value = offset.wrapping_add(min as u128) as i128;
         }
@@ -626,7 +651,7 @@ pub trait Stream {
 
         if Self::IS_READING {
             if integer_value > max_integer_value {
-                return Self::fail(Error::ValueOutOfRange);
+                return self.refuse(Error::ValueOutOfRange);
             }
             let normalized_value = integer_value as f32 / max_integer_value as f32;
             *value = normalized_value * delta + min;
@@ -759,7 +784,7 @@ pub trait Stream {
             // reject raw values outside [raw_min,raw_max] smuggled into the bit headroom of
             // the offset encoding. reject, never clamp
             if offset > raw_range {
-                return Self::fail(Error::ValueOutOfRange);
+                return self.refuse(Error::ValueOutOfRange);
             }
             // reconstruct in the unsigned domain, then truncate to the storage width: exact
             // two's complement for signed storage
@@ -769,15 +794,30 @@ pub trait Stream {
     }
 
     /// Serialize an integer value relative to another, using fewer bits for smaller gaps.
-    /// `current` must be strictly greater than `previous` — this is for strictly increasing
-    /// sequences. On read, a decoded value that is not greater than `previous` fails with
-    /// [`Error::ValueOutOfRange`].
+    ///
+    /// The domain is the non-negative int32 range, `0` to `i32::MAX` inclusive (STANDARD.md,
+    /// `int_relative`): both `previous` and `current` lie in it, and `current` must be
+    /// strictly greater than `previous` — this is for strictly increasing sequences. A
+    /// caller with a wrapping counter unwraps it before serializing; wrap-around is not an
+    /// encoding this operation carries.
+    ///
+    /// `previous` is the caller's own state and never arrives off the wire, so a `previous`
+    /// outside the domain is API misuse — a debug assertion on every stream, compiled out in
+    /// release — exactly as `current <= previous` is on write.
+    ///
+    /// On read every tier reconstructs `current` in a width that cannot wrap and then checks
+    /// the result, so a reconstruction that leaves the domain or fails to exceed `previous`
+    /// is refused with [`Error::ValueOutOfRange`] and the destination is left unwritten. That
+    /// binds in the one-bit tier, in each of the five bounded tiers, and in the absolute
+    /// tier, whose 32 raw bits are read as an **unsigned** value — a top bit set is outside
+    /// the domain, not a negative sequence number.
     ///
     /// # Errors
     ///
     /// On read, [`Error::Overflow`] if the read would pass the end of the buffer, or
-    /// [`Error::ValueOutOfRange`] if the decoded value is not greater than `previous`.
-    /// Writes and measures cannot error: `current <= previous` is a debug assertion.
+    /// [`Error::ValueOutOfRange`] if the reconstructed value is outside the domain or is not
+    /// greater than `previous`. Writes and measures cannot error: a `previous` or `current`
+    /// outside the contract is a debug assertion.
     #[inline]
     fn serialize_int_relative(
         &mut self,
@@ -794,11 +834,19 @@ pub trait Stream {
             (69914, 4378, 69914),
         ];
 
+        misuse_check!(
+            previous >= 0,
+            "serialize_int_relative: previous ({previous}) is outside the domain [0,i32::MAX]"
+        );
+
         let mut difference = 0u32;
         if Self::IS_WRITING {
-            debug_assert!(previous < *current);
-            // subtract in the unsigned domain: current - previous overflows signed arithmetic
-            // when the gap is wider than 2^31
+            misuse_check!(
+                previous < *current,
+                "serialize_int_relative: current ({}) must be greater than previous ({previous})",
+                *current
+            );
+            // both operands are in the domain, so the difference is exact in 32 bits
             difference = (*current as u32).wrapping_sub(previous as u32);
         }
 
@@ -809,9 +857,7 @@ pub trait Stream {
         self.serialize_bool(&mut one_bit)?;
         if one_bit {
             if Self::IS_READING {
-                // reconstruct in the unsigned domain: previous + difference overflows signed
-                // arithmetic near the type maximum
-                *current = (previous as u32).wrapping_add(1) as i32;
+                return accept_int_relative(self, previous, i64::from(previous) + 1, current);
             }
             return Ok(());
         }
@@ -823,27 +869,52 @@ pub trait Stream {
             }
             self.serialize_bool(&mut in_bucket)?;
             if in_bucket {
-                let mut bucket_difference = difference as i32;
+                let mut bucket_difference = 0i32;
+                if Self::IS_WRITING {
+                    bucket_difference = difference as i32;
+                }
                 self.serialize_int(&mut bucket_difference, bucket_min, bucket_max)?;
                 if Self::IS_READING {
-                    // reconstruct in the unsigned domain, as above
-                    *current = (previous as u32).wrapping_add(bucket_difference as u32) as i32;
+                    let reconstructed = i64::from(previous) + i64::from(bucket_difference);
+                    return accept_int_relative(self, previous, reconstructed, current);
                 }
                 return Ok(());
             }
         }
 
-        let mut value = *current as u32;
+        // the absolute tier transmits current itself, as 32 raw bits
+        let mut value = 0u32;
+        if Self::IS_WRITING {
+            value = *current as u32;
+        }
         self.serialize_bits(&mut value, 32)?;
         if Self::IS_READING {
-            *current = value as i32;
-            if *current <= previous {
-                return Self::fail(Error::ValueOutOfRange);
-            }
+            // the group is UNSIGNED: widening it into i64 (rather than reinterpreting it as
+            // i32) is what makes a top bit set read as 2^31 or above, outside the domain,
+            // instead of as a negative sequence number
+            return accept_int_relative(self, previous, i64::from(value), current);
         }
 
         Ok(())
     }
+}
+
+/// The reconstruction check every `int_relative` tier ends in (STANDARD.md, `int_relative`):
+/// `reconstructed` is computed in `i64`, a width the ladder cannot wrap, and is written to
+/// the destination only once it is inside the domain `[0,i32::MAX]` and strictly greater than
+/// `previous`. A refused read leaves `current` exactly as the caller left it.
+fn accept_int_relative<S: Stream + ?Sized>(
+    stream: &mut S,
+    previous: i32,
+    reconstructed: i64,
+    current: &mut i32,
+) -> Result<(), S::Error> {
+    const DOMAIN: core::ops::RangeInclusive<i64> = 0..=(i32::MAX as i64);
+    if !DOMAIN.contains(&reconstructed) || reconstructed <= i64::from(previous) {
+        return stream.refuse(Error::ValueOutOfRange);
+    }
+    *current = reconstructed as i32;
+    Ok(())
 }
 
 /// The wire constants a compressed float declaration derives to, produced by

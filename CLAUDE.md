@@ -49,11 +49,14 @@ zero unsafe, BSD-3.
    float is the literal `3.1415926` (bit pattern 0x40490FDA) — NOT `f32::consts::PI`, which
    differs in the last bit.
 2. **Malicious packet data never panics.** Every ReadStream operation is bounds checked and
-   range validated and fails with an `Error`. Hard panics are reserved for read-side API
-   misuse (bits out of [1,32]/[1,64], min > max) plus the two structural write cases (write
-   buffer not a multiple of 8 bytes, writing past the end of a buffer — the slice bounds
-   check). As of 2.0 all other write/measure-side misuse is `debug_assert!` only, compiled
-   out in release (writer-trusted: the #52 ruling). A degenerate range (min == max) is NOT
+   range validated and fails with an `Error`. Since 2.1.2 API misuse is `debug_assert!` on
+   every stream, read and write alike, compiled out in release (the check model: the caller
+   is responsible for well formed calls); the only hard panics left are the two structural
+   write cases the language itself enforces — a write buffer that is not a multiple of 8
+   bytes, and writing past the end of a buffer, which is the slice bounds check. Three read
+   obligations bind in every build (STANDARD.md, Reader Obligations): a refused read leaves
+   its scalar destination unwritten, failure is terminal (the `ReadStream` latch), and every
+   refusal rule the standard states is enforced. A degenerate range (min == max) is NOT
    misuse: the format defines it as
    zero bits, `serialize_int`/`int64`/`int128` accept it, and `tests/degenerate.rs` pins that
    — and since #36 `serialize_fixed` accepts it too, on every storage width (the ruling pins
@@ -82,8 +85,9 @@ zero unsafe, BSD-3.
   `bits_required128`, zigzag (all const fn)
 - `src/bitpacker.rs` — `BitWriter` (64 bit scratch, LE qword stores), `BitReader` (branchless
   windows, `read_byte_slice` returns borrowed subslices for zero-copy strings)
-- `src/stream.rs` — `Stream` trait: `type Error` (Error on read, Infallible on write/measure)
-  and `fail()`, required primitives per stream (bits/bytes/align/strings) plus default
+- `src/stream.rs` — `Stream` trait: `type Error` (Error on read, Infallible on write/measure),
+  `fail()` (the error constructor) and `refuse()` (the `&mut self` form every built-in read
+  refusal goes through, so `ReadStream` can latch), required primitives per stream (bits/bytes/align/strings) plus default
   methods for everything derivable (int/int64/int128/bits64/bool/u8-u64/u128/
   f32/f64/compressed float/fixed point/int relative). `serialize_compressed_float_precomputed`
   is the audited home of the compressed float quantization arithmetic (schema#82):
@@ -95,17 +99,30 @@ zero unsafe, BSD-3.
   `serialize_fixed` (i8..i128 and their unsigned twins). `Serialize` trait for objects.
 - `src/write_stream.rs` / `src/read_stream.rs` / `src/measure_stream.rs` — the three streams.
   Context is `Option<&'a dyn Any>` (the C++ void* context; copy out of it before serializing).
+  `ReadStream` carries the terminal-failure latch (`failed: Option<Error>`, reported by
+  `failure()`): the gate is folded into the existing past-end test in `refuses()`, so the
+  latch costs no extra branch, and it clears only by constructing a new stream.
 - `tests/serialize.rs` — the C++ test suite ported test-for-test + golden wire test
 - `tests/differential.rs` — deterministic differential round trip + hostile read (the C++
   fuzz harness, as seeded tests, no deps)
 - `tests/degenerate.rs` — the zero-bit `min == max` range, write/read/measure
+- `tests/conformance.rs` — every vector in `conformance/` through the reader (value and bits
+  consumed on accepts, refusal plus non-mutation on refuses). Its `CORPUS` list is fixed on
+  purpose: a vendored file nothing names, or an operation nothing dispatches, is an untested
+  rule rather than a pass
+- `tests/terminal.rs` — the terminal-failure latch across six failure shapes (before
+  consumption, after partial consumption, range headroom, alignment, malformed string,
+  int_relative), plus re-initialization and clone behavior
+- `conformance/` — a VERBATIM VENDORED COPY of the shared conformance corpus from
+  mas-bandwidth/serialize, synced by the same `spec-sync` CI job as STANDARD.md
 - `examples/packet.rs` — condensed example.cpp; `examples/wire_interop.rs` — the Rust half of
   the C++ interop job (writes the golden + extended interop file, reads the C++ one)
 - `fuzz/` — a separate crate (not in the library's dependency graph) with the `hostile_read`
   and `round_trip` libFuzzer targets
 - `STANDARD.md` — a VERBATIM VENDORED COPY of the wire format spec from mas-bandwidth/
-  serialize. The `spec-sync` CI job diffs it against upstream and fails on divergence; if it
-  fails, port what the upstream change implies and copy the new file across in the same commit
+  serialize. The `spec-sync` CI job diffs it and `conformance/` against upstream and fails on
+  divergence; if it fails, port what the upstream change implies and copy the new files across
+  in the same commit
 
 ## Commands
 
@@ -134,8 +151,8 @@ zero unsafe, BSD-3.
 - CI (.github/workflows/ci.yml): 3-OS test matrix (debug + release + example), lint
   (pedantic clippy / fmt / rustdoc / zero-dependency guard), MSRV 1.85 check, Miri, 60s fuzz
   smoke per target (uploads crash reproducers on failure), C++ wire interop, cross matrix
-  (big-endian s390x + 32 bit i686 under qemu), wasm32 build check, STANDARD.md spec-sync
-  against upstream, and cargo-semver-checks against main on PRs. Unsafe code is forbidden
+  (big-endian s390x + 32 bit i686 under qemu), wasm32 build check, spec-sync of STANDARD.md
+  and conformance/ against upstream, and cargo-semver-checks against main on PRs. Unsafe code is forbidden
   crate-wide by `unsafe_code = "forbid"` under `[lints.rust]` in Cargo.toml — there is no
   `#![forbid(unsafe_code)]` attribute in lib.rs, and the lint table is the one place to look.
   nightly-fuzz.yml runs 30 min per fuzz target daily with a cumulative cached corpus (free now
@@ -183,8 +200,8 @@ Rejected, with reasons — do not propose again:
 v1.0.0 released 2026-07-12 (opened at 1.0.0 deliberately — the wire format is a decade old
 and frozen, like the Go port); latest released tag is v1.6.0 (2026-08-15); main carries
 2.0.0, the infallible write path (semver major, CHANGELOG.md has the migration notes). Release process: bump
-`version` in Cargo.toml, refresh both lockfiles (`cargo update -p serialize` at the root and
-in fuzz/ — both are committed, and a stale one is the step that gets skipped), verify
+`version` in Cargo.toml, refresh both lockfiles (`cargo update -p serialize-official` at the
+root and in fuzz/ — both are committed, and a stale one is the step that gets skipped), verify
 `cargo package`, push, wait for CI fully green, then `git tag -a vX.Y.Z` + `gh release create`
 on that commit. New exported API = minor bump; any wire format change is forbidden (see
 invariant 1), not a version discussion. The cargo-semver-checks CI job flags accidental API
