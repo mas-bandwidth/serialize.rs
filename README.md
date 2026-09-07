@@ -2,7 +2,7 @@
 
 [![ci](https://github.com/mas-bandwidth/serialize.rs/actions/workflows/ci.yml/badge.svg)](https://github.com/mas-bandwidth/serialize.rs/actions/workflows/ci.yml)
 
-If this library helps you, please support it: **[Become a supporter](https://www.patreon.com/MasBandwidth/membership)**
+![serialize.rs logo with a packed row of colored blocks](images/serialize.png)
 
 A simple bitpacking serializer for Rust.
 
@@ -110,6 +110,8 @@ the ranged form: it costs only the bits its range needs, and where that range fi
 the bytes are identical to `serialize_int64`. Both are byte compatible with the C++
 library's `serialize_uint128`/`serialize_int128`, whether the C++ side uses native
 `__int128` or its emulated pair.
+
+If this library helps you, **[please support it](https://www.patreon.com/MasBandwidth/membership)**
 
 ## Reading untrusted data
 
