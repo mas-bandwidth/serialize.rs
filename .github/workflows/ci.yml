@@ -80,7 +80,7 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@nightly
-      - uses: taiki-e/install-action@v2.87.4
+      - uses: taiki-e/install-action@v2.87.10
         with:
           tool: cargo-fuzz
       # the prebuilt cargo-fuzz is musl-static and would default the fuzz build to the musl
@@ -158,7 +158,7 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
-      - uses: taiki-e/install-action@v2.87.4
+      - uses: taiki-e/install-action@v2.87.10
         with:
           tool: cross
       - name: Test under qemu
@@ -184,7 +184,7 @@ jobs:
         with:
           fetch-depth: 0
       - uses: dtolnay/rust-toolchain@stable
-      - uses: taiki-e/install-action@v2.87.4
+      - uses: taiki-e/install-action@v2.87.10
         with:
           tool: cargo-semver-checks
       # cargo-semver-checks pairs the baseline package with the current one BY
