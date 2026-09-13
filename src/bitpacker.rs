@@ -221,11 +221,12 @@ impl<'a> BitWriter<'a> {
 /// Implementation: branchless on the fast path. Each read loads a 64 bit window from the
 /// current byte position and shifts by the bit remainder. There is no scratch state and no
 /// refill branch, so reads carry no dependency between calls other than advancing the bit
-/// index. Construct the reader with the full buffer and the packet length: when the buffer
-/// extends at least 7 bytes past the packet data, every window load stays on the fast path.
-/// Any buffer length is correct, including zero slack. Bytes past the packet data are loaded
-/// but never interpreted. If the buffer has no slack, loads near the end fall back to a
-/// guarded copy.
+/// index. Construct the reader with the full buffer and the packet length: the single window
+/// fast path behind `read_bits` (and `read_align`) needs 7 bytes past the last data byte; the
+/// group fast path in `read_bits_group` spans 40 bytes in one bounds check and needs 39. Any
+/// buffer length is correct, including zero slack. Bytes past the packet data are loaded but
+/// never interpreted. Where the slack is short, loads near the end fall back to a guarded
+/// copy — same values, just slower.
 /// Cloning a reader snapshots its position: clone before a speculative read, and drop the
 /// clone (or keep reading from it) depending on what you find.
 #[derive(Clone)]
