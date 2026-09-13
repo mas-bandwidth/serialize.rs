@@ -92,7 +92,7 @@
 //! Write buffer sizes must be a multiple of 8 bytes: the writer flushes 64 bit words to
 //! memory, and bytes past the written data are only ever written as zeros. The reader loads
 //! 64 bit windows at byte granularity: construct [`ReadStream`] with the full buffer plus the
-//! packet length, and if the buffer extends at least 8 bytes past the packet data every load
+//! packet length, and if the buffer extends at least 7 bytes past the packet data every load
 //! stays on the branchless fast path (the same trick the Go port plays with slice capacity).
 //! A buffer with no slack works too — loads near the end fall back to a guarded copy.
 
