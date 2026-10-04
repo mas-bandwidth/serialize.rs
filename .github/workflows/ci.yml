@@ -1,11 +1,22 @@
+# Per-change CI holds a one-minute average and a two-minute critical path: a change that
+# touches only Markdown, images/ or LICENSE runs no build, test, Miri, qemu or fuzz job,
+# and the per-change fuzz smoke is bounded at 10 seconds a target.
 name: ci
 
 on:
   push:
     branches: [main]
     tags: ['v*']
+    paths-ignore:
+      - '**/*.md'
+      - 'images/**'
+      - 'LICENSE'
   pull_request:
     branches: [main]
+    paths-ignore:
+      - '**/*.md'
+      - 'images/**'
+      - 'LICENSE'
   workflow_dispatch:
 
 env:
@@ -75,7 +86,7 @@ jobs:
           MIRIFLAGS: -Zmiri-disable-isolation
 
   fuzz:
-    name: fuzz smoke (60s per target)
+    name: fuzz smoke (10s per target)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -86,9 +97,9 @@ jobs:
       # the prebuilt cargo-fuzz is musl-static and would default the fuzz build to the musl
       # target, where the address sanitizer cannot link — pin the real host triple
       - name: Fuzz hostile_read
-        run: cargo +nightly fuzz run hostile_read --target x86_64-unknown-linux-gnu -- -max_total_time=60
+        run: cargo +nightly fuzz run hostile_read --target x86_64-unknown-linux-gnu -- -max_total_time=10
       - name: Fuzz round_trip
-        run: cargo +nightly fuzz run round_trip --target x86_64-unknown-linux-gnu -- -max_total_time=60
+        run: cargo +nightly fuzz run round_trip --target x86_64-unknown-linux-gnu -- -max_total_time=10
       - name: Upload crash reproducers
         if: failure()
         uses: actions/upload-artifact@v7
