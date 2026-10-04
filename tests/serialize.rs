@@ -3467,3 +3467,78 @@ fn test_read_bits_group_validates_wide_widths() {
     let mut reader = BitReader::new(&buffer, 16);
     let _ = reader.read_bits_group(&[8, 33]);
 }
+
+// The golden float vectors (serialize.h golden_float_bytes, golden_float_patterns,
+// golden_double_patterns): the bit patterns a sanitizing implementation breaks — a
+// canonicalized NaN payload, a quieted signaling bit, a sign-of-zero flip — bit-cast into
+// floats, never built from literals, and compared by bits in both directions.
+
+const GOLDEN_FLOAT_PATTERNS: [u32; 5] =
+    [0x7FC00001, 0x7F800001, 0xFF800000, 0x80000000, 0x00000001];
+const GOLDEN_DOUBLE_PATTERNS: [u64; 2] = [0x7FF4000000000001, 0x8000000000000000];
+
+#[rustfmt::skip]
+const GOLDEN_FLOAT_BYTES: [u8; 36] = [
+    0x01, 0x00, 0xC0, 0x7F,                         // f32 0x7FC00001: quiet NaN, payload 1
+    0x01, 0x00, 0x80, 0x7F,                         // f32 0x7F800001: SIGNALING NaN
+    0x00, 0x00, 0x80, 0xFF,                         // f32 0xFF800000: -Inf
+    0x00, 0x00, 0x00, 0x80,                         // f32 0x80000000: -0.0
+    0x01, 0x00, 0x00, 0x00,                         // f32 0x00000001: smallest denormal
+    0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0xF4, 0x7F, // f64 0x7FF4000000000001: signaling NaN, payload 1
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x80, // f64 0x8000000000000000: -0.0
+];
+
+/// The C helper GoldenFloatSerialize: five floats, then two doubles, nothing else.
+fn golden_float_serialize<S: Stream>(
+    stream: &mut S,
+    float_values: &mut [f32; 5],
+    double_values: &mut [f64; 2],
+) -> Result<(), S::Error> {
+    for value in float_values.iter_mut() {
+        stream.serialize_f32(value)?;
+    }
+    for value in double_values.iter_mut() {
+        stream.serialize_f64(value)?;
+    }
+    Ok(())
+}
+
+/// Ported from serialize.h `test_golden_float_bit_transparency`.
+#[test]
+fn golden_float_bit_transparency() {
+    // write side: the bit patterns, bit-cast into float/double and serialized, must produce
+    // exactly the pinned little-endian bytes — no quieting, no canonicalization
+    {
+        let mut buffer = [0u8; 64];
+        let mut stream = WriteStream::new(&mut buffer);
+        let mut float_values = [0.0f32; 5];
+        let mut double_values = [0.0f64; 2];
+        for (value, &pattern) in float_values.iter_mut().zip(&GOLDEN_FLOAT_PATTERNS) {
+            *value = f32::from_bits(pattern);
+        }
+        for (value, &pattern) in double_values.iter_mut().zip(&GOLDEN_DOUBLE_PATTERNS) {
+            *value = f64::from_bits(pattern);
+        }
+        golden_float_serialize(&mut stream, &mut float_values, &mut double_values).unwrap();
+        stream.flush();
+        assert_eq!(stream.bytes_processed() as usize, GOLDEN_FLOAT_BYTES.len());
+        assert_eq!(buffer[..GOLDEN_FLOAT_BYTES.len()], GOLDEN_FLOAT_BYTES);
+    }
+
+    // read side: the recovered BIT PATTERNS must equal the transmitted ones exactly. a
+    // tolerance-based harness passes a sanitizing reader forever — which is the point
+    {
+        let mut buffer = [0u8; 64];
+        buffer[..GOLDEN_FLOAT_BYTES.len()].copy_from_slice(&GOLDEN_FLOAT_BYTES);
+        let mut stream = ReadStream::new(&buffer, GOLDEN_FLOAT_BYTES.len());
+        let mut float_values = [0.0f32; 5];
+        let mut double_values = [0.0f64; 2];
+        golden_float_serialize(&mut stream, &mut float_values, &mut double_values).unwrap();
+        for (value, &pattern) in float_values.iter().zip(&GOLDEN_FLOAT_PATTERNS) {
+            assert_eq!(value.to_bits(), pattern);
+        }
+        for (value, &pattern) in double_values.iter().zip(&GOLDEN_DOUBLE_PATTERNS) {
+            assert_eq!(value.to_bits(), pattern);
+        }
+    }
+}
