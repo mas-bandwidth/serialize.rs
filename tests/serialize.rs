@@ -3757,3 +3757,104 @@ fn past_end_poison() {
         assert_eq!(poison_data, clean_data);
     }
 }
+
+/// Ported from serialize.h `test_measure_bound`.
+#[test]
+fn measure_bound() {
+    // STANDARD.md, "The Measure Stream": a measure reports a size sufficient at ANY starting
+    // bit position — a bound, not the packet size — and the implementation charges worst-case
+    // 7 bits per alignment-performing operation. Exact-from-zero accounting is non-conforming:
+    // it under-counts every unaligned start.
+
+    // the ruling's worked example: { bits(8); align; bits(8) }
+    {
+        let mut measure_stream = MeasureStream::new();
+        let mut byte_value = 0xAB;
+        measure_stream.serialize_bits(&mut byte_value, 8).unwrap();
+        measure_stream.serialize_align().unwrap();
+        measure_stream.serialize_bits(&mut byte_value, 8).unwrap();
+        // 8 + 7 + 8: the conservative charge. an exact-from-zero measure reports 16 —
+        // 2 bytes — which is NOT enough room when the message lands at bit offset 1
+        assert_eq!(measure_stream.bits_processed(), 23);
+
+        // written at every starting offset, the message's actual span never exceeds the
+        // measure — the property the bound exists to guarantee
+        for offset in 0..8 {
+            let mut buffer = [0u8; 64];
+            let mut write_stream = WriteStream::new(&mut buffer);
+            for _ in 0..offset {
+                let mut one_bit = 1;
+                write_stream.serialize_bits(&mut one_bit, 1).unwrap();
+            }
+            let start = write_stream.bits_processed();
+            write_stream.serialize_bits(&mut byte_value, 8).unwrap();
+            write_stream.serialize_align().unwrap();
+            write_stream.serialize_bits(&mut byte_value, 8).unwrap();
+            let span = write_stream.bits_processed() - start;
+            assert!(span <= measure_stream.bits_processed());
+            if offset == 0 {
+                assert_eq!(span, 16); // 2 bytes from an aligned start...
+            }
+            if offset == 1 {
+                assert_eq!(span, 23); // ...3 bytes of room needed from offset 1
+            }
+        }
+    }
+
+    // measure >= written, across every message this suite pins. (The fuzz harness holds
+    // the same inequality over arbitrary op programs on every run.)
+    {
+        let mut data = golden_wire_init();
+        let mut measure_stream = MeasureStream::new();
+        golden_wire_serialize(&mut measure_stream, &mut data).unwrap();
+        let mut buffer = [0u8; 256];
+        let mut write_stream = WriteStream::new(&mut buffer);
+        golden_wire_serialize(&mut write_stream, &mut data).unwrap();
+        write_stream.flush();
+        assert!(measure_stream.bits_processed() >= write_stream.bits_processed());
+    }
+
+    {
+        let mut float_values = [0.0f32; 5];
+        let mut double_values = [0.0f64; 2];
+        for (value, &pattern) in float_values.iter_mut().zip(&GOLDEN_FLOAT_PATTERNS) {
+            *value = f32::from_bits(pattern);
+        }
+        for (value, &pattern) in double_values.iter_mut().zip(&GOLDEN_DOUBLE_PATTERNS) {
+            *value = f64::from_bits(pattern);
+        }
+        let mut measure_stream = MeasureStream::new();
+        golden_float_serialize(&mut measure_stream, &mut float_values, &mut double_values).unwrap();
+        // no aligns: exact, and still a bound
+        assert!(measure_stream.bits_processed() >= 5 * 32 + 2 * 64);
+    }
+
+    {
+        let mut head = 5;
+        let mut tail = 0xA5;
+        let mut measure_stream = MeasureStream::new();
+        zero_length_bytes_serialize(&mut measure_stream, &mut head, &mut tail).unwrap();
+        // 3 + pad + 8 written; measure charges 3 + 7 + 8
+        assert!(measure_stream.bits_processed() >= 16);
+    }
+
+    {
+        let mut head = 5;
+        let mut tail = 0xA5;
+        let mut string = String::new();
+        let mut measure_stream = MeasureStream::new();
+        zero_length_string_serialize(&mut measure_stream, &mut head, &mut string, &mut tail)
+            .unwrap();
+        assert!(measure_stream.bits_processed() >= 16);
+    }
+
+    {
+        let mut head = 1;
+        let mut tail = 0x0F;
+        let mut data = [0xEF, 0xBE];
+        let mut measure_stream = MeasureStream::new();
+        unaligned_bytes_serialize(&mut measure_stream, &mut head, &mut data, &mut tail).unwrap();
+        // 28 bits written; measure charges 1 + 7 + 16 + 4
+        assert!(measure_stream.bits_processed() >= 28);
+    }
+}
