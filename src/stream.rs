@@ -218,8 +218,19 @@ pub trait Stream {
     /// tables or min/max ranges needed to read and write values. Copy what you need out of the
     /// context before serializing, so the borrow of the stream ends:
     ///
-    /// ```ignore
+    /// ```
+    /// # use serialize::{Stream, WriteStream};
+    /// # #[derive(Clone, Copy)]
+    /// # struct MyContext;
+    /// # let mut buffer = [0u8; 8];
+    /// # let context = MyContext;
+    /// # let mut stream = WriteStream::new(&mut buffer);
+    /// # stream.set_context(&context);
+    /// # fn copy_context(stream: &impl Stream) {
     /// let context = *stream.context().unwrap().downcast_ref::<MyContext>().unwrap();
+    /// # let _ = context;
+    /// # }
+    /// # copy_context(&stream);
     /// ```
     fn context(&self) -> Option<&dyn Any>;
 
