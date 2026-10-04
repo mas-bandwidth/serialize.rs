@@ -1,3 +1,6 @@
+//! Compressed-float tests ported from the C++ suite's serialize.h: the nonzero-min and
+//! writer-fusion conformance vectors, and the write-side non-finite asserts.
+
 use serialize::{ReadStream, Stream, WriteStream};
 
 // The C helper CompressedFloatNonZeroMinSerialize (serialize.h): three derive-per-call
