@@ -143,3 +143,114 @@ fn int_relative_validation() {
         assert_eq!(current, 0); // a refused read writes nothing to the destination
     }
 }
+
+/// Ports `test_string_read_validation` from the C++ `serialize.h`.
+#[test]
+#[allow(clippy::too_many_lines)] // one test per the C++ suite's structure
+fn string_read_validation() {
+    const BUFFER_SIZE: usize = 16;
+
+    // invalid UTF-8: 0xFF can never appear anywhere in well-formed UTF-8
+    {
+        let mut buffer = [0u8; 64];
+
+        let bytes;
+        {
+            let mut write_stream = WriteStream::new(&mut buffer);
+            let mut length = 3i32;
+            assert_eq!(
+                write_stream.serialize_int(&mut length, 0, BUFFER_SIZE as i32 - 1),
+                Ok(())
+            );
+            let mut payload = [0xFFu8, 0xFE, 0xFF];
+            assert_eq!(write_stream.serialize_bytes(&mut payload), Ok(()));
+            write_stream.flush();
+            bytes = write_stream.bytes_processed() as usize;
+        }
+
+        let mut read_stream = ReadStream::new(&buffer, bytes);
+        let mut read_back = String::new();
+        assert_eq!(
+            read_stream.serialize_string(&mut read_back, BUFFER_SIZE),
+            Err(Error::InvalidString)
+        );
+    }
+
+    // truncated UTF-8: a 3 byte lead as the final transmitted byte
+    {
+        let mut buffer = [0u8; 64];
+
+        let bytes;
+        {
+            let mut write_stream = WriteStream::new(&mut buffer);
+            let mut length = 2i32;
+            assert_eq!(
+                write_stream.serialize_int(&mut length, 0, BUFFER_SIZE as i32 - 1),
+                Ok(())
+            );
+            let mut payload = [0x61u8, 0xE2];
+            assert_eq!(write_stream.serialize_bytes(&mut payload), Ok(()));
+            write_stream.flush();
+            bytes = write_stream.bytes_processed() as usize;
+        }
+
+        let mut read_stream = ReadStream::new(&buffer, bytes);
+        let mut read_back = String::new();
+        assert_eq!(
+            read_stream.serialize_string(&mut read_back, BUFFER_SIZE),
+            Err(Error::InvalidString)
+        );
+    }
+
+    // interior NUL: wire length 3, strlen 1 — the two-lengths smuggling primitive
+    {
+        let mut buffer = [0u8; 64];
+
+        let bytes;
+        {
+            let mut write_stream = WriteStream::new(&mut buffer);
+            let mut length = 3i32;
+            assert_eq!(
+                write_stream.serialize_int(&mut length, 0, BUFFER_SIZE as i32 - 1),
+                Ok(())
+            );
+            let mut payload = [0x61u8, 0x00, 0x62];
+            assert_eq!(write_stream.serialize_bytes(&mut payload), Ok(()));
+            write_stream.flush();
+            bytes = write_stream.bytes_processed() as usize;
+        }
+
+        let mut read_stream = ReadStream::new(&buffer, bytes);
+        let mut read_back = String::new();
+        assert_eq!(
+            read_stream.serialize_string(&mut read_back, BUFFER_SIZE),
+            Err(Error::InvalidString)
+        );
+    }
+
+    // control: valid multi-byte UTF-8 — h, e-acute, euro sign, U+1F600 — still round trips
+    {
+        let mut buffer = [0u8; 64];
+        let text = "h\u{E9}\u{20AC}\u{1F600}";
+
+        let bytes;
+        {
+            let mut write_stream = WriteStream::new(&mut buffer);
+            let mut value = text.to_string();
+            assert_eq!(
+                write_stream.serialize_string(&mut value, BUFFER_SIZE),
+                Ok(())
+            );
+            write_stream.flush();
+            bytes = write_stream.bytes_processed() as usize;
+        }
+
+        let mut read_stream = ReadStream::new(&buffer, bytes);
+        let mut read_back = String::new();
+        assert_eq!(
+            read_stream.serialize_string(&mut read_back, BUFFER_SIZE),
+            Ok(())
+        );
+        assert_eq!(read_back, text);
+    }
+}
