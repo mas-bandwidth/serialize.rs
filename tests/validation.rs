@@ -379,3 +379,106 @@ fn wstring_read_validation() {
         assert_eq!(read_stream.serialize_wide_string(&mut read_back, 8), Ok(()));
     }
 }
+
+/// Ports `test_wstring_validation` from the C++ `serialize.h`.
+#[test]
+#[allow(clippy::too_many_lines)] // one test per the C++ suite's structure
+fn wstring_validation() {
+    use serialize::MeasureStream;
+
+    // empty string: length 0, no characters
+    {
+        let mut buffer = [0u8; 256];
+
+        let bytes;
+        {
+            let mut write_stream = WriteStream::new(&mut buffer);
+            let mut value = String::new();
+            assert_eq!(write_stream.serialize_wide_string(&mut value, 32), Ok(()));
+            write_stream.flush();
+            bytes = write_stream.bytes_processed() as usize;
+        }
+
+        let mut read_stream = ReadStream::new(&buffer, bytes);
+        let mut read_back = String::new();
+        assert_eq!(
+            read_stream.serialize_wide_string(&mut read_back, 32),
+            Ok(())
+        );
+        assert_eq!(read_back, ""); // read_back[0] == L'\0'
+    }
+
+    // longest legal string: buffer_size - 1 characters
+    {
+        let mut buffer = [0u8; 256];
+        let full: String = (0..31)
+            .map(|i| char::from_u32(0x0041 + (i % 26)).unwrap())
+            .collect();
+
+        let bytes;
+        {
+            let mut write_stream = WriteStream::new(&mut buffer);
+            let mut value = full.clone();
+            assert_eq!(write_stream.serialize_wide_string(&mut value, 32), Ok(()));
+            write_stream.flush();
+            bytes = write_stream.bytes_processed() as usize;
+        }
+
+        let mut read_stream = ReadStream::new(&buffer, bytes);
+        let mut read_back = String::new();
+        assert_eq!(
+            read_stream.serialize_wide_string(&mut read_back, 32),
+            Ok(())
+        );
+        assert_eq!(read_back, full);
+    }
+
+    // the measure stream must agree with the write stream on cost
+    {
+        let mut buffer = [0u8; 256];
+
+        let mut measure_stream = MeasureStream::new();
+        let mut measure_value = "ABC".to_string();
+        assert_eq!(
+            measure_stream.serialize_wide_string(&mut measure_value, 32),
+            Ok(())
+        );
+
+        let mut write_stream = WriteStream::new(&mut buffer);
+        let mut write_value = "ABC".to_string();
+        assert_eq!(
+            write_stream.serialize_wide_string(&mut write_value, 32),
+            Ok(())
+        );
+        write_stream.flush();
+
+        assert_eq!(
+            measure_stream.bits_processed(),
+            write_stream.bits_processed()
+        );
+    }
+
+    // a group above 0xFFFF is not a UTF-16 code unit: refused, nothing truncated left behind
+    {
+        let mut buffer = [0u8; 256];
+
+        let bytes;
+        {
+            let mut write_stream = WriteStream::new(&mut buffer);
+            let mut length = 1i32;
+            assert_eq!(write_stream.serialize_int(&mut length, 0, 31), Ok(()));
+            let mut above_bmp = 0x0001F600u32; // beyond 16 bits by construction
+            assert_eq!(write_stream.serialize_bits(&mut above_bmp, 32), Ok(()));
+            write_stream.flush();
+            bytes = write_stream.bytes_processed() as usize;
+        }
+
+        let mut read_stream = ReadStream::new(&buffer, bytes);
+        let mut read_back = String::new();
+        assert_eq!(
+            read_stream.serialize_wide_string(&mut read_back, 32),
+            Err(Error::InvalidString)
+        );
+        assert!(!read_back.starts_with('\u{F600}')); // nothing truncated left behind
+    }
+}
