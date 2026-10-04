@@ -318,3 +318,46 @@ fn string_buffer_size_zero_is_still_refused() {
     let mut empty = String::new();
     let _ = w.serialize_string(&mut empty, 0);
 }
+
+/// C++ `test_serialize_degenerate_range_64` of serialize.h: the 64 bit twin of
+/// `degenerate_range_costs_nothing`, and it did NOT hold when written -- the 1.6.x
+/// relaxation missed `serialize_int64`, which asserted `min < max` while the shared
+/// degenerate path it calls expects `min == max` at zero bits. The bounds sit above
+/// 2^32 so the field takes the two-dword path if it takes any path at all
+/// (STANDARD.md, "int64 (ranged)": a degenerate range costs zero bits).
+#[test]
+fn serialize_degenerate_range_64() {
+    let mut buffer = [0u8; 16];
+    let point = 1i64 << 40;
+
+    let bytes;
+    {
+        let mut w = WriteStream::new(&mut buffer);
+        let mut degenerate = point;
+        let mut after = 3i32;
+        w.serialize_int64(&mut degenerate, point, point).unwrap();
+        assert_eq!(w.bits_processed(), 0, "nothing written");
+        w.serialize_int(&mut after, 0, 7).unwrap();
+        assert_eq!(w.bits_processed(), 3, "the NEXT field starts at bit 0");
+        w.flush();
+        bytes = w.bytes_processed() as usize;
+    }
+
+    {
+        let mut r = ReadStream::new(&buffer, bytes);
+        let mut read_degenerate = 0i64;
+        let mut read_after = 0i32;
+        r.serialize_int64(&mut read_degenerate, point, point).unwrap();
+        assert_eq!(read_degenerate, point, "recovered from the range");
+        assert_eq!(r.bits_processed(), 0);
+        r.serialize_int(&mut read_after, 0, 7).unwrap();
+        assert_eq!(read_after, 3);
+    }
+
+    {
+        let mut m = MeasureStream::new();
+        let mut measured = point;
+        m.serialize_int64(&mut measured, point, point).unwrap();
+        assert_eq!(m.bits_processed(), 0, "measure must agree it is free");
+    }
+}
