@@ -3542,3 +3542,55 @@ fn golden_float_bit_transparency() {
         }
     }
 }
+
+/// The C helper UnalignedBytesSerialize: one bit, then two raw bytes, then four bits.
+fn unaligned_bytes_serialize<S: Stream>(
+    stream: &mut S,
+    head: &mut u32,
+    data: &mut [u8; 2],
+    tail: &mut u32,
+) -> Result<(), S::Error> {
+    stream.serialize_bits(head, 1)?;
+    stream.serialize_bytes(data)?;
+    stream.serialize_bits(tail, 4)?;
+    Ok(())
+}
+
+/// Ported from serialize.h `test_golden_unaligned_bytes`.
+#[test]
+fn golden_unaligned_bytes() {
+    // { bits(1,1); bytes({0xEF,0xBE}, 2); bits(0x0F,4) }: exercises serialize_bytes' OWN
+    // align from bit index 1 — the case the golden vector structurally shadows, because an
+    // explicit serialize_align immediately precedes its bytes field, making the operation's
+    // internal align a no-op there
+    const PINNED_BYTES: [u8; 4] = [0x01, 0xEF, 0xBE, 0x0F];
+
+    // write side
+    {
+        let mut buffer = [0u8; 64];
+        let mut stream = WriteStream::new(&mut buffer);
+        let mut head = 1;
+        let mut tail = 0x0F;
+        let mut data = [0xEF, 0xBE];
+        unaligned_bytes_serialize(&mut stream, &mut head, &mut data, &mut tail).unwrap();
+        stream.flush();
+        assert_eq!(stream.bytes_processed() as usize, PINNED_BYTES.len());
+        assert_eq!(buffer[..PINNED_BYTES.len()], PINNED_BYTES);
+    }
+
+    // read side
+    {
+        let mut buffer = [0u8; 64];
+        buffer[..PINNED_BYTES.len()].copy_from_slice(&PINNED_BYTES);
+        let mut stream = ReadStream::new(&buffer, PINNED_BYTES.len());
+        let mut head = 0;
+        let mut tail = 0;
+        let mut data = [0u8; 2];
+        unaligned_bytes_serialize(&mut stream, &mut head, &mut data, &mut tail).unwrap();
+        assert_eq!(head, 1);
+        assert_eq!(data[0], 0xEF);
+        assert_eq!(data[1], 0xBE);
+        assert_eq!(tail, 0x0F);
+        assert_eq!(stream.bytes_processed() as usize, PINNED_BYTES.len());
+    }
+}
