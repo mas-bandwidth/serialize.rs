@@ -3594,3 +3594,51 @@ fn golden_unaligned_bytes() {
         assert_eq!(stream.bytes_processed() as usize, PINNED_BYTES.len());
     }
 }
+
+/// The C helper ZeroLengthBytesSerialize: three bits, then a zero-count bytes field, then
+/// eight bits. The C helper carries an explicit count of zero; in Rust the count is the
+/// slice length, so the bytes field is an empty slice.
+fn zero_length_bytes_serialize<S: Stream>(
+    stream: &mut S,
+    head: &mut u32,
+    tail: &mut u32,
+) -> Result<(), S::Error> {
+    stream.serialize_bits(head, 3)?;
+    stream.serialize_bytes(&mut [])?;
+    stream.serialize_bits(tail, 8)?;
+    Ok(())
+}
+
+/// Ported from serialize.h `test_golden_zero_length_bytes`.
+#[test]
+fn golden_zero_length_bytes() {
+    // { bits(5,3); bytes(count=0); bits(0xA5,8) }: the zero-length bytes still ALIGNS — the
+    // pad lands in bits [3,8) and 0xA5 occupies byte 1. A port that early-returns on
+    // count == 0 writes { 0x2D, 0x05 } — every later field shifted by five bits
+    const PINNED_BYTES: [u8; 2] = [0x05, 0xA5];
+
+    // write side
+    {
+        let mut buffer = [0u8; 64];
+        let mut stream = WriteStream::new(&mut buffer);
+        let mut head = 5;
+        let mut tail = 0xA5;
+        zero_length_bytes_serialize(&mut stream, &mut head, &mut tail).unwrap();
+        stream.flush();
+        assert_eq!(stream.bytes_processed() as usize, PINNED_BYTES.len());
+        assert_eq!(buffer[..PINNED_BYTES.len()], PINNED_BYTES);
+    }
+
+    // read side
+    {
+        let mut buffer = [0u8; 64];
+        buffer[..PINNED_BYTES.len()].copy_from_slice(&PINNED_BYTES);
+        let mut stream = ReadStream::new(&buffer, PINNED_BYTES.len());
+        let mut head = 0;
+        let mut tail = 0;
+        zero_length_bytes_serialize(&mut stream, &mut head, &mut tail).unwrap();
+        assert_eq!(head, 5);
+        assert_eq!(tail, 0xA5);
+        assert_eq!(stream.bytes_processed() as usize, PINNED_BYTES.len());
+    }
+}
