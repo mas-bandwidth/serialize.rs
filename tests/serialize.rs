@@ -3488,7 +3488,7 @@ const GOLDEN_FLOAT_BYTES: [u8; 36] = [
     0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x80, // f64 0x8000000000000000: -0.0
 ];
 
-/// The C helper GoldenFloatSerialize: five floats, then two doubles, nothing else.
+/// The C helper `GoldenFloatSerialize`: five floats, then two doubles, nothing else.
 fn golden_float_serialize<S: Stream>(
     stream: &mut S,
     float_values: &mut [f32; 5],
@@ -3543,7 +3543,7 @@ fn golden_float_bit_transparency() {
     }
 }
 
-/// The C helper UnalignedBytesSerialize: one bit, then two raw bytes, then four bits.
+/// The C helper `UnalignedBytesSerialize`: one bit, then two raw bytes, then four bits.
 fn unaligned_bytes_serialize<S: Stream>(
     stream: &mut S,
     head: &mut u32,
@@ -3595,7 +3595,7 @@ fn golden_unaligned_bytes() {
     }
 }
 
-/// The C helper ZeroLengthBytesSerialize: three bits, then a zero-count bytes field, then
+/// The C helper `ZeroLengthBytesSerialize`: three bits, then a zero-count bytes field, then
 /// eight bits. The C helper carries an explicit count of zero; in Rust the count is the
 /// slice length, so the bytes field is an empty slice.
 fn zero_length_bytes_serialize<S: Stream>(
@@ -3643,8 +3643,8 @@ fn golden_zero_length_bytes() {
     }
 }
 
-/// The C helper ZeroLengthStringSerialize: three bits, then an empty string with buffer_size
-/// 8, then eight bits.
+/// The C helper `ZeroLengthStringSerialize`: three bits, then an empty string with
+/// `buffer_size` 8, then eight bits.
 fn zero_length_string_serialize<S: Stream>(
     stream: &mut S,
     head: &mut u32,
