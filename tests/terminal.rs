@@ -239,3 +239,165 @@ fn a_clone_carries_the_latch() {
     assert_eq!(speculative.serialize_bits(&mut bits, 3), Ok(()));
     assert_eq!(bits, 7);
 }
+
+/// serialize.h test_read_stream_failure_is_terminal: a failed read leaves the stream failed.
+/// Each failure shape — before any consumption, after partial consumption, on range headroom,
+/// on alignment padding, on an interior NUL in a string, on an `int_relative` reconstruction
+/// past the domain — refuses every read that follows, and re-initialization clears the latch.
+#[test]
+#[allow(clippy::too_many_lines)] // one C++ test: eight sections, each a failure shape plus follow-ups
+fn read_stream_failure_is_terminal() {
+    // a valid stream of known content: 8 bits of 0xAF, then a ranged int over [0,10]
+    // + 8: read buffer allocations extend 8 bytes past the data
+    let mut buffer = [0_u8; 64 + 8];
+    let written_bytes = {
+        let mut write_stream = serialize::WriteStream::new(&mut buffer);
+        let mut marker = 0xAF_u32;
+        write_stream.serialize_bits(&mut marker, 8).unwrap();
+        let mut value = 7_i32;
+        write_stream.serialize_int(&mut value, 0, 10).unwrap();
+        write_stream.flush();
+        write_stream.bytes_processed() as usize
+    };
+
+    // failure before any consumption: the first read runs past the end of an empty stream
+    {
+        let mut read_stream = ReadStream::new(&buffer, 0);
+        let mut value = 0xFFFF_FFFF_u32;
+        assert_eq!(
+            read_stream.serialize_bits(&mut value, 8),
+            Err(Error::Overflow)
+        );
+        assert_eq!(value, 0xFFFF_FFFF);
+        let mut after = -1_i32;
+        // a zero bit read, which needs no bits at all
+        assert_eq!(
+            read_stream.serialize_int(&mut after, 5, 5),
+            Err(Error::Overflow)
+        );
+        assert_eq!(after, -1);
+    }
+
+    // failure after partial consumption: the first read succeeds, the second runs past the end
+    {
+        let mut read_stream = ReadStream::new(&buffer, written_bytes);
+        let mut marker = 0_u32;
+        assert_eq!(read_stream.serialize_bits(&mut marker, 8), Ok(()));
+        assert_eq!(marker, 0xAF);
+        let mut past_end = 0xFFFF_FFFF_u32;
+        assert_eq!(
+            read_stream.serialize_bits(&mut past_end, 32),
+            Err(Error::Overflow)
+        );
+        assert_eq!(past_end, 0xFFFF_FFFF);
+        // one bit was still available before the failure
+        let mut after = 0xFFFF_FFFF_u32;
+        assert_eq!(
+            read_stream.serialize_bits(&mut after, 1),
+            Err(Error::Overflow)
+        );
+        assert_eq!(after, 0xFFFF_FFFF);
+    }
+
+    // failure on range headroom: 0xAF read as a ranged int over [0,10] is a value the range
+    // cannot hold
+    {
+        let mut read_stream = ReadStream::new(&buffer, written_bytes);
+        let mut out_of_range = -1_i32;
+        assert_eq!(
+            read_stream.serialize_int(&mut out_of_range, 0, 10),
+            Err(Error::ValueOutOfRange)
+        );
+        assert_eq!(out_of_range, -1);
+        let mut after = -1_i32;
+        assert_eq!(
+            read_stream.serialize_int(&mut after, 0, 255),
+            Err(Error::ValueOutOfRange)
+        );
+        assert_eq!(after, -1);
+    }
+
+    // failure on alignment: the padding bits after the 0xAF marker are not zero
+    {
+        let mut read_stream = ReadStream::new(&buffer, written_bytes);
+        let mut bits = 0_u32; // reads 0xF, leaving 4 non-zero padding bits, 0xA
+        assert_eq!(read_stream.serialize_bits(&mut bits, 4), Ok(()));
+        assert_eq!(read_stream.serialize_align(), Err(Error::Align));
+        let mut after = 0xFFFF_FFFF_u32;
+        assert_eq!(read_stream.serialize_bits(&mut after, 4), Err(Error::Align));
+        assert_eq!(after, 0xFFFF_FFFF);
+    }
+
+    // failure on a malformed string: an interior NUL among the transmitted bytes
+    {
+        let mut string_buffer = [0_u8; 32 + 8]; // + 8: past-the-data read allocation
+        let string_bytes = {
+            let mut write_stream = serialize::WriteStream::new(&mut string_buffer);
+            let mut length = 3_i32; // length 3, buffer_size 16
+            write_stream.serialize_int(&mut length, 0, 15).unwrap();
+            let mut payload = [b'a', 0, b'b'];
+            write_stream.serialize_bytes(&mut payload).unwrap();
+            let mut trailing = 0x2A_u32;
+            write_stream.serialize_bits(&mut trailing, 8).unwrap();
+            write_stream.flush();
+            write_stream.bytes_processed() as usize
+        };
+
+        let mut read_stream = ReadStream::new(&string_buffer, string_bytes);
+        let mut text = String::new();
+        assert_eq!(
+            read_stream.serialize_string(&mut text, 16),
+            Err(Error::InvalidString)
+        );
+        // the trailing byte is still in the stream
+        let mut after = 0xFFFF_FFFF_u32;
+        assert_eq!(
+            read_stream.serialize_bits(&mut after, 8),
+            Err(Error::InvalidString)
+        );
+        assert_eq!(after, 0xFFFF_FFFF);
+    }
+
+    // failure on int_relative: a reconstruction past the top of the domain
+    {
+        let mut relative_buffer = [0_u8; 8 + 8]; // + 8: past-the-data read allocation
+        {
+            let mut write_stream = serialize::WriteStream::new(&mut relative_buffer);
+            let mut one_bit_tier = 1_u32;
+            write_stream.serialize_bits(&mut one_bit_tier, 1).unwrap();
+            let mut trailing = 0x2A_u32;
+            write_stream.serialize_bits(&mut trailing, 8).unwrap();
+            write_stream.flush();
+        }
+
+        let mut read_stream = ReadStream::new(&relative_buffer, 8);
+        let mut current = -1_i32;
+        assert_eq!(
+            read_stream.serialize_int_relative(i32::MAX, &mut current),
+            Err(Error::ValueOutOfRange)
+        );
+        assert_eq!(current, -1);
+        // the trailing byte is still in the stream
+        let mut after = 0xFFFF_FFFF_u32;
+        assert_eq!(
+            read_stream.serialize_bits(&mut after, 8),
+            Err(Error::ValueOutOfRange)
+        );
+        assert_eq!(after, 0xFFFF_FFFF);
+    }
+
+    // re-initialization is what clears the latch: a stream re-initialized over the good bytes
+    // reads cleanly afterwards; in the Rust port re-initialization is constructing a new
+    // stream, since the latch clears no other way
+    {
+        let mut value = 0_u32;
+        let mut read_stream = ReadStream::new(&buffer, 0);
+        assert_eq!(
+            read_stream.serialize_bits(&mut value, 8),
+            Err(Error::Overflow)
+        );
+        let mut read_stream = ReadStream::new(&buffer, written_bytes);
+        assert_eq!(read_stream.serialize_bits(&mut value, 8), Ok(()));
+        assert_eq!(value, 0xAF);
+    }
+}
