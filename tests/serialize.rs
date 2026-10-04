@@ -3467,3 +3467,469 @@ fn test_read_bits_group_validates_wide_widths() {
     let mut reader = BitReader::new(&buffer, 16);
     let _ = reader.read_bits_group(&[8, 33]);
 }
+
+// The golden float vectors (serialize.h golden_float_bytes, golden_float_patterns,
+// golden_double_patterns): the bit patterns a sanitizing implementation breaks — a
+// canonicalized NaN payload, a quieted signaling bit, a sign-of-zero flip — bit-cast into
+// floats, never built from literals, and compared by bits in both directions.
+
+const GOLDEN_FLOAT_PATTERNS: [u32; 5] =
+    [0x7FC00001, 0x7F800001, 0xFF800000, 0x80000000, 0x00000001];
+const GOLDEN_DOUBLE_PATTERNS: [u64; 2] = [0x7FF4000000000001, 0x8000000000000000];
+
+#[rustfmt::skip]
+const GOLDEN_FLOAT_BYTES: [u8; 36] = [
+    0x01, 0x00, 0xC0, 0x7F,                         // f32 0x7FC00001: quiet NaN, payload 1
+    0x01, 0x00, 0x80, 0x7F,                         // f32 0x7F800001: SIGNALING NaN
+    0x00, 0x00, 0x80, 0xFF,                         // f32 0xFF800000: -Inf
+    0x00, 0x00, 0x00, 0x80,                         // f32 0x80000000: -0.0
+    0x01, 0x00, 0x00, 0x00,                         // f32 0x00000001: smallest denormal
+    0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0xF4, 0x7F, // f64 0x7FF4000000000001: signaling NaN, payload 1
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x80, // f64 0x8000000000000000: -0.0
+];
+
+/// The C helper `GoldenFloatSerialize`: five floats, then two doubles, nothing else.
+fn golden_float_serialize<S: Stream>(
+    stream: &mut S,
+    float_values: &mut [f32; 5],
+    double_values: &mut [f64; 2],
+) -> Result<(), S::Error> {
+    for value in float_values.iter_mut() {
+        stream.serialize_f32(value)?;
+    }
+    for value in double_values.iter_mut() {
+        stream.serialize_f64(value)?;
+    }
+    Ok(())
+}
+
+/// Ported from serialize.h `test_golden_float_bit_transparency`.
+#[test]
+fn golden_float_bit_transparency() {
+    // write side: the bit patterns, bit-cast into float/double and serialized, must produce
+    // exactly the pinned little-endian bytes — no quieting, no canonicalization
+    {
+        let mut buffer = [0u8; 64];
+        let mut stream = WriteStream::new(&mut buffer);
+        let mut float_values = [0.0f32; 5];
+        let mut double_values = [0.0f64; 2];
+        for (value, &pattern) in float_values.iter_mut().zip(&GOLDEN_FLOAT_PATTERNS) {
+            *value = f32::from_bits(pattern);
+        }
+        for (value, &pattern) in double_values.iter_mut().zip(&GOLDEN_DOUBLE_PATTERNS) {
+            *value = f64::from_bits(pattern);
+        }
+        golden_float_serialize(&mut stream, &mut float_values, &mut double_values).unwrap();
+        stream.flush();
+        assert_eq!(stream.bytes_processed() as usize, GOLDEN_FLOAT_BYTES.len());
+        assert_eq!(buffer[..GOLDEN_FLOAT_BYTES.len()], GOLDEN_FLOAT_BYTES);
+    }
+
+    // read side: the recovered BIT PATTERNS must equal the transmitted ones exactly. a
+    // tolerance-based harness passes a sanitizing reader forever — which is the point
+    {
+        let mut buffer = [0u8; 64];
+        buffer[..GOLDEN_FLOAT_BYTES.len()].copy_from_slice(&GOLDEN_FLOAT_BYTES);
+        let mut stream = ReadStream::new(&buffer, GOLDEN_FLOAT_BYTES.len());
+        let mut float_values = [0.0f32; 5];
+        let mut double_values = [0.0f64; 2];
+        golden_float_serialize(&mut stream, &mut float_values, &mut double_values).unwrap();
+        for (value, &pattern) in float_values.iter().zip(&GOLDEN_FLOAT_PATTERNS) {
+            assert_eq!(value.to_bits(), pattern);
+        }
+        for (value, &pattern) in double_values.iter().zip(&GOLDEN_DOUBLE_PATTERNS) {
+            assert_eq!(value.to_bits(), pattern);
+        }
+    }
+}
+
+/// The C helper `UnalignedBytesSerialize`: one bit, then two raw bytes, then four bits.
+fn unaligned_bytes_serialize<S: Stream>(
+    stream: &mut S,
+    head: &mut u32,
+    data: &mut [u8; 2],
+    tail: &mut u32,
+) -> Result<(), S::Error> {
+    stream.serialize_bits(head, 1)?;
+    stream.serialize_bytes(data)?;
+    stream.serialize_bits(tail, 4)?;
+    Ok(())
+}
+
+/// Ported from serialize.h `test_golden_unaligned_bytes`.
+#[test]
+fn golden_unaligned_bytes() {
+    // { bits(1,1); bytes({0xEF,0xBE}, 2); bits(0x0F,4) }: exercises serialize_bytes' OWN
+    // align from bit index 1 — the case the golden vector structurally shadows, because an
+    // explicit serialize_align immediately precedes its bytes field, making the operation's
+    // internal align a no-op there
+    const PINNED_BYTES: [u8; 4] = [0x01, 0xEF, 0xBE, 0x0F];
+
+    // write side
+    {
+        let mut buffer = [0u8; 64];
+        let mut stream = WriteStream::new(&mut buffer);
+        let mut head = 1;
+        let mut tail = 0x0F;
+        let mut data = [0xEF, 0xBE];
+        unaligned_bytes_serialize(&mut stream, &mut head, &mut data, &mut tail).unwrap();
+        stream.flush();
+        assert_eq!(stream.bytes_processed() as usize, PINNED_BYTES.len());
+        assert_eq!(buffer[..PINNED_BYTES.len()], PINNED_BYTES);
+    }
+
+    // read side
+    {
+        let mut buffer = [0u8; 64];
+        buffer[..PINNED_BYTES.len()].copy_from_slice(&PINNED_BYTES);
+        let mut stream = ReadStream::new(&buffer, PINNED_BYTES.len());
+        let mut head = 0;
+        let mut tail = 0;
+        let mut data = [0u8; 2];
+        unaligned_bytes_serialize(&mut stream, &mut head, &mut data, &mut tail).unwrap();
+        assert_eq!(head, 1);
+        assert_eq!(data[0], 0xEF);
+        assert_eq!(data[1], 0xBE);
+        assert_eq!(tail, 0x0F);
+        assert_eq!(stream.bytes_processed() as usize, PINNED_BYTES.len());
+    }
+}
+
+/// The C helper `ZeroLengthBytesSerialize`: three bits, then a zero-count bytes field, then
+/// eight bits. The C helper carries an explicit count of zero; in Rust the count is the
+/// slice length, so the bytes field is an empty slice.
+fn zero_length_bytes_serialize<S: Stream>(
+    stream: &mut S,
+    head: &mut u32,
+    tail: &mut u32,
+) -> Result<(), S::Error> {
+    stream.serialize_bits(head, 3)?;
+    stream.serialize_bytes(&mut [])?;
+    stream.serialize_bits(tail, 8)?;
+    Ok(())
+}
+
+/// Ported from serialize.h `test_golden_zero_length_bytes`.
+#[test]
+fn golden_zero_length_bytes() {
+    // { bits(5,3); bytes(count=0); bits(0xA5,8) }: the zero-length bytes still ALIGNS — the
+    // pad lands in bits [3,8) and 0xA5 occupies byte 1. A port that early-returns on
+    // count == 0 writes { 0x2D, 0x05 } — every later field shifted by five bits
+    const PINNED_BYTES: [u8; 2] = [0x05, 0xA5];
+
+    // write side
+    {
+        let mut buffer = [0u8; 64];
+        let mut stream = WriteStream::new(&mut buffer);
+        let mut head = 5;
+        let mut tail = 0xA5;
+        zero_length_bytes_serialize(&mut stream, &mut head, &mut tail).unwrap();
+        stream.flush();
+        assert_eq!(stream.bytes_processed() as usize, PINNED_BYTES.len());
+        assert_eq!(buffer[..PINNED_BYTES.len()], PINNED_BYTES);
+    }
+
+    // read side
+    {
+        let mut buffer = [0u8; 64];
+        buffer[..PINNED_BYTES.len()].copy_from_slice(&PINNED_BYTES);
+        let mut stream = ReadStream::new(&buffer, PINNED_BYTES.len());
+        let mut head = 0;
+        let mut tail = 0;
+        zero_length_bytes_serialize(&mut stream, &mut head, &mut tail).unwrap();
+        assert_eq!(head, 5);
+        assert_eq!(tail, 0xA5);
+        assert_eq!(stream.bytes_processed() as usize, PINNED_BYTES.len());
+    }
+}
+
+/// The C helper `ZeroLengthStringSerialize`: three bits, then an empty string with
+/// `buffer_size` 8, then eight bits.
+fn zero_length_string_serialize<S: Stream>(
+    stream: &mut S,
+    head: &mut u32,
+    string: &mut String,
+    tail: &mut u32,
+) -> Result<(), S::Error> {
+    stream.serialize_bits(head, 3)?;
+    stream.serialize_string(string, 8)?;
+    stream.serialize_bits(tail, 8)?;
+    Ok(())
+}
+
+/// Ported from serialize.h `test_golden_zero_length_string`.
+#[test]
+fn golden_zero_length_string() {
+    // { bits(5,3); string("", buffer_size 8); bits(0xA5,8) }: the empty string is a 3-bit
+    // length of 0, then the zero-length payload's align pads bits [6,8). A port whose STRING
+    // path skips the empty-payload align writes { 0x45, 0x29 } — the exact hazard the C
+    // port's comment names, and a separate code path from bytes in three ports
+    const PINNED_BYTES: [u8; 2] = [0x05, 0xA5];
+
+    // write side
+    {
+        let mut buffer = [0u8; 64];
+        let mut stream = WriteStream::new(&mut buffer);
+        let mut head = 5;
+        let mut tail = 0xA5;
+        let mut string = String::new();
+        zero_length_string_serialize(&mut stream, &mut head, &mut string, &mut tail).unwrap();
+        stream.flush();
+        assert_eq!(stream.bytes_processed() as usize, PINNED_BYTES.len());
+        assert_eq!(buffer[..PINNED_BYTES.len()], PINNED_BYTES);
+    }
+
+    // read side
+    {
+        let mut buffer = [0u8; 64];
+        buffer[..PINNED_BYTES.len()].copy_from_slice(&PINNED_BYTES);
+        let mut stream = ReadStream::new(&buffer, PINNED_BYTES.len());
+        let mut head = 0;
+        let mut tail = 0;
+        // the C destination is a char buffer filled with 0xFF, and string[0] == '\0' proves
+        // the reader wrote the terminator; the Rust destination starts non-empty and the
+        // reader must replace it with the empty string
+        let mut string = "poisoned".to_string();
+        zero_length_string_serialize(&mut stream, &mut head, &mut string, &mut tail).unwrap();
+        assert_eq!(head, 5);
+        assert_eq!(string, "");
+        assert_eq!(tail, 0xA5);
+        assert_eq!(stream.bytes_processed() as usize, PINNED_BYTES.len());
+    }
+}
+
+/// Ported from serialize.h `test_past_end_poison`.
+#[test]
+fn past_end_poison() {
+    // STANDARD.md, "Past-end memory is an implementation contract, not a format concern":
+    // the reader loads 64-bit windows at byte granularity and requires its caller to
+    // allocate at least 8 bytes past the data; bytes past the end are loaded but never
+    // interpreted. Poison planted beyond the stream end must not change a single decoded
+    // byte, and must not change refusal behavior.
+
+    // accept path: identical decode with a zeroed tail and a poisoned tail
+    {
+        let mut clean_buffer = vec![0u8; 256];
+        let mut poison_buffer = vec![0xFF; 256]; // poison everywhere, including the loaded-but-never-interpreted window
+        clean_buffer[..GOLDEN_WIRE_BYTES.len()].copy_from_slice(&GOLDEN_WIRE_BYTES);
+        poison_buffer[..GOLDEN_WIRE_BYTES.len()].copy_from_slice(&GOLDEN_WIRE_BYTES);
+
+        let mut clean_stream = ReadStream::new(&clean_buffer, GOLDEN_WIRE_BYTES.len());
+        let mut clean_data = GoldenWireData::default();
+        golden_wire_serialize(&mut clean_stream, &mut clean_data).unwrap();
+
+        let mut poison_stream = ReadStream::new(&poison_buffer, GOLDEN_WIRE_BYTES.len());
+        let mut poison_data = GoldenWireData::default();
+        golden_wire_serialize(&mut poison_stream, &mut poison_data).unwrap();
+
+        assert_eq!(poison_data, clean_data); // byte-identical decode
+        assert_eq!(
+            poison_stream.bits_processed(),
+            clean_stream.bits_processed()
+        );
+    }
+
+    // refusal path: truncate the stream one byte short so the decode must fail. the bytes at
+    // and past the truncated end are exactly where the reader's 64-bit window loads from, and
+    // the refusal must be identical whether they are zero or poison
+    {
+        let truncated_bytes = GOLDEN_WIRE_BYTES.len() - 1;
+
+        let mut clean_buffer = vec![0u8; 256];
+        let mut poison_buffer = vec![0xFF; 256];
+        clean_buffer[..truncated_bytes].copy_from_slice(&GOLDEN_WIRE_BYTES[..truncated_bytes]);
+        poison_buffer[..truncated_bytes].copy_from_slice(&GOLDEN_WIRE_BYTES[..truncated_bytes]);
+
+        let mut clean_stream = ReadStream::new(&clean_buffer, truncated_bytes);
+        let mut clean_data = GoldenWireData::default();
+        assert!(golden_wire_serialize(&mut clean_stream, &mut clean_data).is_err());
+
+        let mut poison_stream = ReadStream::new(&poison_buffer, truncated_bytes);
+        let mut poison_data = GoldenWireData::default();
+        assert!(golden_wire_serialize(&mut poison_stream, &mut poison_data).is_err());
+
+        // both latched by the refusal, so both report the same position
+        assert_eq!(
+            poison_stream.bits_processed(),
+            clean_stream.bits_processed()
+        );
+        // with identical partial state
+        assert_eq!(poison_data, clean_data);
+    }
+}
+
+/// Ported from serialize.h `test_measure_bound`.
+#[test]
+fn measure_bound() {
+    // STANDARD.md, "The Measure Stream": a measure reports a size sufficient at ANY starting
+    // bit position — a bound, not the packet size — and the implementation charges worst-case
+    // 7 bits per alignment-performing operation. Exact-from-zero accounting is non-conforming:
+    // it under-counts every unaligned start.
+
+    // the ruling's worked example: { bits(8); align; bits(8) }
+    {
+        let mut measure_stream = MeasureStream::new();
+        let mut byte_value = 0xAB;
+        measure_stream.serialize_bits(&mut byte_value, 8).unwrap();
+        measure_stream.serialize_align().unwrap();
+        measure_stream.serialize_bits(&mut byte_value, 8).unwrap();
+        // 8 + 7 + 8: the conservative charge. an exact-from-zero measure reports 16 —
+        // 2 bytes — which is NOT enough room when the message lands at bit offset 1
+        assert_eq!(measure_stream.bits_processed(), 23);
+
+        // written at every starting offset, the message's actual span never exceeds the
+        // measure — the property the bound exists to guarantee
+        for offset in 0..8 {
+            let mut buffer = [0u8; 64];
+            let mut write_stream = WriteStream::new(&mut buffer);
+            for _ in 0..offset {
+                let mut one_bit = 1;
+                write_stream.serialize_bits(&mut one_bit, 1).unwrap();
+            }
+            let start = write_stream.bits_processed();
+            write_stream.serialize_bits(&mut byte_value, 8).unwrap();
+            write_stream.serialize_align().unwrap();
+            write_stream.serialize_bits(&mut byte_value, 8).unwrap();
+            let span = write_stream.bits_processed() - start;
+            assert!(span <= measure_stream.bits_processed());
+            if offset == 0 {
+                assert_eq!(span, 16); // 2 bytes from an aligned start...
+            }
+            if offset == 1 {
+                assert_eq!(span, 23); // ...3 bytes of room needed from offset 1
+            }
+        }
+    }
+
+    // measure >= written, across every message this suite pins. (The fuzz harness holds
+    // the same inequality over arbitrary op programs on every run.)
+    {
+        let mut data = golden_wire_init();
+        let mut measure_stream = MeasureStream::new();
+        golden_wire_serialize(&mut measure_stream, &mut data).unwrap();
+        let mut buffer = [0u8; 256];
+        let mut write_stream = WriteStream::new(&mut buffer);
+        golden_wire_serialize(&mut write_stream, &mut data).unwrap();
+        write_stream.flush();
+        assert!(measure_stream.bits_processed() >= write_stream.bits_processed());
+    }
+
+    {
+        let mut float_values = [0.0f32; 5];
+        let mut double_values = [0.0f64; 2];
+        for (value, &pattern) in float_values.iter_mut().zip(&GOLDEN_FLOAT_PATTERNS) {
+            *value = f32::from_bits(pattern);
+        }
+        for (value, &pattern) in double_values.iter_mut().zip(&GOLDEN_DOUBLE_PATTERNS) {
+            *value = f64::from_bits(pattern);
+        }
+        let mut measure_stream = MeasureStream::new();
+        golden_float_serialize(&mut measure_stream, &mut float_values, &mut double_values).unwrap();
+        // no aligns: exact, and still a bound
+        assert!(measure_stream.bits_processed() >= 5 * 32 + 2 * 64);
+    }
+
+    {
+        let mut head = 5;
+        let mut tail = 0xA5;
+        let mut measure_stream = MeasureStream::new();
+        zero_length_bytes_serialize(&mut measure_stream, &mut head, &mut tail).unwrap();
+        // 3 + pad + 8 written; measure charges 3 + 7 + 8
+        assert!(measure_stream.bits_processed() >= 16);
+    }
+
+    {
+        let mut head = 5;
+        let mut tail = 0xA5;
+        let mut string = String::new();
+        let mut measure_stream = MeasureStream::new();
+        zero_length_string_serialize(&mut measure_stream, &mut head, &mut string, &mut tail)
+            .unwrap();
+        assert!(measure_stream.bits_processed() >= 16);
+    }
+
+    {
+        let mut head = 1;
+        let mut tail = 0x0F;
+        let mut data = [0xEF, 0xBE];
+        let mut measure_stream = MeasureStream::new();
+        unaligned_bytes_serialize(&mut measure_stream, &mut head, &mut data, &mut tail).unwrap();
+        // 28 bits written; measure charges 1 + 7 + 16 + 4
+        assert!(measure_stream.bits_processed() >= 28);
+    }
+}
+
+/// Ported from serialize.h `test_trailing_bits`.
+#[test]
+fn trailing_bits() {
+    // STANDARD.md, "Trailing bits": writers must emit zero in the unused bits of the final
+    // byte; readers must not reject a stream for their contents. The third rule — non-zero
+    // trailing bits as a provenance signal — belongs to tooling, never to this read path,
+    // which is exactly what the reader half of this test proves.
+
+    // writer obligation: emit a message that ends 3 bits into its final byte, into a buffer
+    // pre-filled with 0xFF so the zeros must come from the writer, not from the caller
+    {
+        let mut buffer = [0xFF; 64];
+
+        let bytes_written;
+        let bits_in_final_byte;
+        {
+            let mut write_stream = WriteStream::new(&mut buffer);
+            let mut head = 0xDEADBEEF;
+            write_stream.serialize_bits(&mut head, 32).unwrap();
+            let mut tail = 5;
+            write_stream.serialize_bits(&mut tail, 3).unwrap();
+            write_stream.flush();
+            bytes_written = write_stream.bytes_processed() as usize;
+            bits_in_final_byte = (write_stream.bits_processed() % 8) as u32;
+        }
+        assert_eq!(bits_in_final_byte, 3); // the stream really does end unaligned
+        let trailing_mask = 0xFF << bits_in_final_byte;
+        assert_eq!(buffer[bytes_written - 1] & trailing_mask, 0); // writers must write zero
+
+        // reader indifference, small stream: set every trailing bit and read back. the
+        // doctored stream must be accepted and must decode the same values.
+        buffer[bytes_written - 1] |= trailing_mask;
+        let mut read_stream = ReadStream::new(&buffer, bytes_written);
+        let mut read_head = 0;
+        read_stream.serialize_bits(&mut read_head, 32).unwrap();
+        assert_eq!(read_head, 0xDEADBEEF);
+        let mut read_tail = 0;
+        read_stream.serialize_bits(&mut read_tail, 3).unwrap();
+        assert_eq!(read_tail, 5);
+    }
+
+    // reader indifference, full message: doctor the trailing bits of the golden stream.
+    // a conforming reader accepts the doctored stream and decodes byte-identical results.
+    {
+        let mut buffer = [0u8; 256];
+        buffer[..GOLDEN_WIRE_BYTES.len()].copy_from_slice(&GOLDEN_WIRE_BYTES);
+
+        let clean_bits_processed;
+        let clean_data = {
+            let mut clean_stream = ReadStream::new(&buffer, GOLDEN_WIRE_BYTES.len());
+            let mut data = GoldenWireData::default();
+            golden_wire_serialize(&mut clean_stream, &mut data).unwrap();
+            clean_bits_processed = clean_stream.bits_processed();
+            data
+        };
+
+        let bits_in_final_byte = (clean_bits_processed % 8) as u32;
+        assert_ne!(bits_in_final_byte, 0); // golden ends unaligned, so this test can discriminate
+        let trailing_mask = 0xFF << bits_in_final_byte;
+        // the pinned emission met the writer obligation
+        assert_eq!(
+            GOLDEN_WIRE_BYTES[GOLDEN_WIRE_BYTES.len() - 1] & trailing_mask,
+            0
+        );
+
+        buffer[GOLDEN_WIRE_BYTES.len() - 1] |= trailing_mask; // set every trailing bit
+
+        let mut doctored_stream = ReadStream::new(&buffer, GOLDEN_WIRE_BYTES.len());
+        let mut doctored_data = GoldenWireData::default();
+        golden_wire_serialize(&mut doctored_stream, &mut doctored_data).unwrap(); // readers must not reject
+        assert_eq!(doctored_data, clean_data); // and must decode identically
+        assert_eq!(doctored_stream.bits_processed(), clean_bits_processed);
+    }
+}
