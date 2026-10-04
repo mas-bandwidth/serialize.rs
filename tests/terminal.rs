@@ -240,7 +240,7 @@ fn a_clone_carries_the_latch() {
     assert_eq!(bits, 7);
 }
 
-/// serialize.h test_read_stream_failure_is_terminal: a failed read leaves the stream failed.
+/// serialize.h `test_read_stream_failure_is_terminal`: a failed read leaves the stream failed.
 /// Each failure shape — before any consumption, after partial consumption, on range headroom,
 /// on alignment padding, on an interior NUL in a string, on an `int_relative` reconstruction
 /// past the domain — refuses every read that follows, and re-initialization clears the latch.
