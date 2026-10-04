@@ -3642,3 +3642,58 @@ fn golden_zero_length_bytes() {
         assert_eq!(stream.bytes_processed() as usize, PINNED_BYTES.len());
     }
 }
+
+/// The C helper ZeroLengthStringSerialize: three bits, then an empty string with buffer_size
+/// 8, then eight bits.
+fn zero_length_string_serialize<S: Stream>(
+    stream: &mut S,
+    head: &mut u32,
+    string: &mut String,
+    tail: &mut u32,
+) -> Result<(), S::Error> {
+    stream.serialize_bits(head, 3)?;
+    stream.serialize_string(string, 8)?;
+    stream.serialize_bits(tail, 8)?;
+    Ok(())
+}
+
+/// Ported from serialize.h `test_golden_zero_length_string`.
+#[test]
+fn golden_zero_length_string() {
+    // { bits(5,3); string("", buffer_size 8); bits(0xA5,8) }: the empty string is a 3-bit
+    // length of 0, then the zero-length payload's align pads bits [6,8). A port whose STRING
+    // path skips the empty-payload align writes { 0x45, 0x29 } — the exact hazard the C
+    // port's comment names, and a separate code path from bytes in three ports
+    const PINNED_BYTES: [u8; 2] = [0x05, 0xA5];
+
+    // write side
+    {
+        let mut buffer = [0u8; 64];
+        let mut stream = WriteStream::new(&mut buffer);
+        let mut head = 5;
+        let mut tail = 0xA5;
+        let mut string = String::new();
+        zero_length_string_serialize(&mut stream, &mut head, &mut string, &mut tail).unwrap();
+        stream.flush();
+        assert_eq!(stream.bytes_processed() as usize, PINNED_BYTES.len());
+        assert_eq!(buffer[..PINNED_BYTES.len()], PINNED_BYTES);
+    }
+
+    // read side
+    {
+        let mut buffer = [0u8; 64];
+        buffer[..PINNED_BYTES.len()].copy_from_slice(&PINNED_BYTES);
+        let mut stream = ReadStream::new(&buffer, PINNED_BYTES.len());
+        let mut head = 0;
+        let mut tail = 0;
+        // the C destination is a char buffer filled with 0xFF, and string[0] == '\0' proves
+        // the reader wrote the terminator; the Rust destination starts non-empty and the
+        // reader must replace it with the empty string
+        let mut string = "poisoned".to_string();
+        zero_length_string_serialize(&mut stream, &mut head, &mut string, &mut tail).unwrap();
+        assert_eq!(head, 5);
+        assert_eq!(string, "");
+        assert_eq!(tail, 0xA5);
+        assert_eq!(stream.bytes_processed() as usize, PINNED_BYTES.len());
+    }
+}
