@@ -3697,3 +3697,63 @@ fn golden_zero_length_string() {
         assert_eq!(stream.bytes_processed() as usize, PINNED_BYTES.len());
     }
 }
+
+/// Ported from serialize.h `test_past_end_poison`.
+#[test]
+fn past_end_poison() {
+    // STANDARD.md, "Past-end memory is an implementation contract, not a format concern":
+    // the reader loads 64-bit windows at byte granularity and requires its caller to
+    // allocate at least 8 bytes past the data; bytes past the end are loaded but never
+    // interpreted. Poison planted beyond the stream end must not change a single decoded
+    // byte, and must not change refusal behavior.
+
+    // accept path: identical decode with a zeroed tail and a poisoned tail
+    {
+        let mut clean_buffer = vec![0u8; 256];
+        let mut poison_buffer = vec![0xFF; 256]; // poison everywhere, including the loaded-but-never-interpreted window
+        clean_buffer[..GOLDEN_WIRE_BYTES.len()].copy_from_slice(&GOLDEN_WIRE_BYTES);
+        poison_buffer[..GOLDEN_WIRE_BYTES.len()].copy_from_slice(&GOLDEN_WIRE_BYTES);
+
+        let mut clean_stream = ReadStream::new(&clean_buffer, GOLDEN_WIRE_BYTES.len());
+        let mut clean_data = GoldenWireData::default();
+        golden_wire_serialize(&mut clean_stream, &mut clean_data).unwrap();
+
+        let mut poison_stream = ReadStream::new(&poison_buffer, GOLDEN_WIRE_BYTES.len());
+        let mut poison_data = GoldenWireData::default();
+        golden_wire_serialize(&mut poison_stream, &mut poison_data).unwrap();
+
+        assert_eq!(poison_data, clean_data); // byte-identical decode
+        assert_eq!(
+            poison_stream.bits_processed(),
+            clean_stream.bits_processed()
+        );
+    }
+
+    // refusal path: truncate the stream one byte short so the decode must fail. the bytes at
+    // and past the truncated end are exactly where the reader's 64-bit window loads from, and
+    // the refusal must be identical whether they are zero or poison
+    {
+        let truncated_bytes = GOLDEN_WIRE_BYTES.len() - 1;
+
+        let mut clean_buffer = vec![0u8; 256];
+        let mut poison_buffer = vec![0xFF; 256];
+        clean_buffer[..truncated_bytes].copy_from_slice(&GOLDEN_WIRE_BYTES[..truncated_bytes]);
+        poison_buffer[..truncated_bytes].copy_from_slice(&GOLDEN_WIRE_BYTES[..truncated_bytes]);
+
+        let mut clean_stream = ReadStream::new(&clean_buffer, truncated_bytes);
+        let mut clean_data = GoldenWireData::default();
+        assert!(golden_wire_serialize(&mut clean_stream, &mut clean_data).is_err());
+
+        let mut poison_stream = ReadStream::new(&poison_buffer, truncated_bytes);
+        let mut poison_data = GoldenWireData::default();
+        assert!(golden_wire_serialize(&mut poison_stream, &mut poison_data).is_err());
+
+        // both latched by the refusal, so both report the same position
+        assert_eq!(
+            poison_stream.bits_processed(),
+            clean_stream.bits_processed()
+        );
+        // with identical partial state
+        assert_eq!(poison_data, clean_data);
+    }
+}
