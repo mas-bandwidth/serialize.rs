@@ -39,8 +39,8 @@ fn compressed_float_conformance_nonzero_min() {
     }
 
     // read side: the decoded floats are pinned bit-exactly -- tolerance comparison would
-    // defeat the purpose, the divergence this detects is a single ulp (the C check caught an
-    // arm64 contraction decoding 0xC2055C29, one ulp off, issue #95)
+    // defeat the purpose, the divergence this detects is a single ulp (the C check caught a
+    // contracted decode of 0xC2055C29, one ulp off, issue #95)
     {
         let mut buffer = [0u8; 64];
         buffer[..PINNED_BYTES.len()].copy_from_slice(&PINNED_BYTES);
