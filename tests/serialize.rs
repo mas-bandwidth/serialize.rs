@@ -3858,3 +3858,78 @@ fn measure_bound() {
         assert!(measure_stream.bits_processed() >= 28);
     }
 }
+
+/// Ported from serialize.h `test_trailing_bits`.
+#[test]
+fn trailing_bits() {
+    // STANDARD.md, "Trailing bits": writers must emit zero in the unused bits of the final
+    // byte; readers must not reject a stream for their contents. The third rule — non-zero
+    // trailing bits as a provenance signal — belongs to tooling, never to this read path,
+    // which is exactly what the reader half of this test proves.
+
+    // writer obligation: emit a message that ends 3 bits into its final byte, into a buffer
+    // pre-filled with 0xFF so the zeros must come from the writer, not from the caller
+    {
+        let mut buffer = [0xFF; 64];
+
+        let bytes_written;
+        let bits_in_final_byte;
+        {
+            let mut write_stream = WriteStream::new(&mut buffer);
+            let mut head = 0xDEADBEEF;
+            write_stream.serialize_bits(&mut head, 32).unwrap();
+            let mut tail = 5;
+            write_stream.serialize_bits(&mut tail, 3).unwrap();
+            write_stream.flush();
+            bytes_written = write_stream.bytes_processed() as usize;
+            bits_in_final_byte = (write_stream.bits_processed() % 8) as u32;
+        }
+        assert_eq!(bits_in_final_byte, 3); // the stream really does end unaligned
+        let trailing_mask = 0xFF << bits_in_final_byte;
+        assert_eq!(buffer[bytes_written - 1] & trailing_mask, 0); // writers must write zero
+
+        // reader indifference, small stream: set every trailing bit and read back. the
+        // doctored stream must be accepted and must decode the same values.
+        buffer[bytes_written - 1] |= trailing_mask;
+        let mut read_stream = ReadStream::new(&buffer, bytes_written);
+        let mut read_head = 0;
+        read_stream.serialize_bits(&mut read_head, 32).unwrap();
+        assert_eq!(read_head, 0xDEADBEEF);
+        let mut read_tail = 0;
+        read_stream.serialize_bits(&mut read_tail, 3).unwrap();
+        assert_eq!(read_tail, 5);
+    }
+
+    // reader indifference, full message: doctor the trailing bits of the golden stream.
+    // a conforming reader accepts the doctored stream and decodes byte-identical results.
+    {
+        let mut buffer = [0u8; 256];
+        buffer[..GOLDEN_WIRE_BYTES.len()].copy_from_slice(&GOLDEN_WIRE_BYTES);
+
+        let clean_bits_processed;
+        let clean_data = {
+            let mut clean_stream = ReadStream::new(&buffer, GOLDEN_WIRE_BYTES.len());
+            let mut data = GoldenWireData::default();
+            golden_wire_serialize(&mut clean_stream, &mut data).unwrap();
+            clean_bits_processed = clean_stream.bits_processed();
+            data
+        };
+
+        let bits_in_final_byte = (clean_bits_processed % 8) as u32;
+        assert_ne!(bits_in_final_byte, 0); // golden ends unaligned, so this test can discriminate
+        let trailing_mask = 0xFF << bits_in_final_byte;
+        // the pinned emission met the writer obligation
+        assert_eq!(
+            GOLDEN_WIRE_BYTES[GOLDEN_WIRE_BYTES.len() - 1] & trailing_mask,
+            0
+        );
+
+        buffer[GOLDEN_WIRE_BYTES.len() - 1] |= trailing_mask; // set every trailing bit
+
+        let mut doctored_stream = ReadStream::new(&buffer, GOLDEN_WIRE_BYTES.len());
+        let mut doctored_data = GoldenWireData::default();
+        golden_wire_serialize(&mut doctored_stream, &mut doctored_data).unwrap(); // readers must not reject
+        assert_eq!(doctored_data, clean_data); // and must decode identically
+        assert_eq!(doctored_stream.bits_processed(), clean_bits_processed);
+    }
+}
