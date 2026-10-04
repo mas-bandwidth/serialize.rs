@@ -254,3 +254,128 @@ fn string_read_validation() {
         assert_eq!(read_back, text);
     }
 }
+
+/// Ports `test_wstring_read_validation` from the C++ `serialize.h`.
+#[test]
+#[allow(clippy::too_many_lines)] // one test per the C++ suite's structure
+fn wstring_read_validation() {
+    // high surrogate followed by a non-surrogate: unpaired, refused
+    {
+        let mut buffer = [0u8; 64];
+
+        let bytes;
+        {
+            let mut write_stream = WriteStream::new(&mut buffer);
+            let mut length = 2i32;
+            assert_eq!(write_stream.serialize_int(&mut length, 0, 7), Ok(()));
+            let mut group0 = 0xD800u32;
+            assert_eq!(write_stream.serialize_bits(&mut group0, 32), Ok(()));
+            let mut group1 = 0x0041u32;
+            assert_eq!(write_stream.serialize_bits(&mut group1, 32), Ok(()));
+            write_stream.flush();
+            bytes = write_stream.bytes_processed() as usize;
+        }
+
+        let mut read_stream = ReadStream::new(&buffer, bytes);
+        let mut read_back = String::new();
+        assert_eq!(
+            read_stream.serialize_wide_string(&mut read_back, 8),
+            Err(Error::InvalidString)
+        );
+    }
+
+    // low surrogate with no high before it: refused
+    {
+        let mut buffer = [0u8; 64];
+
+        let bytes;
+        {
+            let mut write_stream = WriteStream::new(&mut buffer);
+            let mut length = 1i32;
+            assert_eq!(write_stream.serialize_int(&mut length, 0, 7), Ok(()));
+            let mut group0 = 0xDC00u32;
+            assert_eq!(write_stream.serialize_bits(&mut group0, 32), Ok(()));
+            write_stream.flush();
+            bytes = write_stream.bytes_processed() as usize;
+        }
+
+        let mut read_stream = ReadStream::new(&buffer, bytes);
+        let mut read_back = String::new();
+        assert_eq!(
+            read_stream.serialize_wide_string(&mut read_back, 8),
+            Err(Error::InvalidString)
+        );
+    }
+
+    // high surrogate as the final transmitted group: dangling, refused
+    {
+        let mut buffer = [0u8; 64];
+
+        let bytes;
+        {
+            let mut write_stream = WriteStream::new(&mut buffer);
+            let mut length = 1i32;
+            assert_eq!(write_stream.serialize_int(&mut length, 0, 7), Ok(()));
+            let mut group0 = 0xD83Du32;
+            assert_eq!(write_stream.serialize_bits(&mut group0, 32), Ok(()));
+            write_stream.flush();
+            bytes = write_stream.bytes_processed() as usize;
+        }
+
+        let mut read_stream = ReadStream::new(&buffer, bytes);
+        let mut read_back = String::new();
+        assert_eq!(
+            read_stream.serialize_wide_string(&mut read_back, 8),
+            Err(Error::InvalidString)
+        );
+    }
+
+    // interior NUL group: wire length 3, wcslen 1 — the same two-lengths primitive
+    {
+        let mut buffer = [0u8; 64];
+
+        let bytes;
+        {
+            let mut write_stream = WriteStream::new(&mut buffer);
+            let mut length = 3i32;
+            assert_eq!(write_stream.serialize_int(&mut length, 0, 7), Ok(()));
+            let mut group0 = 0x0041u32;
+            assert_eq!(write_stream.serialize_bits(&mut group0, 32), Ok(()));
+            let mut group1 = 0x0000u32;
+            assert_eq!(write_stream.serialize_bits(&mut group1, 32), Ok(()));
+            let mut group2 = 0x0042u32;
+            assert_eq!(write_stream.serialize_bits(&mut group2, 32), Ok(()));
+            write_stream.flush();
+            bytes = write_stream.bytes_processed() as usize;
+        }
+
+        let mut read_stream = ReadStream::new(&buffer, bytes);
+        let mut read_back = String::new();
+        assert_eq!(
+            read_stream.serialize_wide_string(&mut read_back, 8),
+            Err(Error::InvalidString)
+        );
+    }
+
+    // control: a well-formed surrogate PAIR is valid UTF-16 and must be ACCEPTED
+    {
+        let mut buffer = [0u8; 64];
+
+        let bytes;
+        {
+            let mut write_stream = WriteStream::new(&mut buffer);
+            let mut length = 2i32;
+            assert_eq!(write_stream.serialize_int(&mut length, 0, 7), Ok(()));
+            let mut group0 = 0xD83Du32;
+            assert_eq!(write_stream.serialize_bits(&mut group0, 32), Ok(()));
+            let mut group1 = 0xDE00u32;
+            assert_eq!(write_stream.serialize_bits(&mut group1, 32), Ok(()));
+            write_stream.flush();
+            bytes = write_stream.bytes_processed() as usize;
+        }
+
+        let mut read_stream = ReadStream::new(&buffer, bytes);
+        let mut read_back = String::new();
+        assert_eq!(read_stream.serialize_wide_string(&mut read_back, 8), Ok(()));
+    }
+}
