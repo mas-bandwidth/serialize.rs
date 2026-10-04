@@ -109,3 +109,42 @@ fn compressed_float_conformance_writer_fusion() {
         assert_eq!(c.to_bits(), 0x4B7FFFFF); // 16777215.0
     }
 }
+
+// The C test proves each assert fires by running the write in a forked child with stderr
+// silenced and observing the abort (serialize_test_assert_fires); here the same two writes
+// run in-process and each expected panic is caught and checked. The caught panic's message
+// still prints -- like the C child's assert message, it is the expected outcome, not noise.
+// In release the debug asserts compile out and the test is absent, mirroring the C #else.
+
+/// Ported from the C++ suite's `test_compressed_float_non_finite_asserts` (serialize.h):
+/// each non-conforming compressed-float write asserts in a debug build.
+#[test]
+#[cfg(debug_assertions)]
+fn compressed_float_non_finite_asserts() {
+    // a declaration whose delta is not finite in float32 is non-conforming: the write asserts
+    let declaration_assert_fired = std::panic::catch_unwind(|| {
+        let mut buffer = [0u8; 8];
+        let mut write_stream = WriteStream::new(&mut buffer);
+        let mut value = 0.0f32;
+        let Ok(()) = write_stream.serialize_compressed_float(&mut value, -3e38, 3e38, 1.0);
+    })
+    .is_err();
+    assert!(
+        declaration_assert_fired,
+        "writing through a declaration whose delta overflows to +inf must assert"
+    );
+
+    // a NaN value over a perfectly good declaration: a non-conforming write
+    let value_assert_fired = std::panic::catch_unwind(|| {
+        let mut buffer = [0u8; 8];
+        let mut write_stream = WriteStream::new(&mut buffer);
+        // quiet NaN bit pattern, built without the NAN macro (finite-math builds reject it)
+        let mut value = f32::from_bits(0x7fc00000);
+        let Ok(()) = write_stream.serialize_compressed_float(&mut value, 0.0, 10.0, 0.01);
+    })
+    .is_err();
+    assert!(
+        value_assert_fired,
+        "writing a non-finite value through a compressed float must assert"
+    );
+}
