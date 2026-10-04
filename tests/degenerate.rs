@@ -318,3 +318,262 @@ fn string_buffer_size_zero_is_still_refused() {
     let mut empty = String::new();
     let _ = w.serialize_string(&mut empty, 0);
 }
+
+/// C++ `test_serialize_degenerate_range_64` of serialize.h: the 64 bit twin of
+/// `degenerate_range_costs_nothing`, and it did NOT hold when written -- the 1.6.x
+/// relaxation missed `serialize_int64`, which asserted `min < max` while the shared
+/// degenerate path it calls expects `min == max` at zero bits. The bounds sit above
+/// 2^32 so the field takes the two-dword path if it takes any path at all
+/// (STANDARD.md, "int64 (ranged)": a degenerate range costs zero bits).
+#[test]
+fn serialize_degenerate_range_64() {
+    let mut buffer = [0u8; 16];
+    let point = 1i64 << 40;
+
+    let bytes;
+    {
+        let mut w = WriteStream::new(&mut buffer);
+        let mut degenerate = point;
+        let mut after = 3i32;
+        w.serialize_int64(&mut degenerate, point, point).unwrap();
+        assert_eq!(w.bits_processed(), 0, "nothing written");
+        w.serialize_int(&mut after, 0, 7).unwrap();
+        assert_eq!(w.bits_processed(), 3, "the NEXT field starts at bit 0");
+        w.flush();
+        bytes = w.bytes_processed() as usize;
+    }
+
+    {
+        let mut r = ReadStream::new(&buffer, bytes);
+        let mut read_degenerate = 0i64;
+        let mut read_after = 0i32;
+        r.serialize_int64(&mut read_degenerate, point, point)
+            .unwrap();
+        assert_eq!(read_degenerate, point, "recovered from the range");
+        assert_eq!(r.bits_processed(), 0);
+        r.serialize_int(&mut read_after, 0, 7).unwrap();
+        assert_eq!(read_after, 3);
+    }
+
+    {
+        let mut m = MeasureStream::new();
+        let mut measured = point;
+        m.serialize_int64(&mut measured, point, point).unwrap();
+        assert_eq!(m.bits_processed(), 0, "measure must agree it is free");
+    }
+}
+
+/// C++ `test_serialize_degenerate_range_128` of serialize.h: the 128 bit twin, the width
+/// where the same omission survived longest -- `SerializeInteger128` had no `bits == 0`
+/// early return, so a degenerate range reached the 0-bit write/read primitives, which
+/// reject them, while the int128 methods above asserted `min < max`, stricter than the
+/// standard and than every narrower width: `min <= max` is the legal relation on every
+/// ranged operation (STANDARD.md, "int128 (ranged)"). The point is the conformance
+/// corpus's int128 vector, 2^100 + 7, far past 64 bits, so the field takes the
+/// multi-group path if it takes any path at all.
+#[test]
+fn serialize_degenerate_range_128() {
+    let mut buffer = [0u8; 16];
+    let point = (1i128 << 100) + 7;
+
+    let bytes;
+    {
+        let mut w = WriteStream::new(&mut buffer);
+        let mut degenerate = point;
+        let mut after = 3i32;
+        w.serialize_int128(&mut degenerate, point, point).unwrap();
+        assert_eq!(w.bits_processed(), 0, "nothing written");
+        w.serialize_int(&mut after, 0, 7).unwrap();
+        assert_eq!(w.bits_processed(), 3, "the NEXT field starts at bit 0");
+        w.flush();
+        bytes = w.bytes_processed() as usize;
+    }
+
+    {
+        let mut r = ReadStream::new(&buffer, bytes);
+        let mut read_degenerate = 0i128;
+        let mut read_after = 0i32;
+        r.serialize_int128(&mut read_degenerate, point, point)
+            .unwrap();
+        assert_eq!(read_degenerate, point, "recovered from the range");
+        assert_eq!(r.bits_processed(), 0);
+        r.serialize_int(&mut read_after, 0, 7).unwrap();
+        assert_eq!(read_after, 3);
+    }
+
+    {
+        let mut m = MeasureStream::new();
+        let mut measured = point;
+        m.serialize_int128(&mut measured, point, point).unwrap();
+        assert_eq!(m.bits_processed(), 0, "measure must agree it is free");
+    }
+}
+
+/// C++ `test_serialize_fixed_degenerate` of serialize.h: a degenerate fixed range
+/// (`min_units == max_units`) is LEGAL and costs ZERO BITS on every storage width;
+/// the raw value is `min_units << fraction_bits`, recovered from the range alone
+/// (STANDARD.md, "fixed point"). The wide path is why the C test exists (serialize#54):
+/// ports computed the wide bit count as `bits_required(min, max) + fraction_bits`,
+/// which degenerates to `fraction_bits` ZEROS when `min == max` while their narrow
+/// paths wrote nothing. C computes the wide count as `u128` bits, so it cannot make
+/// that error (README: 128 bit values use native `i128`); the pins still prove zero
+/// bits on every width, narrow and wide.
+#[test]
+#[allow(clippy::too_many_lines)] // one test per the C++ suite's structure: five blocks,
+// each a width x sign x stream pin
+fn serialize_fixed_degenerate() {
+    // narrow storage: Q16.16, the raw value IS min << 16
+    {
+        let mut buffer = [0u8; 16];
+        let bytes;
+        {
+            let mut w = WriteStream::new(&mut buffer);
+            let mut degenerate = 5i32 * 65536;
+            let mut after = 3i32;
+            w.serialize_fixed(&mut degenerate, 16, 16, 5, 5).unwrap();
+            assert_eq!(w.bits_processed(), 0, "nothing written");
+            w.serialize_int(&mut after, 0, 7).unwrap();
+            assert_eq!(w.bits_processed(), 3, "the NEXT field starts at bit 0");
+            w.flush();
+            bytes = w.bytes_processed() as usize;
+        }
+        {
+            let mut r = ReadStream::new(&buffer, bytes);
+            let mut read_degenerate = 0i32;
+            let mut read_after = 0i32;
+            r.serialize_fixed(&mut read_degenerate, 16, 16, 5, 5)
+                .unwrap();
+            assert_eq!(read_degenerate, 5 * 65536, "recovered from the range");
+            assert_eq!(r.bits_processed(), 0);
+            r.serialize_int(&mut read_after, 0, 7).unwrap();
+            assert_eq!(read_after, 3);
+        }
+        {
+            let mut m = MeasureStream::new();
+            let mut measured = 5i32 * 65536;
+            m.serialize_fixed(&mut measured, 16, 16, 5, 5).unwrap();
+            assert_eq!(m.bits_processed(), 0);
+        }
+    }
+
+    // narrow storage, negative degenerate bound: Q48.16 at -7.0 -- the raw min is
+    // negative, and the reader must still recover it exactly
+    {
+        let mut buffer = [0u8; 16];
+        let bytes;
+        {
+            let mut w = WriteStream::new(&mut buffer);
+            let mut degenerate = -7i64 * 65536;
+            let mut after = 3i32;
+            w.serialize_fixed(&mut degenerate, 48, 16, -7, -7).unwrap();
+            assert_eq!(w.bits_processed(), 0);
+            w.serialize_int(&mut after, 0, 7).unwrap();
+            w.flush();
+            bytes = w.bytes_processed() as usize;
+        }
+        {
+            let mut r = ReadStream::new(&buffer, bytes);
+            let mut read_degenerate = 0i64;
+            let mut read_after = 0i32;
+            r.serialize_fixed(&mut read_degenerate, 48, 16, -7, -7)
+                .unwrap();
+            assert_eq!(read_degenerate, -7 * 65536);
+            r.serialize_int(&mut read_after, 0, 7).unwrap();
+            assert_eq!(read_after, 3);
+        }
+    }
+
+    // wide storage: Q112.16 -- the path that used to cost fraction_bits zeros in the
+    // ports. zero bits here, exactly like the narrow path
+    {
+        let mut buffer = [0u8; 16];
+        let bytes;
+        {
+            let mut w = WriteStream::new(&mut buffer);
+            let mut degenerate = 9i128 * 65536;
+            let mut after = 3i32;
+            w.serialize_fixed(&mut degenerate, 112, 16, 9, 9).unwrap();
+            assert_eq!(w.bits_processed(), 0, "zero bits, NOT fraction_bits");
+            w.serialize_int(&mut after, 0, 7).unwrap();
+            assert_eq!(w.bits_processed(), 3);
+            w.flush();
+            bytes = w.bytes_processed() as usize;
+        }
+        {
+            let mut r = ReadStream::new(&buffer, bytes);
+            let mut read_degenerate = 0i128;
+            let mut read_after = 0i32;
+            r.serialize_fixed(&mut read_degenerate, 112, 16, 9, 9)
+                .unwrap();
+            assert_eq!(read_degenerate, 9 * 65536);
+            assert_eq!(r.bits_processed(), 0);
+            r.serialize_int(&mut read_after, 0, 7).unwrap();
+            assert_eq!(read_after, 3);
+        }
+        {
+            let mut m = MeasureStream::new();
+            let mut measured = 9i128 * 65536;
+            m.serialize_fixed(&mut measured, 112, 16, 9, 9).unwrap();
+            assert_eq!(m.bits_processed(), 0);
+        }
+    }
+
+    // wide storage, negative degenerate bound: Q112.16 at -9.0
+    {
+        let mut buffer = [0u8; 16];
+        let bytes;
+        {
+            let mut w = WriteStream::new(&mut buffer);
+            let mut degenerate = -9i128 * 65536;
+            let mut after = 3i32;
+            w.serialize_fixed(&mut degenerate, 112, 16, -9, -9).unwrap();
+            assert_eq!(w.bits_processed(), 0);
+            w.serialize_int(&mut after, 0, 7).unwrap();
+            w.flush();
+            bytes = w.bytes_processed() as usize;
+        }
+        {
+            let mut r = ReadStream::new(&buffer, bytes);
+            let mut read_degenerate = 0i128;
+            let mut read_after = 0i32;
+            r.serialize_fixed(&mut read_degenerate, 112, 16, -9, -9)
+                .unwrap();
+            assert_eq!(read_degenerate, -9 * 65536);
+            r.serialize_int(&mut read_after, 0, 7).unwrap();
+            assert_eq!(read_after, 3);
+        }
+    }
+
+    // wide storage at Q64.64 over min == max == 0: the old wide formula would have
+    // made this 64 bits of zeros, the fraction alone spanning the full field
+    // (C: explicitly the emulated 128 bit pair, so the degenerate path is proven in
+    // both representations; Rust has one representation, native i128)
+    {
+        let mut buffer = [0u8; 16];
+        let bytes;
+        {
+            let mut w = WriteStream::new(&mut buffer);
+            let mut degenerate = 0i128;
+            let mut after = 3i32;
+            w.serialize_fixed(&mut degenerate, 64, 64, 0, 0).unwrap();
+            assert_eq!(
+                w.bits_processed(),
+                0,
+                "zero bits, not the 64 bit fractional field"
+            );
+            w.serialize_int(&mut after, 0, 7).unwrap();
+            w.flush();
+            bytes = w.bytes_processed() as usize;
+        }
+        {
+            let mut r = ReadStream::new(&buffer, bytes);
+            let mut read_degenerate = 1i128; // a wrong value, so recovery is observable
+            let mut read_after = 0i32;
+            r.serialize_fixed(&mut read_degenerate, 64, 64, 0, 0)
+                .unwrap();
+            assert_eq!(read_degenerate, 0);
+            r.serialize_int(&mut read_after, 0, 7).unwrap();
+            assert_eq!(read_after, 3);
+        }
+    }
+}
