@@ -347,7 +347,8 @@ fn serialize_degenerate_range_64() {
         let mut r = ReadStream::new(&buffer, bytes);
         let mut read_degenerate = 0i64;
         let mut read_after = 0i32;
-        r.serialize_int64(&mut read_degenerate, point, point).unwrap();
+        r.serialize_int64(&mut read_degenerate, point, point)
+            .unwrap();
         assert_eq!(read_degenerate, point, "recovered from the range");
         assert_eq!(r.bits_processed(), 0);
         r.serialize_int(&mut read_after, 0, 7).unwrap();
@@ -392,7 +393,8 @@ fn serialize_degenerate_range_128() {
         let mut r = ReadStream::new(&buffer, bytes);
         let mut read_degenerate = 0i128;
         let mut read_after = 0i32;
-        r.serialize_int128(&mut read_degenerate, point, point).unwrap();
+        r.serialize_int128(&mut read_degenerate, point, point)
+            .unwrap();
         assert_eq!(read_degenerate, point, "recovered from the range");
         assert_eq!(r.bits_processed(), 0);
         r.serialize_int(&mut read_after, 0, 7).unwrap();
@@ -417,6 +419,8 @@ fn serialize_degenerate_range_128() {
 /// that error (README: 128 bit values use native `i128`); the pins still prove zero
 /// bits on every width, narrow and wide.
 #[test]
+#[allow(clippy::too_many_lines)] // one test per the C++ suite's structure: five blocks,
+// each a width x sign x stream pin
 fn serialize_fixed_degenerate() {
     // narrow storage: Q16.16, the raw value IS min << 16
     {
@@ -437,7 +441,8 @@ fn serialize_fixed_degenerate() {
             let mut r = ReadStream::new(&buffer, bytes);
             let mut read_degenerate = 0i32;
             let mut read_after = 0i32;
-            r.serialize_fixed(&mut read_degenerate, 16, 16, 5, 5).unwrap();
+            r.serialize_fixed(&mut read_degenerate, 16, 16, 5, 5)
+                .unwrap();
             assert_eq!(read_degenerate, 5 * 65536, "recovered from the range");
             assert_eq!(r.bits_processed(), 0);
             r.serialize_int(&mut read_after, 0, 7).unwrap();
@@ -470,7 +475,8 @@ fn serialize_fixed_degenerate() {
             let mut r = ReadStream::new(&buffer, bytes);
             let mut read_degenerate = 0i64;
             let mut read_after = 0i32;
-            r.serialize_fixed(&mut read_degenerate, 48, 16, -7, -7).unwrap();
+            r.serialize_fixed(&mut read_degenerate, 48, 16, -7, -7)
+                .unwrap();
             assert_eq!(read_degenerate, -7 * 65536);
             r.serialize_int(&mut read_after, 0, 7).unwrap();
             assert_eq!(read_after, 3);
@@ -497,7 +503,8 @@ fn serialize_fixed_degenerate() {
             let mut r = ReadStream::new(&buffer, bytes);
             let mut read_degenerate = 0i128;
             let mut read_after = 0i32;
-            r.serialize_fixed(&mut read_degenerate, 112, 16, 9, 9).unwrap();
+            r.serialize_fixed(&mut read_degenerate, 112, 16, 9, 9)
+                .unwrap();
             assert_eq!(read_degenerate, 9 * 65536);
             assert_eq!(r.bits_processed(), 0);
             r.serialize_int(&mut read_after, 0, 7).unwrap();
@@ -529,7 +536,8 @@ fn serialize_fixed_degenerate() {
             let mut r = ReadStream::new(&buffer, bytes);
             let mut read_degenerate = 0i128;
             let mut read_after = 0i32;
-            r.serialize_fixed(&mut read_degenerate, 112, 16, -9, -9).unwrap();
+            r.serialize_fixed(&mut read_degenerate, 112, 16, -9, -9)
+                .unwrap();
             assert_eq!(read_degenerate, -9 * 65536);
             r.serialize_int(&mut read_after, 0, 7).unwrap();
             assert_eq!(read_after, 3);
@@ -548,7 +556,11 @@ fn serialize_fixed_degenerate() {
             let mut degenerate = 0i128;
             let mut after = 3i32;
             w.serialize_fixed(&mut degenerate, 64, 64, 0, 0).unwrap();
-            assert_eq!(w.bits_processed(), 0, "zero bits, not the 64 bit fractional field");
+            assert_eq!(
+                w.bits_processed(),
+                0,
+                "zero bits, not the 64 bit fractional field"
+            );
             w.serialize_int(&mut after, 0, 7).unwrap();
             w.flush();
             bytes = w.bytes_processed() as usize;
@@ -557,7 +569,8 @@ fn serialize_fixed_degenerate() {
             let mut r = ReadStream::new(&buffer, bytes);
             let mut read_degenerate = 1i128; // a wrong value, so recovery is observable
             let mut read_after = 0i32;
-            r.serialize_fixed(&mut read_degenerate, 64, 64, 0, 0).unwrap();
+            r.serialize_fixed(&mut read_degenerate, 64, 64, 0, 0)
+                .unwrap();
             assert_eq!(read_degenerate, 0);
             r.serialize_int(&mut read_after, 0, 7).unwrap();
             assert_eq!(read_after, 3);
