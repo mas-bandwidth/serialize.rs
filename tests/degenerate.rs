@@ -361,3 +361,48 @@ fn serialize_degenerate_range_64() {
         assert_eq!(m.bits_processed(), 0, "measure must agree it is free");
     }
 }
+
+/// C++ `test_serialize_degenerate_range_128` of serialize.h: the 128 bit twin, the width
+/// where the same omission survived longest -- `SerializeInteger128` had no `bits == 0`
+/// early return, so a degenerate range reached the 0-bit write/read primitives, which
+/// reject them, while the int128 methods above asserted `min < max`, stricter than the
+/// standard and than every narrower width: `min <= max` is the legal relation on every
+/// ranged operation (STANDARD.md, "int128 (ranged)"). The point is the conformance
+/// corpus's int128 vector, 2^100 + 7, far past 64 bits, so the field takes the
+/// multi-group path if it takes any path at all.
+#[test]
+fn serialize_degenerate_range_128() {
+    let mut buffer = [0u8; 16];
+    let point = (1i128 << 100) + 7;
+
+    let bytes;
+    {
+        let mut w = WriteStream::new(&mut buffer);
+        let mut degenerate = point;
+        let mut after = 3i32;
+        w.serialize_int128(&mut degenerate, point, point).unwrap();
+        assert_eq!(w.bits_processed(), 0, "nothing written");
+        w.serialize_int(&mut after, 0, 7).unwrap();
+        assert_eq!(w.bits_processed(), 3, "the NEXT field starts at bit 0");
+        w.flush();
+        bytes = w.bytes_processed() as usize;
+    }
+
+    {
+        let mut r = ReadStream::new(&buffer, bytes);
+        let mut read_degenerate = 0i128;
+        let mut read_after = 0i32;
+        r.serialize_int128(&mut read_degenerate, point, point).unwrap();
+        assert_eq!(read_degenerate, point, "recovered from the range");
+        assert_eq!(r.bits_processed(), 0);
+        r.serialize_int(&mut read_after, 0, 7).unwrap();
+        assert_eq!(read_after, 3);
+    }
+
+    {
+        let mut m = MeasureStream::new();
+        let mut measured = point;
+        m.serialize_int128(&mut measured, point, point).unwrap();
+        assert_eq!(m.bits_processed(), 0, "measure must agree it is free");
+    }
+}
