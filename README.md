@@ -9,7 +9,7 @@ A simple bitpacking serializer for Rust.
 This is a port of the C++ [serialize](https://github.com/mas-bandwidth/serialize) library and
 is **bit-for-bit wire compatible** with it. The golden wire format test pins 112 exact bytes —
 byte for byte the vector `golden_wire_bytes` pins in the C++ test suite — and on every push and
-pull request CI builds the real C++ library at a pinned release (v1.16.0) and runs both
+pull request CI builds the real C++ library at the release pinned in `.github/workflows/ci.yml` and runs both
 implementations head to head over the library's own golden serialize function: they write
 byte-identical data and each decodes the other's output. That machine check covers all 112 of
 those bytes, and continues past them into an extended harness-defined sequence covering what
