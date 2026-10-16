@@ -34,18 +34,24 @@ checks against the C++ library. Compatibility across the family rests on that sh
 and that shared specification, not on any Rust-to-Go or Rust-to-C# test.
 
 Zero dependencies, no unsafe code, BSD 3-Clause. Install with `cargo add serialize-official`
-(the package name on crates.io; in code it is simply `use serialize::*`). The newest version
-published to crates.io is **2.2.2** and this tree is **2.4.0**, so v2.3.0 and v2.4.0 are tagged
-here and not yet on the registry. To build against this tree before the push, take it from git:
+(the package name on crates.io; in code it is simply `use serialize::*`). That resolves to the
+version the registry holds, which is the one a consumer gets, and every release is listed on
+the [releases page](https://github.com/mas-bandwidth/serialize.rs/releases): a release states a
+format version, and two endpoints interoperate only when they carry the same one. To build
+against a tree the registry does not hold yet, take it from git and pin a release tag rather
+than tracking `main`:
 
 ```toml
 [dependencies]
 serialize-official = { git = "https://github.com/mas-bandwidth/serialize.rs", tag = "v2.4.0" }
 ```
 
-The `consumer` CI job is what keeps those two numbers honest. It installs the crate from
-crates.io into a fresh project outside this repository, encodes and decodes a message through
-it, and fails while the registry is behind this tree, naming both versions.
+Two CI jobs hold the registry and this repository to each other, so no version number written
+here has to. The `consumer` job installs the crate from crates.io at the version the index
+advertises, into a fresh project outside this repository, and encodes and decodes a message
+through it; it runs nightly as well as on every push, because the registry can move without a
+commit here. The `published version` job compares this repository's manifest against the index,
+reporting the drift on `main` and on pull requests and gating on a release tag.
 
 Values are packed with exactly the number of bits they need: a bool takes 1 bit, an integer in
 [0,31] takes 5 bits. Write one serialize function and it handles write, read and measure —
