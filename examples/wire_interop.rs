@@ -2,18 +2,19 @@
 //! against the C++ harness (interop/golden.cpp) built from the real C++ serialize library:
 //!
 //! ```text
-//! wire_interop write <file>   serialize the golden wire data plus the extended interop
-//!                             sequence, verify the golden prefix matches the pinned golden
-//!                             bytes, write it out
+//! wire_interop write <file>   serialize the golden packet and the extended interop packet,
+//!                             verify the golden packet is the pinned golden bytes, write
+//!                             both out back to back
 //! wire_interop read <file>    decode a file written by the other implementation, verify the
 //!                             decoded values match the expected values, re-encode them, and
 //!                             verify the bytes are identical
 //! ```
 //!
 //! The golden data below mirrors `GoldenWireSerialize` in the C++ library's serialize.h (and
-//! the copy in tests/serialize.rs). After it the stream carries an EXTENDED sequence defined
-//! by the harness itself (mirrored in interop/golden.cpp), covering what `GoldenWireData`
-//! does not:
+//! the copy in tests/serialize.rs), and ends with the end (format 2.0), so it is exactly the
+//! golden bytes. A second packet follows it in the file, read by its own stream and ended by
+//! its own end: an EXTENDED sequence defined by the harness itself (mirrored in
+//! interop/golden.cpp), covering what `GoldenWireData` does not:
 //!
 //! - degenerate ranges (`min == max`): zero bits on the wire, 32 and 64 bit, placed in the
 //!   MIDDLE of the sequence so the byte cmp proves both that they are free on the wire and
@@ -54,7 +55,7 @@ struct GoldenWireData {
     relative_far: i32,
     bytes: [u8; 7],
     string: String,
-    wstring: String,
+    go_stones: String,
     fixed_q8_8: i16,
     fixed_q16_16: i32,
     fixed_q48_16: i64,
@@ -86,10 +87,10 @@ fn golden_wire_init() -> GoldenWireData {
         relative_far: 2100,
         bytes: [0xDE, 0xAD, 0xBE, 0xEF, 0xCA, 0xFE, 0x01],
         string: "golden".to_string(),
-        wstring: "\u{043C}\u{0438}\u{0440}".to_string(),
-        fixed_q8_8: -(3 * 256 + 64),                  // -3.25 in Q8.8
-        fixed_q16_16: 1234 * 65536 + 32768,           // 1234.5 in Q16.16
-        fixed_q48_16: -(54321i64 * 65536 + 12345),    // -54321.1883... in Q48.16
+        go_stones: "\u{7881}\u{77F3}".to_string(), // 碁石: E7 A2 81 E7 9F B3
+        fixed_q8_8: -(3 * 256 + 64),               // -3.25 in Q8.8
+        fixed_q16_16: 1234 * 65536 + 32768,        // 1234.5 in Q16.16
+        fixed_q48_16: -(54321i64 * 65536 + 12345), // -54321.1883... in Q48.16
         fixed_q16_16_unsigned: 29999 * 65536 + 65535, // 29999.99998...: every fraction bit set
         // -98765432109.066 in Q112.16: 75 bits on the wire, three groups
         fixed_q112_16_wide: i128::from(-(98765432109i64 * 65536 + 4321)),
@@ -122,7 +123,7 @@ fn golden_wire_serialize<S: Stream>(
     stream.serialize_align()?;
     stream.serialize_bytes(&mut data.bytes)?;
     stream.serialize_string(&mut data.string, 16)?;
-    stream.serialize_wide_string(&mut data.wstring, 8)?;
+    stream.serialize_string(&mut data.go_stones, 8)?;
     // the fixed point section starts byte aligned, so every byte pinned above it stays put
     stream.serialize_align()?;
     stream.serialize_fixed(&mut data.fixed_q8_8, 8, 8, -100, 100)?;
@@ -141,6 +142,8 @@ fn golden_wire_serialize<S: Stream>(
     )?;
     // full unit range: 128 bits, the four group structure
     stream.serialize_fixed(&mut data.fixed_q64_64_wide, 64, 64, i64::MIN, i64::MAX)?;
+    // the message ends here, and so must the stream
+    stream.serialize_end()?;
     Ok(())
 }
 
@@ -183,7 +186,7 @@ fn extended_interop_serialize<S: Stream>(
     stream: &mut S,
     data: &mut ExtendedInteropData,
 ) -> Result<(), S::Error> {
-    // the extended section starts byte aligned: the golden prefix stays pinned
+    // a no-op at the start of its own packet, kept so the bytes stay put
     stream.serialize_align()?;
     stream.serialize_bits(&mut data.marker, 11)?;
     // The FMA-boundary field rides the PRECOMPUTED entry point (schema #107): constants
@@ -204,6 +207,8 @@ fn extended_interop_serialize<S: Stream>(
     stream.serialize_compressed_float(&mut data.clamp_reject_witness, 0.0, 8_388_609.0, 1.0)?;
     stream.serialize_compressed_float(&mut data.clamp_wide_witness, 0.0, 16_777_215.0, 1.0)?;
     stream.serialize_int(&mut data.post, -100, 100)?;
+    // the packet ends here, and so must the stream
+    stream.serialize_end()?;
     Ok(())
 }
 
@@ -229,65 +234,95 @@ fn extended_interop_check(data: &ExtendedInteropData) -> bool {
         && data.clamp_wide_witness.to_bits() == expected.clamp_wide_witness.to_bits()
 }
 
-// bytes 0..72 are the original golden vector; the fixed point tail (72..112) was derived
-// from STANDARD.md's stated rules independently of both implementations, and matches the
-// C++ suite's golden_wire_bytes verbatim. The extended interop sequence follows these on
-// the wire, byte aligned, so this prefix stays pinned.
+// STANDARD.md, "The whole message" (format 2.0): the golden packet, which ends with the end,
+// so it is exactly these bytes. The extended packet follows it in the interop file, read by
+// its own stream and ended by its own end.
 #[rustfmt::skip]
-const GOLDEN_WIRE_BYTES: [u8; 112] = [
+const GOLDEN_WIRE_BYTES: [u8; 106] = [
     0x5D, 0xDA, 0xF7, 0xE6, 0xD5, 0x77, 0xDF, 0x56, 0xEF, 0x9F, 0x75, 0x19,
     0x52, 0xBC, 0xDA, 0x0F, 0x49, 0x40, 0xF4, 0x55, 0x55, 0x55, 0x55, 0x55,
     0x55, 0x55, 0xFF, 0xFC, 0xD1, 0x48, 0xE0, 0x59, 0xD1, 0x48, 0xC0, 0x7B,
     0xF3, 0x6A, 0xE2, 0x59, 0xD1, 0x48, 0x84, 0xB7, 0x06, 0xDE, 0xAD, 0xBE,
-    0xEF, 0xCA, 0xFE, 0x01, 0x06, 0x67, 0x6F, 0x6C, 0x64, 0x65, 0x6E, 0xE3,
-    0x21, 0x00, 0x00, 0xC0, 0x21, 0x00, 0x00, 0x00, 0x22, 0x00, 0x00, 0x00,
-    0xC0, 0x60, 0x00, 0x80, 0xA2, 0x7C, 0xFC, 0xEC, 0x26, 0xCB, 0xFF, 0xFF,
-    0x4B, 0x1D, 0x1F, 0xEF, 0xD2, 0x1A, 0x1F, 0x01, 0xE9, 0xFF, 0xFF, 0x09,
-    0x19, 0x2A, 0x3B, 0x4C, 0x5D, 0x6E, 0x7F, 0x78, 0x6F, 0x5E, 0x4D, 0x3C,
-    0x2B, 0x1A, 0x09, 0x04,
+    0xEF, 0xCA, 0xFE, 0x01, 0x06, 0x67, 0x6F, 0x6C, 0x64, 0x65, 0x6E, 0x06,
+    0xE7, 0xA2, 0x81, 0xE7, 0x9F, 0xB3, 0xC0, 0x60, 0x00, 0x80, 0xA2, 0x7C,
+    0xFC, 0xEC, 0x26, 0xCB, 0xFF, 0xFF, 0x4B, 0x1D, 0x1F, 0xEF, 0xD2, 0x1A,
+    0x1F, 0x01, 0xE9, 0xFF, 0xFF, 0x09, 0x19, 0x2A, 0x3B, 0x4C, 0x5D, 0x6E,
+    0x7F, 0x78, 0x6F, 0x5E, 0x4D, 0x3C, 0x2B, 0x1A, 0x09, 0x04,
 ];
 
-fn encode() -> Vec<u8> {
+/// Write one packet with its own stream and return exactly the bytes the writer reported.
+fn write_packet<F>(serialize: F) -> Vec<u8>
+where
+    F: FnOnce(&mut WriteStream<'_>),
+{
     let mut buffer = vec![0u8; 256];
     let mut stream = WriteStream::new(&mut buffer);
-    let mut data = golden_wire_init();
-    // writes are infallible as of 2.0: Ok is the only pattern
-    let Ok(()) = golden_wire_serialize(&mut stream, &mut data);
-    let mut extended = extended_interop_init();
-    let Ok(()) = extended_interop_serialize(&mut stream, &mut extended);
+    serialize(&mut stream);
     stream.flush();
     let bytes = stream.bytes_processed() as usize;
     buffer.truncate(bytes);
     buffer
 }
 
+fn encode_golden(data: &mut GoldenWireData) -> Vec<u8> {
+    // writes are infallible as of 2.0: Ok is the only pattern
+    write_packet(|stream| {
+        let Ok(()) = golden_wire_serialize(stream, data);
+    })
+}
+
+fn encode_extended(data: &mut ExtendedInteropData) -> Vec<u8> {
+    write_packet(|stream| {
+        let Ok(()) = extended_interop_serialize(stream, data);
+    })
+}
+
 fn write_file(path: &str) -> std::result::Result<(), String> {
-    let bytes = encode();
-    if bytes.len() <= GOLDEN_WIRE_BYTES.len()
-        || bytes[..GOLDEN_WIRE_BYTES.len()] != GOLDEN_WIRE_BYTES
-    {
-        return Err("rust output does not start with the pinned golden bytes".to_string());
+    let golden = encode_golden(&mut golden_wire_init());
+    if golden != GOLDEN_WIRE_BYTES {
+        return Err("rust golden packet is not the pinned golden bytes".to_string());
     }
+    let extended = encode_extended(&mut extended_interop_init());
+    let mut bytes = golden;
+    bytes.extend_from_slice(&extended);
     std::fs::write(path, &bytes).map_err(|e| format!("could not write {path}: {e}"))?;
-    println!("rust: wrote {} bytes to {path}", bytes.len());
+    println!(
+        "rust: wrote {} golden bytes and {} extended bytes to {path}",
+        GOLDEN_WIRE_BYTES.len(),
+        extended.len()
+    );
     Ok(())
 }
 
 fn read_file(path: &str) -> std::result::Result<(), String> {
     let input = std::fs::read(path).map_err(|e| format!("could not open {path}: {e}"))?;
-    let bytes = input.len();
+    if input.len() <= GOLDEN_WIRE_BYTES.len() {
+        return Err(format!(
+            "{path} holds no extended packet after the golden one"
+        ));
+    }
+    let (golden, extended_bytes) = input.split_at(GOLDEN_WIRE_BYTES.len());
 
-    // the read buffer extends 8 bytes past the data, per the read allocation contract
-    let mut buffer = input.clone();
-    buffer.resize(bytes + 8, 0);
+    // each packet gets its own buffer extending 8 bytes past the data, per the read
+    // allocation contract, and exactly its own bytes as the stream length: the end of each
+    // refuses anything else
+    let with_slack = |packet: &[u8]| {
+        let mut buffer = packet.to_vec();
+        buffer.resize(packet.len() + 8, 0);
+        buffer
+    };
 
-    let mut stream = ReadStream::new(&buffer, bytes);
+    let golden_buffer = with_slack(golden);
+    let mut stream = ReadStream::new(&golden_buffer, golden.len());
     let mut data = GoldenWireData::default();
     golden_wire_serialize(&mut stream, &mut data)
-        .map_err(|e| format!("rust could not decode {path}: {e}"))?;
+        .map_err(|e| format!("rust could not decode the golden packet of {path}: {e}"))?;
+
+    let extended_buffer = with_slack(extended_bytes);
+    let mut stream = ReadStream::new(&extended_buffer, extended_bytes.len());
     let mut extended = ExtendedInteropData::default();
     extended_interop_serialize(&mut stream, &mut extended)
-        .map_err(|e| format!("rust could not decode the extended section of {path}: {e}"))?;
+        .map_err(|e| format!("rust could not decode the extended packet of {path}: {e}"))?;
 
     // the decoded values must match the golden values exactly (floats by bit pattern; the
     // compressed float quantizes 5.0 in [0,10] exactly, so it round trips bit identical too)
@@ -299,24 +334,21 @@ fn read_file(path: &str) -> std::result::Result<(), String> {
     }
     if !extended_interop_check(&extended) {
         return Err(format!(
-            "extended section decoded to unexpected values:\n{extended:#?}"
+            "extended packet decoded to unexpected values:\n{extended:#?}"
         ));
     }
 
     // re-encode the decoded values: the bytes must be identical to what was read
-    let mut round = data.clone();
-    let mut round_extended = extended.clone();
-    let mut out = vec![0u8; 256];
-    let mut out_stream = WriteStream::new(&mut out);
-    let Ok(()) = golden_wire_serialize(&mut out_stream, &mut round);
-    let Ok(()) = extended_interop_serialize(&mut out_stream, &mut round_extended);
-    out_stream.flush();
-    let out_bytes = out_stream.bytes_processed() as usize;
-    if out[..out_bytes] != input {
+    if encode_golden(&mut data.clone()) != golden
+        || encode_extended(&mut extended.clone()) != extended_bytes
+    {
         return Err("re-encoded bytes differ from the input".to_string());
     }
 
-    println!("rust: decoded and re-encoded {bytes} bytes from {path}, byte identical");
+    println!(
+        "rust: decoded and re-encoded {} bytes from {path}, byte identical",
+        input.len()
+    );
     Ok(())
 }
 

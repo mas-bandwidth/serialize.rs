@@ -94,26 +94,17 @@ impl Stream for MeasureStream<'_> {
         value: &mut String,
         buffer_size: usize,
     ) -> Result<(), Infallible> {
-        let mut length = string_length(value.len(), buffer_size);
+        let mut length = string_length(value, buffer_size);
         self.serialize_int(&mut length, 0, buffer_size as i32 - 1)?;
         self.serialize_align()?;
         self.bits_written += value.len() as u64 * 8;
         Ok(())
     }
 
+    /// The end of the object costs nothing: the unused bits of the final byte are already
+    /// inside the byte rounding every caller applies to a bit count.
     #[inline]
-    fn serialize_wide_string(
-        &mut self,
-        value: &mut String,
-        buffer_size: usize,
-    ) -> Result<(), Infallible> {
-        // the measure counts the UTF-16 code units transmitted, not the chars held: an
-        // astral char is a surrogate pair, two 32 bit groups — exactly what the write
-        // stream emits (STANDARD.md "wstring", adopted 2026-08-15)
-        let count = value.encode_utf16().count();
-        let mut length = string_length(count, buffer_size);
-        self.serialize_int(&mut length, 0, buffer_size as i32 - 1)?;
-        self.bits_written += count as u64 * 32;
+    fn serialize_end(&mut self) -> Result<(), Infallible> {
         Ok(())
     }
 

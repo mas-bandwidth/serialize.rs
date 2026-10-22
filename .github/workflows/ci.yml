@@ -29,6 +29,21 @@ jobs:
       - name: Example
         run: cargo run --release --example packet
 
+  conformance-controls:
+    # STANDARD.md, "A gate nobody has seen go red is a claim, not a measurement": for each
+    # refusal rule, a reader with that one rule deleted must fail EXACTLY the vectors
+    # conformance-controls/<rule>.expected names. --cfg serialize_controls builds the switch
+    # (src/control.rs); every other build compiles it to a constant false
+    name: conformance controls
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Every negative control fails exactly its .expected vectors
+        run: cargo test --test conformance -- --nocapture
+        env:
+          RUSTFLAGS: --cfg serialize_controls
+
   lint:
     name: lint
     runs-on: ubuntu-latest
@@ -121,12 +136,15 @@ jobs:
           # contraction), which the between-quanta values discriminate;
           # v1.11.0 is the first release carrying
           # serialize_compressed_float_precomputed, which golden.cpp drives;
-          # and v1.12.0 is the first release carrying the normative integer
+          # v1.12.0 is the first release carrying the normative integer
           # clamp (STANDARD.md, schema#109), which the harness's two clamp
           # witnesses make load-bearing -- against an older header those rows
-          # go red, the cross-language proof serialize#94 found missing.
+          # go red, the cross-language proof serialize#94 found missing;
+          # and v2.0.0 is the first release carrying format 2.0, whose golden
+          # message ends with serialize_end and drops wstring, which the
+          # harness's two-packet file and its ends depend on.
           repository: mas-bandwidth/serialize
-          ref: v1.16.2
+          ref: v2.0.0
           path: cpp-serialize
       - uses: dtolnay/rust-toolchain@stable
       # no -DNDEBUG on purpose: serialize_assert stays live, so the degenerate
@@ -220,14 +238,16 @@ jobs:
           fi
 
   spec-sync:
-    name: STANDARD.md and conformance/ match upstream
+    name: STANDARD.md and the corpus match upstream
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v7
 
-      # STANDARD.md and conformance/ here are VERBATIM VENDORED COPIES of the
-      # wire-format specification and the shared conformance corpus that live in
-      # mas-bandwidth/serialize. This job fails if either has diverged.
+      # STANDARD.md, IMPLEMENTING.md, conformance/ and conformance-controls/ here
+      # are VERBATIM VENDORED COPIES of the wire-format specification, the
+      # implementation practice it links, the shared conformance corpus and its
+      # negative controls, which live in mas-bandwidth/serialize. This job fails
+      # if any has diverged. tools/revendor.sh <tag> copies them across.
       #
       # Why vendor rather than link: an implementer wants the normative text and
       # the vectors that test it beside the implementation, at the revision they
@@ -252,12 +272,20 @@ jobs:
             echo "::error::STANDARD.md has diverged from mas-bandwidth/serialize"
             status=1
           fi
+          if ! diff -u /tmp/upstream/IMPLEMENTING.md IMPLEMENTING.md; then
+            echo "::error::IMPLEMENTING.md has diverged from mas-bandwidth/serialize"
+            status=1
+          fi
           if ! diff -ru /tmp/upstream/conformance conformance; then
             echo "::error::conformance/ has diverged from mas-bandwidth/serialize"
             status=1
           fi
+          if ! diff -ru /tmp/upstream/conformance-controls conformance-controls; then
+            echo "::error::conformance-controls/ has diverged from mas-bandwidth/serialize"
+            status=1
+          fi
           test "$status" -eq 0
-          echo "STANDARD.md and conformance/ match upstream"
+          echo "STANDARD.md, IMPLEMENTING.md, conformance/ and conformance-controls/ match upstream"
 
   # Version agreement inside the repository cannot see the failure that matters here: a
   # release tagged and never published. crates.io is where consumers get this crate, so the

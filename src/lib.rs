@@ -46,6 +46,7 @@
 //! let mut read_packet = Packet::default();
 //! let mut stream = ReadStream::new(&buffer, bytes_written);
 //! read_packet.serialize(&mut stream)?;                 // reads are checked, ? aborts
+//! stream.serialize_end()?;                             // the packet ends exactly here
 //! assert_eq!(read_packet.position, -20);
 //! # Ok::<(), serialize::Error>(())
 //! ```
@@ -64,14 +65,21 @@
 //! operator aborts the entire serialize function on the first error, so a truncated or
 //! hostile packet can never drive a loop with unvalidated data.
 //!
+//! **A packet reader reads the end.** STANDARD.md requires a reader of a packet to call
+//! [`Stream::serialize_end`] after the last field of the packet's top-level object: it
+//! refuses a whole byte left after the object ([`Error::TrailingData`]) and a set bit in the
+//! final byte's padding ([`Error::NonzeroPadding`]), so one value has exactly one byte
+//! sequence. Without it, trailing bytes and padding go unexamined. Hand the reader exactly
+//! the byte count the writer reported.
+//!
 //! Two of STANDARD.md's Reader Obligations shape the read API, and hold in every build.
 //! **A refused read leaves its scalar destination unwritten**, so a caller that trusts the
 //! destination over the return code never proceeds on a value the stream did not carry; the
-//! three operations that fill a caller-owned buffer ([`Stream::serialize_bytes`],
-//! [`Stream::serialize_string`] and [`Stream::serialize_wide_string`]) leave that buffer's
-//! contents unspecified instead. **Failure is terminal**: the first refused read latches the
+//! two operations that fill a caller-owned buffer ([`Stream::serialize_bytes`] and
+//! [`Stream::serialize_string`]) leave that buffer's contents unspecified instead. **Failure is terminal**: the first refused read latches the
 //! [`ReadStream`], every later read on it fails, consumes no bits and writes no destination,
-//! and [`ReadStream::failure`] reports what stopped it. Custom serialize functions reject a
+//! and [`ReadStream::failure`] reports the first refusal's reason ([`enum@Error`], one of
+//! the eight in STANDARD.md's closed list). Custom serialize functions reject a
 //! decoded value with [`Stream::refuse`], which latches — [`Stream::fail`] is the error
 //! constructor it is built from and does not.
 //!
@@ -97,6 +105,7 @@
 //! A buffer with no slack works too — loads near the end fall back to a guarded copy.
 
 mod bitpacker;
+mod control;
 mod measure_stream;
 mod read_stream;
 mod stream;
@@ -108,39 +117,90 @@ pub use read_stream::ReadStream;
 pub use stream::{
     CompressedFloatParams, FixedPointStorage, Serialize, Stream, serialize_compressed_float_params,
 };
+
+#[cfg(serialize_controls)]
+#[doc(hidden)]
+pub use control::{Control, set_control};
 pub use write_stream::WriteStream;
 
-/// The error type for stream reads that fail.
+/// Why a read was refused: the closed list of refusal reasons in STANDARD.md, "Refusal
+/// reasons" (format 2.0).
 ///
-/// Reads fail cleanly on malicious or truncated data. Writes and measures never error — their
-/// error type is [`core::convert::Infallible`], and write-side misuse (including a string
-/// longer than its `buffer_size`) is a debug assertion instead. All variants abort the
-/// enclosing serialize function via the `?` operator.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[non_exhaustive]
+/// Reads fail cleanly on malicious or truncated data, and every refusal names the rule that
+/// refused it. [`Error::name`] spells each reason exactly as STANDARD.md and the conformance
+/// corpus do, and [`ReadStream::failure`] reports the FIRST refusal's reason: the later
+/// refusals of a failed stream are its echoes. Writes and measures never error — their error
+/// type is [`core::convert::Infallible`], and write-side misuse (including a string longer
+/// than its `buffer_size`) is a debug assertion instead. Every reason aborts the enclosing
+/// serialize function via the `?` operator.
+///
+/// The list is closed: these eight reasons are the format's, and there are no others.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Error {
-    /// The read would pass the end of the buffer.
-    Overflow,
-    /// The decoded value failed validation, for example an integer above the maximum of its
-    /// range smuggled into the bit headroom of the encoding.
+    /// `past_end`: the read needs more bits than the stream holds.
+    PastEnd,
+    /// `value_out_of_range`: a decoded value outside its declared range or domain — a ranged
+    /// offset past its span, a string length past its buffer, a compressed integer past
+    /// `max_integer_value`, or an `int_relative` outside its domain or not increasing.
     ValueOutOfRange,
-    /// The zero padding of an alignment contained nonzero bits.
-    Align,
-    /// A malformed string payload, refused per STANDARD.md's read refusal rules (adopted
-    /// 2026-08-15): string bytes that are not valid UTF-8 or contain an interior NUL, or a
-    /// wide string whose 32 bit groups are not well-formed UTF-16 code units — a group
-    /// above 0xFFFF, an interior NUL group, or an unpaired/misordered surrogate.
-    InvalidString,
+    /// `nonzero_padding`: a set bit in an align's padding, or in the unused bits of the final
+    /// byte at the end.
+    NonzeroPadding,
+    /// `trailing_data`: a whole byte or more after the end of the object.
+    TrailingData,
+    /// `non_finite_float`: a `float` or `double` that is NaN or an infinity, or a compressed
+    /// float decode that is not finite.
+    NonFiniteFloat,
+    /// `invalid_utf8`: a string payload that is not well-formed UTF-8.
+    InvalidUtf8,
+    /// `embedded_nul`: a zero byte among a string's transmitted bytes.
+    EmbeddedNul,
+    /// `non_canonical`: an encoding a conforming writer never produces for the value it
+    /// carries — the `int_relative` absolute tier carrying a difference a bounded tier takes.
+    NonCanonical,
 }
 
+impl Error {
+    /// Every refusal reason, in STANDARD.md's order.
+    pub const ALL: [Error; 8] = [
+        Error::PastEnd,
+        Error::ValueOutOfRange,
+        Error::NonzeroPadding,
+        Error::TrailingData,
+        Error::NonFiniteFloat,
+        Error::InvalidUtf8,
+        Error::EmbeddedNul,
+        Error::NonCanonical,
+    ];
+
+    /// The family wide name of the reason, spelled exactly as STANDARD.md and the
+    /// conformance corpus spell it: `past_end`, `value_out_of_range`, `nonzero_padding`,
+    /// `trailing_data`, `non_finite_float`, `invalid_utf8`, `embedded_nul`, `non_canonical`.
+    #[must_use]
+    pub const fn name(self) -> &'static str {
+        match self {
+            Error::PastEnd => "past_end",
+            Error::ValueOutOfRange => "value_out_of_range",
+            Error::NonzeroPadding => "nonzero_padding",
+            Error::TrailingData => "trailing_data",
+            Error::NonFiniteFloat => "non_finite_float",
+            Error::InvalidUtf8 => "invalid_utf8",
+            Error::EmbeddedNul => "embedded_nul",
+            Error::NonCanonical => "non_canonical",
+        }
+    }
+
+    /// The reason a family wide name spells, or `None` for a name outside the closed list.
+    #[must_use]
+    pub fn from_name(name: &str) -> Option<Error> {
+        Error::ALL.into_iter().find(|reason| reason.name() == name)
+    }
+}
+
+/// Displays the family wide name, [`Error::name`].
 impl core::fmt::Display for Error {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        match self {
-            Error::Overflow => write!(f, "read past the end of the buffer"),
-            Error::ValueOutOfRange => write!(f, "value out of range"),
-            Error::Align => write!(f, "nonzero bits in alignment padding"),
-            Error::InvalidString => write!(f, "invalid string data"),
-        }
+        f.write_str(self.name())
     }
 }
 

@@ -203,7 +203,6 @@ struct TestData {
     int64_range: i64,
     bytes: [u8; 17],
     string: String,
-    wstring: String,
 }
 
 #[derive(Default, Clone, PartialEq, Debug)]
@@ -236,7 +235,6 @@ impl TestObject {
             int64_full: -123456789012345,
             int64_range: 4123456789,
             string: "hello world!".to_string(),
-            wstring: "привіт, світ!".to_string(),
             ..TestData::default()
         };
         for i in 0..data.num_items as usize {
@@ -304,7 +302,6 @@ impl Serialize for TestObject {
         stream.serialize_bytes(&mut self.data.bytes)?;
 
         stream.serialize_string(&mut self.data.string, 256)?;
-        stream.serialize_wide_string(&mut self.data.wstring, 256)?;
 
         Ok(())
     }
@@ -412,10 +409,6 @@ fn read_function<'a>(read_stream: &mut ReadStream<'a>, context: &'a TestContext)
     read_stream.serialize_string(&mut string, 10)?;
     assert_eq!(string, "hello");
 
-    let mut wstring = String::new();
-    read_stream.serialize_wide_string(&mut wstring, 20)?;
-    assert_eq!(wstring, "привіт");
-
     read_stream.serialize_align()?;
 
     read_stream.set_context(context);
@@ -463,10 +456,6 @@ fn test_read_write() {
 
         write_stream
             .serialize_string(&mut "hello".to_string(), 10)
-            .unwrap();
-
-        write_stream
-            .serialize_wide_string(&mut "привіт".to_string(), 20)
             .unwrap();
 
         write_stream.serialize_align().unwrap();
@@ -662,7 +651,7 @@ fn test_serialize_int64_validation() {
         let mut value = 0i64;
         assert_eq!(
             read_stream.serialize_int64(&mut value, i64::MIN, i64::MAX),
-            Err(Error::Overflow)
+            Err(Error::PastEnd)
         );
     }
 }
@@ -675,13 +664,13 @@ fn test_serialize_bytes_validation() {
     {
         let mut read_stream = ReadStream::new(&buffer, 16);
         let mut data = [0u8; 17];
-        assert_eq!(read_stream.serialize_bytes(&mut data), Err(Error::Overflow));
+        assert_eq!(read_stream.serialize_bytes(&mut data), Err(Error::PastEnd));
     }
 
     {
         let mut read_stream = ReadStream::new(&buffer, 16);
         let mut data = vec![0u8; 1 << 20];
-        assert_eq!(read_stream.serialize_bytes(&mut data), Err(Error::Overflow));
+        assert_eq!(read_stream.serialize_bytes(&mut data), Err(Error::PastEnd));
     }
 }
 
@@ -1085,220 +1074,14 @@ fn test_write_too_long_string_asserts_in_debug() {
 
 #[test]
 #[cfg(debug_assertions)]
-#[should_panic(expected = "does not fit buffer_size")]
-fn test_write_too_many_wide_units_asserts_in_debug() {
-    // buffer_size bounds the length in UTF-16 CODE UNITS, not chars: four astral chars
-    // are eight units, which do not fit a buffer_size of 8 (the terminator needs one).
-    // Under the old code-point model this string measured four groups and passed.
+#[should_panic(expected = "NUL byte")]
+fn test_write_string_with_nul_asserts_in_debug() {
+    // STANDARD.md, "string": a writer is handed well-formed UTF-8 with no zero byte, as it is
+    // handed an int in its range. A Rust String holds well-formed UTF-8 by construction, so
+    // the NUL is the half of the contract the writer asserts on
     let mut buffer = [0u8; 64];
     let mut write_stream = WriteStream::new(&mut buffer);
-    let Ok(()) = write_stream
-        .serialize_wide_string(&mut "\u{1F600}\u{1F601}\u{1F602}\u{1F603}".to_string(), 8);
-}
-
-// ------------------------------------------------------------------------------------------
-// wstring transmits UTF-16 CODE UNITS (STANDARD.md "wstring", adopted 2026-08-15): an astral
-// code point is a surrogate pair on the wire, and readers refuse malformed payloads in every
-// build mode (the serialize #8 ruling). The tests below mirror the C++ suite's
-// test_wstring_utf16_code_units / test_wstring_read_validation and serialize.c's vectors.
-// ------------------------------------------------------------------------------------------
-
-/// Doctor a wide-string wire image through the primitives: the length as
-/// `serialize_int(length, 0, 7)` (a `buffer_size` of 8), then each group as raw 32 bits.
-/// The public writer's contract makes most of these byte sequences impossible to produce —
-/// which is exactly why the read refusals need doctored streams to be testable.
-fn doctor_wide_stream(units: &[u32], buffer: &mut [u8; 24]) -> usize {
-    let mut stream = WriteStream::new(buffer);
-    let mut length = units.len() as i32;
-    stream.serialize_int(&mut length, 0, 7).unwrap();
-    for &unit in units {
-        let mut group = unit;
-        stream.serialize_bits(&mut group, 32).unwrap();
-    }
-    stream.flush();
-    stream.bytes_processed() as usize
-}
-
-#[test]
-fn test_wstring_utf16_code_units() {
-    // A FAMILY CONFORMANCE PIN: "a" + U+1F600 in an 8-unit buffer is exactly these
-    // 13 bytes — a 3-bit length of 3 (UNITS: 0x0061, then the surrogate pair 0xD83D
-    // 0xDE00), then three unaligned 32-bit groups. Byte-for-byte the literal serialize.cs
-    // pins (tests/Tests.cs) and the group sequence serialize.go decodes for the same
-    // string. The C++ library and serialize.c exercise the OTHER family vector — emoji
-    // first, then U+0041 — pinned as exact bytes in test_wstring_family_vector_emoji_first
-    // below. Never regenerate these.
-    //
-    // Before the code-unit model this pin was doubly unreachable: the writer emitted
-    // CODE POINTS (a length of 2, groups 0x0061 and 0x1F600), and the reader refused
-    // these very bytes at its char::from_u32 check (0xD83D is not a char) — so a valid
-    // astral wstring from a conforming port could never be read at all.
-    #[rustfmt::skip]
-    const ASTRAL_WIRE_BYTES: [u8; 13] = [
-        0x0B, 0x03, 0x00, 0x00, 0xE8, 0xC1, 0x06, 0x00,
-        0x00, 0xF0, 0x06, 0x00, 0x00,
-    ];
-    const BUFFER_SIZE: usize = 8;
-    let astral = "a\u{1F600}";
-
-    // write side: the writer must emit exactly the conforming bytes
-    let bits_written;
-    {
-        let mut buffer = [0u8; 64];
-        let mut stream = WriteStream::new(&mut buffer);
-        let mut value = astral.to_string();
-        stream
-            .serialize_wide_string(&mut value, BUFFER_SIZE)
-            .unwrap();
-        stream.flush();
-        assert_eq!(stream.bytes_processed() as usize, ASTRAL_WIRE_BYTES.len());
-        bits_written = stream.bits_processed();
-        assert_eq!(buffer[..ASTRAL_WIRE_BYTES.len()], ASTRAL_WIRE_BYTES);
-    }
-
-    // the measure counts the units transmitted, not the chars held: 3 + 3 * 32 = 99
-    {
-        let mut measure_stream = MeasureStream::new();
-        let mut value = astral.to_string();
-        measure_stream
-            .serialize_wide_string(&mut value, BUFFER_SIZE)
-            .unwrap();
-        assert_eq!(measure_stream.bits_processed(), 99);
-        assert_eq!(measure_stream.bits_processed(), bits_written);
-    }
-
-    // read side: the conforming bytes (as any family port would send them) must decode —
-    // the pair recombines into the astral char
-    {
-        let mut buffer = [0u8; 13 + 8]; // + 8: keep reads on the branchless fast path
-        buffer[..13].copy_from_slice(&ASTRAL_WIRE_BYTES);
-        let mut stream = ReadStream::new(&buffer, ASTRAL_WIRE_BYTES.len());
-        let mut value = String::new();
-        stream
-            .serialize_wide_string(&mut value, BUFFER_SIZE)
-            .unwrap();
-        assert_eq!(value, astral);
-    }
-}
-
-#[test]
-fn test_wstring_family_vector_emoji_first() {
-    // THE NORMATIVE-CONTENT PIN, as exact bytes: U+1F600 then U+0041 is the content the
-    // C++ suite (test_wstring_utf16_code_units) and serialize.c (test/roundtrip.c) both
-    // exercise — but each derives its expected bytes through its own primitives, so no
-    // family test pinned that content as a literal. This one does, closing the
-    // exact-vector cross-compare gap: a 3-bit length of 3, then the unaligned 32-bit
-    // groups 0xD83D 0xDE00 0x0041 land as exactly these 13 bytes (99 bits). Derived by
-    // hand from the wire rules and confirmed against the C++ library's own output,
-    // 2026-08-16. Never regenerate these.
-    #[rustfmt::skip]
-    const EMOJI_FIRST_WIRE_BYTES: [u8; 13] = [
-        0xEB, 0xC1, 0x06, 0x00, 0x00, 0xF0, 0x06, 0x00,
-        0x08, 0x02, 0x00, 0x00, 0x00,
-    ];
-    const BUFFER_SIZE: usize = 8;
-    let emoji_first = "\u{1F600}A";
-
-    // write side: the writer must emit exactly the bytes the C++ library emits
-    let bits_written;
-    {
-        let mut buffer = [0u8; 64];
-        let mut stream = WriteStream::new(&mut buffer);
-        let mut value = emoji_first.to_string();
-        stream
-            .serialize_wide_string(&mut value, BUFFER_SIZE)
-            .unwrap();
-        stream.flush();
-        assert_eq!(
-            stream.bytes_processed() as usize,
-            EMOJI_FIRST_WIRE_BYTES.len()
-        );
-        bits_written = stream.bits_processed();
-        assert_eq!(
-            buffer[..EMOJI_FIRST_WIRE_BYTES.len()],
-            EMOJI_FIRST_WIRE_BYTES
-        );
-    }
-
-    // the measure agrees: 3 + 3 * 32 = 99 bits
-    {
-        let mut measure_stream = MeasureStream::new();
-        let mut value = emoji_first.to_string();
-        measure_stream
-            .serialize_wide_string(&mut value, BUFFER_SIZE)
-            .unwrap();
-        assert_eq!(measure_stream.bits_processed(), 99);
-        assert_eq!(measure_stream.bits_processed(), bits_written);
-    }
-
-    // read side: the canonical bytes decode back, the pair recombining ahead of the BMP unit
-    {
-        let mut buffer = [0u8; 13 + 8]; // + 8: keep reads on the branchless fast path
-        buffer[..13].copy_from_slice(&EMOJI_FIRST_WIRE_BYTES);
-        let mut stream = ReadStream::new(&buffer, EMOJI_FIRST_WIRE_BYTES.len());
-        let mut value = String::new();
-        stream
-            .serialize_wide_string(&mut value, BUFFER_SIZE)
-            .unwrap();
-        assert_eq!(value, emoji_first);
-    }
-}
-
-#[test]
-fn test_wstring_read_refusals() {
-    // STANDARD.md "Readers must refuse malformed wstring payloads" (the #8 ruling,
-    // adopted 2026-08-15): a group above 0xFFFF is not a UTF-16 code unit, an unpaired
-    // or misordered surrogate is refused, and so is an interior NUL group (the
-    // two-lengths smuggling primitive: wire length 3, the wcslen a consumer computes 1).
-    // Every stream is doctored — no conforming writer can produce these bytes — and each
-    // refusal class is fenced below by an accepted neighbor as close to the boundary as
-    // the format allows.
-    let refused: &[&[u32]] = &[
-        &[0x10000],                // the OLD code-point model's astral group (was accepted)
-        &[0x10FFFF],               // the old model's ceiling (was accepted)
-        &[0x110000],               // above the ceiling: never a char in any model
-        &[0xFFFFFFFF],             // maximal garbage
-        &[0xD83D],                 // high surrogate dangling as the final group
-        &[0xD83D, 0x0041],         // high surrogate followed by a non-low
-        &[0xD83D, 0xD83D],         // high surrogate followed by another high
-        &[0xDE00],                 // lone low surrogate
-        &[0x0041, 0xDE00],         // low surrogate with no high before it
-        &[0xD83D, 0xDE00, 0xD83D], // valid pair, then the payload ends inside a pair
-        &[0x0041, 0x0000, 0x0042], // interior NUL group
-    ];
-    for units in refused {
-        let mut buffer = [0u8; 24];
-        let bytes = doctor_wide_stream(units, &mut buffer);
-        let mut stream = ReadStream::new(&buffer, bytes);
-        let mut value = String::new();
-        assert_eq!(
-            stream.serialize_wide_string(&mut value, 8),
-            Err(Error::InvalidString),
-            "units {units:X?} must be refused"
-        );
-    }
-
-    // the accepted fence: the boundary units hugging every refusal — 0xD7FF and 0xE000
-    // around the surrogate block, 0xFFFF the last code unit, then a correctly ordered
-    // pair — must be accepted, the pair recombined into its char
-    {
-        let mut buffer = [0u8; 24];
-        let bytes = doctor_wide_stream(&[0xD7FF, 0xE000, 0xFFFF, 0xD83D, 0xDE00], &mut buffer);
-        let mut stream = ReadStream::new(&buffer, bytes);
-        let mut value = String::new();
-        stream.serialize_wide_string(&mut value, 8).unwrap();
-        assert_eq!(value, "\u{D7FF}\u{E000}\u{FFFF}\u{1F600}");
-    }
-
-    // the NUL fence: the same three groups with the zero replaced are accepted
-    {
-        let mut buffer = [0u8; 24];
-        let bytes = doctor_wide_stream(&[0x0041, 0x0020, 0x0042], &mut buffer);
-        let mut stream = ReadStream::new(&buffer, bytes);
-        let mut value = String::new();
-        stream.serialize_wide_string(&mut value, 8).unwrap();
-        assert_eq!(value, "A B");
-    }
+    let Ok(()) = write_stream.serialize_string(&mut "a\0b".to_string(), 8);
 }
 
 #[test]
@@ -1320,23 +1103,29 @@ fn test_string_read_refusals() {
         stream.bytes_processed() as usize
     }
 
-    let refused: &[&[u8]] = &[
-        &[0x41, 0x00, 0x42], // interior NUL: valid UTF-8, refused by its own rule
-        &[0xFF, 0xFE, 0xFF], // 0xFF can never appear in well-formed UTF-8
-        &[0xC0, 0xAF],       // overlong '/': the classic filter bypass
-        &[0xED, 0xA0, 0x80], // U+D800: surrogate as UTF-8
-        &[0x61, 0xE2],       // sequence truncated by the length
+    let refused: &[(&[u8], Error)] = &[
+        (&[0x41, 0x00, 0x42], Error::EmbeddedNul), // interior NUL: valid UTF-8, its own rule
+        (&[0xFF, 0xFE, 0xFF], Error::InvalidUtf8), // 0xFF never appears in well-formed UTF-8
+        (&[0xC0, 0xAF], Error::InvalidUtf8),       // overlong '/': the classic filter bypass
+        (&[0xED, 0xA0, 0x80], Error::InvalidUtf8), // U+D800: surrogate as UTF-8
+        (&[0x61, 0xE2], Error::InvalidUtf8),       // sequence truncated by the length
+        // both rules broken: the NUL scan runs over the whole payload BEFORE the encoding is
+        // checked (format 2.0), so this is embedded_nul. The reversed witness for the order
+        // this reader had in 1.x, UTF-8 first, which reported invalid_utf8 here
+        (&[0xFF, 0x00], Error::EmbeddedNul),
+        (&[0x00, 0xFF], Error::EmbeddedNul),
     ];
-    for payload in refused {
+    for &(payload, reason) in refused {
         let mut buffer = [0u8; 32];
         let bytes = doctor_narrow_stream(payload, &mut buffer);
         let mut stream = ReadStream::new(&buffer, bytes);
         let mut value = String::new();
         assert_eq!(
             stream.serialize_string(&mut value, 32),
-            Err(Error::InvalidString),
-            "payload {payload:X?} must be refused"
+            Err(reason),
+            "payload {payload:X?} must be refused as {reason}"
         );
+        assert_eq!(stream.failure(), Some(reason));
     }
 
     // the NUL fence: the same bytes with the zero replaced are accepted
@@ -1785,7 +1574,7 @@ fn test_serialize_fixed_validation() {
         let mut value = 0i64;
         assert_eq!(
             read_stream.serialize_fixed(&mut value, 48, 16, -100000000000, 100000000000),
-            Err(Error::Overflow)
+            Err(Error::PastEnd)
         );
     }
 }
@@ -2001,7 +1790,7 @@ fn test_serialize_fixed_wide() {
                 -1152921504606846976,
                 1152921504606846976
             ),
-            Err(Error::Overflow)
+            Err(Error::PastEnd)
         );
     }
 }
@@ -2287,7 +2076,7 @@ fn test_serialize_int128() {
         let mut read_back = 0i128;
         assert_eq!(
             read_stream.serialize_int128(&mut read_back, i128::MIN, i128::MAX),
-            Err(Error::Overflow)
+            Err(Error::PastEnd)
         );
     }
 
@@ -3066,7 +2855,9 @@ fn test_compressed_float_precomputed_differential() {
 // Golden wire format test. The exact bytes produced by the serializer are pinned down here and
 // must never change. If this test fails, the wire format has changed and data written by the
 // C++ library (or the Go port, or previous versions of this crate) no longer decodes: a
-// breaking change. The bytes are copied verbatim from the C++ test suite.
+// breaking change. The bytes are STANDARD.md's "The whole message" (format 2.0), the 106
+// bytes the C++ suite pins: twenty-nine operations ending in the end, with a string of CJK
+// text where format 1.1 carried the removed wstring.
 
 #[derive(Default, Clone, PartialEq, Debug)]
 struct GoldenWireData {
@@ -3088,7 +2879,7 @@ struct GoldenWireData {
     relative_far: i32,
     bytes: [u8; 7],
     string: String,
-    wstring: String,
+    text: String,
     fixed_q8_8: i16,
     fixed_q16_16: i32,
     fixed_q48_16: i64,
@@ -3121,8 +2912,8 @@ fn golden_wire_init() -> GoldenWireData {
         bytes: [0xDE, 0xAD, 0xBE, 0xEF, 0xCA, 0xFE, 0x01],
         string: "golden".to_string(),
         // built from explicit code points so the source file encoding can never change the
-        // golden bytes: cyrillic, BMP only
-        wstring: "\u{043C}\u{0438}\u{0440}".to_string(),
+        // golden bytes: U+7881 U+77F3, go stones, E7 A2 81 E7 9F B3 on the wire
+        text: "\u{7881}\u{77F3}".to_string(),
         fixed_q8_8: -(3 * 256 + 64),                  // -3.25 in Q8.8
         fixed_q16_16: 1234 * 65536 + 32768,           // 1234.5 in Q16.16
         fixed_q48_16: -(54321i64 * 65536 + 12345),    // -54321.1883... in Q48.16
@@ -3158,7 +2949,7 @@ fn golden_wire_serialize<S: Stream>(
     stream.serialize_align()?;
     stream.serialize_bytes(&mut data.bytes)?;
     stream.serialize_string(&mut data.string, 16)?;
-    stream.serialize_wide_string(&mut data.wstring, 8)?;
+    stream.serialize_string(&mut data.text, 8)?;
     // the fixed point section starts byte aligned, so every byte pinned above it stays put
     stream.serialize_align()?;
     stream.serialize_fixed(&mut data.fixed_q8_8, 8, 8, -100, 100)?;
@@ -3177,24 +2968,24 @@ fn golden_wire_serialize<S: Stream>(
     )?;
     // full unit range: 128 bits, the four group structure
     stream.serialize_fixed(&mut data.fixed_q64_64_wide, 64, 64, i64::MIN, i64::MAX)?;
+    // the end: a packet reader reads it, refusing trailing bytes and set padding
+    stream.serialize_end()?;
     Ok(())
 }
 
-// bytes 0..72 are the original golden vector; the fixed point tail (72..112) was derived
-// from STANDARD.md's stated rules independently of both implementations, and matches the
-// C++ suite's golden_wire_bytes verbatim
+// STANDARD.md, "The whole message": the last field ends at bit 843, so the final byte carries
+// three bits of message and five bits of zero padding, which the reader's end consumes
 #[rustfmt::skip]
-const GOLDEN_WIRE_BYTES: [u8; 112] = [
+const GOLDEN_WIRE_BYTES: [u8; 106] = [
     0x5D, 0xDA, 0xF7, 0xE6, 0xD5, 0x77, 0xDF, 0x56, 0xEF, 0x9F, 0x75, 0x19,
     0x52, 0xBC, 0xDA, 0x0F, 0x49, 0x40, 0xF4, 0x55, 0x55, 0x55, 0x55, 0x55,
     0x55, 0x55, 0xFF, 0xFC, 0xD1, 0x48, 0xE0, 0x59, 0xD1, 0x48, 0xC0, 0x7B,
     0xF3, 0x6A, 0xE2, 0x59, 0xD1, 0x48, 0x84, 0xB7, 0x06, 0xDE, 0xAD, 0xBE,
-    0xEF, 0xCA, 0xFE, 0x01, 0x06, 0x67, 0x6F, 0x6C, 0x64, 0x65, 0x6E, 0xE3,
-    0x21, 0x00, 0x00, 0xC0, 0x21, 0x00, 0x00, 0x00, 0x22, 0x00, 0x00, 0x00,
-    0xC0, 0x60, 0x00, 0x80, 0xA2, 0x7C, 0xFC, 0xEC, 0x26, 0xCB, 0xFF, 0xFF,
-    0x4B, 0x1D, 0x1F, 0xEF, 0xD2, 0x1A, 0x1F, 0x01, 0xE9, 0xFF, 0xFF, 0x09,
-    0x19, 0x2A, 0x3B, 0x4C, 0x5D, 0x6E, 0x7F, 0x78, 0x6F, 0x5E, 0x4D, 0x3C,
-    0x2B, 0x1A, 0x09, 0x04,
+    0xEF, 0xCA, 0xFE, 0x01, 0x06, 0x67, 0x6F, 0x6C, 0x64, 0x65, 0x6E, 0x06,
+    0xE7, 0xA2, 0x81, 0xE7, 0x9F, 0xB3, 0xC0, 0x60, 0x00, 0x80, 0xA2, 0x7C,
+    0xFC, 0xEC, 0x26, 0xCB, 0xFF, 0xFF, 0x4B, 0x1D, 0x1F, 0xEF, 0xD2, 0x1A,
+    0x1F, 0x01, 0xE9, 0xFF, 0xFF, 0x09, 0x19, 0x2A, 0x3B, 0x4C, 0x5D, 0x6E,
+    0x7F, 0x78, 0x6F, 0x5E, 0x4D, 0x3C, 0x2B, 0x1A, 0x09, 0x04,
 ];
 
 #[test]
@@ -3218,6 +3009,11 @@ fn test_golden_wire_format() {
         let mut stream = ReadStream::new(&buffer, GOLDEN_WIRE_BYTES.len());
         let mut data = GoldenWireData::default();
         golden_wire_serialize(&mut stream, &mut data).unwrap();
+        assert_eq!(
+            stream.bits_processed(),
+            848,
+            "the end consumed the final padding"
+        );
 
         let expected = golden_wire_init();
         assert_eq!(data.bits4, expected.bits4);
@@ -3238,7 +3034,7 @@ fn test_golden_wire_format() {
         assert_eq!(data.relative_far, expected.relative_far);
         assert_eq!(data.bytes, expected.bytes);
         assert_eq!(data.string, expected.string);
-        assert_eq!(data.wstring, expected.wstring);
+        assert_eq!(data.text, expected.text);
         assert_eq!(data.fixed_q8_8, expected.fixed_q8_8);
         assert_eq!(data.fixed_q16_16, expected.fixed_q16_16);
         assert_eq!(data.fixed_q48_16, expected.fixed_q48_16);

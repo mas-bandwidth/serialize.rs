@@ -13,8 +13,11 @@
     that ship inside serialize.h behind SERIALIZE_ENABLE_TESTS, so this harness always tests
     exactly what the C++ library defines the wire format to be.
 
-    After the golden section the stream carries an EXTENDED sequence defined by this harness
-    (mirrored in examples/wire_interop.rs), covering what GoldenWireData does not:
+    The file carries two packets back to back. The first is the golden message, which in
+    format 2.0 ends with serialize_end, so it is exactly golden_wire_bytes and nothing else:
+    a reader's end refuses any byte after it. The second is an EXTENDED packet defined by
+    this harness (mirrored in examples/wire_interop.rs), read by its own stream and ended by
+    its own end, covering what GoldenWireData does not:
 
       - degenerate ranges (min == max): zero bits on the wire, 32 and 64 bit, placed in the
         MIDDLE of the sequence so the cmp proves both that they are free on the wire and that
@@ -29,8 +32,8 @@
         wrong; these values differ by one wire quantum under each variant, so a widened or
         contracted build fails the cmp instead of passing silently.
 
-    The extended section starts with serialize_align, so the golden prefix stays pinned byte
-    for byte and the write half still verifies it against golden_wire_bytes.
+    The write half verifies the golden packet against golden_wire_bytes byte for byte, and
+    the read half splits the file at sizeof( golden_wire_bytes ).
 */
 
 #define SERIALIZE_ENABLE_TESTS 1
@@ -68,7 +71,7 @@ static void ExtendedInteropInit(ExtendedInteropData &data)
 
 template <typename Stream> bool ExtendedInteropSerialize(Stream &stream, ExtendedInteropData &data)
 {
-    serialize_align(stream); // the extended section starts byte aligned: the golden prefix stays pinned
+    serialize_align(stream); // a no-op at the start of its own packet, kept so the bytes stay put
     serialize_bits(stream, data.marker, 11);
     serialize_compressed_float(stream, data.cf_low, 0.0f, 10.0f, 0.01f);
     serialize_int(stream, data.degenerate32, 42, 42); // zero bits, mid-sequence
@@ -89,6 +92,7 @@ template <typename Stream> bool ExtendedInteropSerialize(Stream &stream, Extende
     serialize_compressed_float(stream, data.clampRejectWitness, 0.0f, 8388609.0f, 1.0f);
     serialize_compressed_float(stream, data.clampWideWitness, 0.0f, 16777215.0f, 1.0f);
     serialize_int(stream, data.post, -100, +100);
+    serialize_end(stream); // the packet ends here, and so must the stream
     return true;
 }
 
@@ -114,10 +118,9 @@ static bool ExtendedInteropCheck(const ExtendedInteropData &data)
 
 static int write_file(const char *path)
 {
-    uint8_t buffer[256];
-    memset(buffer, 0, sizeof(buffer));
-
-    serialize::WriteStream stream(buffer, (int64_t)sizeof(buffer));
+    uint8_t golden[256];
+    memset(golden, 0, sizeof(golden));
+    serialize::WriteStream stream(golden, (int64_t)sizeof(golden));
     GoldenWireData data;
     GoldenWireInit(data);
     if (!GoldenWireSerialize(stream, data))
@@ -125,40 +128,45 @@ static int write_file(const char *path)
         fprintf(stderr, "error: golden serialize (write) failed\n");
         return 1;
     }
+    stream.Flush();
+    const int64_t golden_bytes = stream.GetBytesProcessed();
+    if (golden_bytes != (int64_t)sizeof(golden_wire_bytes) ||
+        memcmp(golden, golden_wire_bytes, sizeof(golden_wire_bytes)) != 0)
+    {
+        fprintf(stderr, "error: C++ golden packet is not the pinned golden bytes\n");
+        return 1;
+    }
+
+    uint8_t extended_buffer[256];
+    memset(extended_buffer, 0, sizeof(extended_buffer));
+    serialize::WriteStream extended_stream(extended_buffer, (int64_t)sizeof(extended_buffer));
     ExtendedInteropData extended;
     ExtendedInteropInit(extended);
-    if (!ExtendedInteropSerialize(stream, extended))
+    if (!ExtendedInteropSerialize(extended_stream, extended))
     {
         fprintf(stderr, "error: extended serialize (write) failed\n");
         return 1;
     }
-    stream.Flush();
-
-    const int64_t bytes = stream.GetBytesProcessed();
-    if (bytes <= (int64_t)sizeof(golden_wire_bytes) ||
-        memcmp(buffer, golden_wire_bytes, sizeof(golden_wire_bytes)) != 0)
-    {
-        fprintf(stderr, "error: C++ output does not start with the pinned golden bytes\n");
-        return 1;
-    }
+    extended_stream.Flush();
+    const int64_t extended_bytes = extended_stream.GetBytesProcessed();
 
     FILE *file = fopen(path, "wb");
-    if (!file || fwrite(buffer, 1, (size_t)bytes, file) != (size_t)bytes)
+    if (!file || fwrite(golden, 1, (size_t)golden_bytes, file) != (size_t)golden_bytes ||
+        fwrite(extended_buffer, 1, (size_t)extended_bytes, file) != (size_t)extended_bytes)
     {
         fprintf(stderr, "error: could not write %s\n", path);
         return 1;
     }
     fclose(file);
 
-    printf("cpp: wrote %d golden bytes to %s\n", (int)bytes, path);
+    printf("cpp: wrote %d golden bytes and %d extended bytes to %s\n", (int)golden_bytes, (int)extended_bytes, path);
     return 0;
 }
 
 static int read_file(const char *path)
 {
-    // the read buffer extends 8 bytes past the data, per the read allocation contract
-    uint8_t buffer[256];
-    memset(buffer, 0, sizeof(buffer));
+    uint8_t input[512];
+    memset(input, 0, sizeof(input));
 
     FILE *file = fopen(path, "rb");
     if (!file)
@@ -166,27 +174,50 @@ static int read_file(const char *path)
         fprintf(stderr, "error: could not open %s\n", path);
         return 1;
     }
-    const size_t bytes = fread(buffer, 1, sizeof(buffer) - 8, file);
+    const size_t bytes = fread(input, 1, sizeof(input), file);
     fclose(file);
+    if (bytes <= sizeof(golden_wire_bytes))
+    {
+        fprintf(stderr, "error: %s holds no extended packet after the golden one\n", path);
+        return 1;
+    }
 
-    serialize::ReadStream stream(buffer, (int64_t)bytes);
+    // each packet gets its own buffer, extending 8 bytes past the data per the read
+    // allocation contract, and exactly its own bytes as the stream length: the end of each
+    // refuses anything else
+    const size_t golden_bytes = sizeof(golden_wire_bytes);
+    const size_t extended_bytes = bytes - golden_bytes;
+    uint8_t golden[256];
+    uint8_t extended_buffer[256];
+    memset(golden, 0, sizeof(golden));
+    memset(extended_buffer, 0, sizeof(extended_buffer));
+    if (extended_bytes + 8 > sizeof(extended_buffer))
+    {
+        fprintf(stderr, "error: %s is too long\n", path);
+        return 1;
+    }
+    memcpy(golden, input, golden_bytes);
+    memcpy(extended_buffer, input + golden_bytes, extended_bytes);
+
+    serialize::ReadStream stream(golden, (int64_t)golden_bytes);
     GoldenWireData data;
     memset((void *)&data, 0, sizeof(data));
     if (!GoldenWireSerialize(stream, data))
     {
-        fprintf(stderr, "error: C++ could not decode %s\n", path);
+        fprintf(stderr, "error: C++ could not decode the golden packet of %s\n", path);
         return 1;
     }
+    serialize::ReadStream extended_stream(extended_buffer, (int64_t)extended_bytes);
     ExtendedInteropData extended;
     memset((void *)&extended, 0, sizeof(extended));
-    if (!ExtendedInteropSerialize(stream, extended))
+    if (!ExtendedInteropSerialize(extended_stream, extended))
     {
-        fprintf(stderr, "error: C++ could not decode the extended section of %s\n", path);
+        fprintf(stderr, "error: C++ could not decode the extended packet of %s\n", path);
         return 1;
     }
     if (!ExtendedInteropCheck(extended))
     {
-        fprintf(stderr, "error: extended section of %s decoded to unexpected values\n", path);
+        fprintf(stderr, "error: extended packet of %s decoded to unexpected values\n", path);
         return 1;
     }
 
@@ -199,14 +230,20 @@ static int read_file(const char *path)
         fprintf(stderr, "error: golden serialize (re-encode) failed\n");
         return 1;
     }
-    if (!ExtendedInteropSerialize(out_stream, extended))
+    out_stream.Flush();
+    uint8_t out_extended[256];
+    memset(out_extended, 0, sizeof(out_extended));
+    serialize::WriteStream out_extended_stream(out_extended, (int64_t)sizeof(out_extended));
+    if (!ExtendedInteropSerialize(out_extended_stream, extended))
     {
         fprintf(stderr, "error: extended serialize (re-encode) failed\n");
         return 1;
     }
-    out_stream.Flush();
+    out_extended_stream.Flush();
 
-    if (out_stream.GetBytesProcessed() != (int64_t)bytes || memcmp(out, buffer, bytes) != 0)
+    if (out_stream.GetBytesProcessed() != (int64_t)golden_bytes || memcmp(out, golden, golden_bytes) != 0 ||
+        out_extended_stream.GetBytesProcessed() != (int64_t)extended_bytes ||
+        memcmp(out_extended, extended_buffer, extended_bytes) != 0)
     {
         fprintf(stderr, "error: re-encoded bytes differ from the input\n");
         return 1;
