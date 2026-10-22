@@ -25,10 +25,23 @@
 //! * a sequence carrying `measure_at_least` runs the measure stream over the same steps and
 //!   requires at least that many bits, a floor rather than an equality because a measure is a
 //!   bound and not the packet size;
-//! * a refused vector is refused, leaves the caller's scalar destination holding exactly what
-//!   it held before the call, and leaves the stream terminal — checked by behavior rather than
-//!   by an accessor, so every later step of the sequence refuses too, and so does a further
-//!   read the vector does not name, which must also consume no bits and write nothing.
+//! * a vector carrying `writer_input bits = 0x...` hands the writer that float32 and requires
+//!   the record's bytes exactly, on refused vectors too;
+//! * a refused vector is refused FOR ITS STATED REASON — the stream's first refusal must be
+//!   the reason the record names, from STANDARD.md's closed list, and a record with a missing
+//!   or unknown reason is malformed and fails — leaves the caller's scalar destination holding
+//!   exactly what it held before the call, and leaves the stream terminal — checked by
+//!   behavior as well as by the accessor, so every later step of the sequence refuses too, and
+//!   so does a further read the vector does not name, which must also consume no bits, write
+//!   nothing, and keep the first reason.
+//!
+//! Vector names are unique across the corpus, and a duplicate fails the run.
+//!
+//! The negative controls (STANDARD.md, "A gate nobody has seen go red is a claim, not a
+//! measurement") run here too. `conformance-controls/unknown-operation.txt`, an operation no
+//! runner has, must fail in every build. And in a build configured with
+//! `--cfg serialize_controls` (src/control.rs), each refusal rule is deleted in turn and the
+//! corpus must fail EXACTLY the vectors `conformance-controls/<rule>.expected` names.
 //!
 //! One step machine drives everything. A single operation vector is a one or two step sequence
 //! built from the record's own parameters — `preceding_bits` becomes a leading `bits` step —
@@ -48,7 +61,7 @@
 //! compares unequal to itself, `-0.0 == 0.0`, and no tolerance comparison can see a quieted
 //! signaling bit, so a hexadecimal expectation and its decimal twin are one expectation.
 
-use serialize::{MeasureStream, ReadStream, Serialize, Stream, WriteStream};
+use serialize::{Error, MeasureStream, ReadStream, Serialize, Stream, WriteStream};
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 
@@ -175,7 +188,7 @@ enum Kind {
     CompressedFloat(f32, f32, f32),
     Bytes(usize),
     Text(usize),
-    WideText(usize),
+    End,
     Fixed {
         integer_bits: u32,
         fraction_bits: u32,
@@ -207,7 +220,7 @@ impl Kind {
 
     /// The kinds with a scalar destination, which is exactly where "a refused primitive read
     /// must leave its destination unwritten" reaches. A read into a caller owned buffer —
-    /// `bytes`, `string` and `wstring` — is left unspecified after a refusal by the standard.
+    /// `bytes` and `string` — is left unspecified after a refusal by the standard.
     fn has_scalar_destination(self) -> bool {
         self.is_pattern() || matches!(self, Kind::Bool)
     }
@@ -280,12 +293,11 @@ impl Step {
         }
         match self.kind {
             Kind::Bool => self.boolean.to_string(),
-            // neither has a value of its own; for align the corpus states the padding it
-            // consumed, which a conforming read always finds zero
-            Kind::Align | Kind::Object(_) => "0".to_string(),
+            // none has a value of its own; for align and end the corpus states `0` alone, the
+            // padding a conforming read always finds zero
+            Kind::Align | Kind::End | Kind::Object(_) => "0".to_string(),
             Kind::Bytes(_) => hex_bytes(&self.buffer),
             Kind::Text(_) => hex_bytes(self.text.as_bytes()),
-            Kind::WideText(_) => hex_units(&self.text),
             _ => unreachable!("every pattern kind is handled above"),
         }
     }
@@ -307,22 +319,6 @@ fn hex_bytes(bytes: &[u8]) -> String {
             out.push(' ');
         }
         let _ = write!(out, "{byte:02X}");
-    }
-    out
-}
-
-/// Four digit uppercase UTF-16 code units separated by single spaces.
-///
-/// STANDARD.md, "wstring": each 32 bit group carries one UTF-16 code unit, and a runtime whose
-/// strings are not UTF-16 recombines surrogate pairs on read. A Rust `String` holds chars, so
-/// the pair is split again here and every platform compares the same text.
-fn hex_units(text: &str) -> String {
-    let mut out = String::new();
-    for (index, unit) in text.encode_utf16().enumerate() {
-        if index > 0 {
-            out.push(' ');
-        }
-        let _ = write!(out, "{unit:04X}");
     }
     out
 }
@@ -468,7 +464,7 @@ fn run_step<S: Stream>(stream: &mut S, step: &mut Step) -> Result<(), S::Error> 
             stream.serialize_bytes(&mut step.buffer)
         }
         Kind::Text(buffer_size) => stream.serialize_string(&mut step.text, buffer_size),
-        Kind::WideText(buffer_size) => stream.serialize_wide_string(&mut step.text, buffer_size),
+        Kind::End => stream.serialize_end(),
         Kind::Fixed {
             integer_bits,
             fraction_bits,
@@ -524,7 +520,8 @@ fn run_fixed<S: Stream>(
 
 #[derive(Debug)]
 enum Expect {
-    Refused,
+    /// `expect refused <reason>`, the reason from STANDARD.md's closed list.
+    Refused(Error),
     /// The `expect value` or `expect bits` list, one entry per step separated by ` | `.
     Entries(String),
 }
@@ -540,6 +537,8 @@ struct Vector {
     consumed: Option<u64>,
     measure_at_least: Option<u64>,
     writer_canonical: bool,
+    /// `writer_input bits = 0x...`: a float32 pattern the writer is handed.
+    writer_input: Option<u32>,
 }
 
 impl Vector {
@@ -554,6 +553,7 @@ impl Vector {
             consumed: None,
             measure_at_least: None,
             writer_canonical: false,
+            writer_input: None,
         }
     }
 
@@ -571,6 +571,39 @@ impl Vector {
     fn number_param(&self, name: &str) -> Option<u128> {
         self.param(name).and_then(parse_number)
     }
+}
+
+/// The value of an `expect` line: `refused` and its reason, or `value = ` / `bits = ` and the
+/// entries. A refused record states its reason from STANDARD.md's closed list, and a missing or
+/// unknown reason is a malformed vector, which fails.
+fn parse_expect(rest: &str, where_: &str) -> Expect {
+    if let Some(reason) = rest.strip_prefix("refused") {
+        let reason = reason.trim();
+        let reason = Error::from_name(reason).unwrap_or_else(|| {
+            panic!(
+                "{where_}: `expect refused` names no reason from STANDARD.md's closed list (got `{reason}`)"
+            )
+        });
+        return Expect::Refused(reason);
+    }
+    let (kind, value) = rest
+        .split_once('=')
+        .unwrap_or_else(|| panic!("{where_}: expect is not `refused`, `value = ` or `bits = `"));
+    let kind = kind.trim();
+    assert!(
+        kind == "value" || kind == "bits",
+        "{where_}: unknown expect kind {kind}"
+    );
+    Expect::Entries(value.trim().to_string())
+}
+
+/// The value of a `writer_input` line: `bits = ` and a float32 pattern.
+fn parse_writer_input(rest: &str, where_: &str) -> u32 {
+    rest.strip_prefix("bits")
+        .and_then(|value| value.trim().strip_prefix('='))
+        .and_then(parse_number)
+        .and_then(|pattern| u32::try_from(pattern).ok())
+        .unwrap_or_else(|| panic!("{where_}: writer_input is not `bits = ` and a float32 pattern"))
 }
 
 /// Parse a vector file: `#` begins a comment at the START of a line and nowhere else, blank
@@ -616,25 +649,7 @@ fn parse(file: &str, text: &str) -> Vec<Vector> {
                     })
                     .collect();
             }
-            "expect" => {
-                if rest == "refused" {
-                    current.expect = Expect::Refused;
-                } else {
-                    let (kind, value) = rest.split_once('=').unwrap_or_else(|| {
-                        panic!(
-                            "{}: expect is not `refused`, `value = ` or `bits = `",
-                            where_()
-                        )
-                    });
-                    let kind = kind.trim();
-                    assert!(
-                        kind == "value" || kind == "bits",
-                        "{}: unknown expect kind {kind}",
-                        where_()
-                    );
-                    current.expect = Expect::Entries(value.trim().to_string());
-                }
-            }
+            "expect" => current.expect = parse_expect(rest, &where_()),
             "consumed" => {
                 current.consumed = Some(
                     rest.parse()
@@ -647,6 +662,7 @@ fn parse(file: &str, text: &str) -> Vec<Vector> {
                         .unwrap_or_else(|_| panic!("{}: bad measure floor {rest}", where_())),
                 );
             }
+            "writer_input" => current.writer_input = Some(parse_writer_input(rest, &where_())),
             "writer" => {
                 assert_eq!(
                     rest,
@@ -673,7 +689,7 @@ fn operation_takes_param(operation: &str, name: &str) -> bool {
         "preceding_bits" => operation == "align" || operation == "bytes",
         "bits" => operation == "bits",
         "count" => operation == "bytes",
-        "buffer_size" => operation == "string" || operation == "wstring",
+        "buffer_size" => operation == "string",
         "previous" => operation == "int_relative",
         "res" => operation == "compressed_float",
         "integer_bits" | "fraction_bits" => operation == "fixed",
@@ -701,7 +717,7 @@ fn step_from_words(text: &str) -> Result<Kind, String> {
         (Some("object"), 2) => Ok(Kind::Object(number(1)? as usize)),
         (Some("bytes"), 2) => Ok(Kind::Bytes(number(1)? as usize)),
         (Some("string"), 2) => Ok(Kind::Text(number(1)? as usize)),
-        (Some("wstring"), 2) => Ok(Kind::WideText(number(1)? as usize)),
+        (Some("end"), 1) => Ok(Kind::End),
         (Some("int_relative"), 2) => Ok(Kind::IntRelative(number(1)? as i32)),
         (Some("int"), 3) => Ok(Kind::Int(number(1)? as i32, number(2)? as i32)),
         (Some("int64"), 3) => Ok(Kind::Int64(number(1)? as i64, number(2)? as i64)),
@@ -824,7 +840,7 @@ fn build_steps(vector: &Vector) -> Result<Vec<Step>, String> {
         }
         "bytes" => Kind::Bytes(required("count")? as usize),
         "string" => Kind::Text(required("buffer_size")? as usize),
-        "wstring" => Kind::WideText(required("buffer_size")? as usize),
+        "end" => Kind::End,
         "fixed" => fixed_kind(
             required("integer_bits")? as i128,
             required("fraction_bits")? as i128,
@@ -852,11 +868,21 @@ fn stream_buffer(vector: &Vector) -> (Vec<u8>, usize) {
 /// Failure is terminal (STANDARD.md, Reader Obligations), checked by behavior rather than by
 /// an accessor so the check ports to every implementation: a further read must fail, consume no
 /// bits and leave its own destination alone.
-fn check_terminal(stream: &mut ReadStream<'_>) -> Result<(), String> {
+fn check_terminal(stream: &mut ReadStream<'_>, reason: Error) -> Result<(), String> {
     let mut after = 0xFFFF_FFFFu32;
     let before = stream.bits_processed();
-    if stream.serialize_bits(&mut after, 8).is_ok() {
-        return Err("the stream accepted a read after the refusal: failure is not terminal".into());
+    match stream.serialize_bits(&mut after, 8) {
+        Ok(()) => {
+            return Err(
+                "the stream accepted a read after the refusal: failure is not terminal".into(),
+            );
+        }
+        Err(echo) if echo != reason => {
+            return Err(format!(
+                "the read after the refusal reported {echo}, the echo of a failed stream keeps the first reason {reason}"
+            ));
+        }
+        Err(_) => {}
     }
     if after != 0xFFFF_FFFF {
         return Err("the read after the refusal wrote to its destination".into());
@@ -876,11 +902,27 @@ fn run_reader(vector: &Vector, steps: &mut [Step]) -> Result<(), String> {
     }
 
     let mut failed = None;
-    let accepted = run_steps(&mut stream, steps, 0, &mut failed).is_ok();
+    let outcome = run_steps(&mut stream, steps, 0, &mut failed);
+    let accepted = outcome.is_ok();
 
-    if matches!(vector.expect, Expect::Refused) {
+    if let Expect::Refused(reason) = vector.expect {
         if accepted {
             return Err("the read succeeded, the corpus requires refusal".into());
+        }
+        // STANDARD.md, "Refusal reasons": a refusal for any other reason is a disagreement
+        // about the format however red the stream ends up. The reason reported is the FIRST
+        // refusal's, through the accessor, and the error the run returned agrees with it
+        let first = stream.failure();
+        if first != Some(reason) {
+            return Err(format!(
+                "refused as {}, the corpus requires {reason}",
+                first.map_or("nothing latched".to_string(), |first| first.to_string())
+            ));
+        }
+        if outcome != Err(reason) {
+            return Err(format!(
+                "the refusing read returned {outcome:?}, the latched reason is {reason}"
+            ));
         }
         let stopped = failed.expect("a refused run names the step it stopped on");
         if !steps[stopped].destination_unwritten() {
@@ -924,7 +966,7 @@ fn run_reader(vector: &Vector, steps: &mut [Step]) -> Result<(), String> {
 
         // and the same rule against a read the vector does not name, so every refused vector
         // carries the terminality check and not only the sequences that spell a successor
-        return check_terminal(&mut stream);
+        return check_terminal(&mut stream, reason);
     }
 
     if !accepted {
@@ -991,6 +1033,24 @@ fn run_writer(vector: &Vector, steps: &mut [Step]) -> Result<(), String> {
     Ok(())
 }
 
+/// The writer input leg. A vector carrying `writer_input bits = 0x...` hands the writer that
+/// float32 and requires exactly the record's bytes: it is how the compressed float's
+/// quantization is pinned for values that do not decode back to themselves (between quanta,
+/// and in the clamp band where a fused multiply-add moves the integer). STANDARD.md runs it
+/// on refused vectors too, so it does not depend on the reader leg.
+fn run_writer_input(vector: &Vector, pattern: u32) -> Result<(), String> {
+    let mut steps = build_steps(vector)?;
+    let Some(last) = steps.last_mut() else {
+        return Err("a writer_input vector with no steps".into());
+    };
+    if !matches!(last.kind, Kind::CompressedFloat(..)) {
+        return Err("writer_input is defined for compressed_float only".into());
+    }
+    last.pattern = u128::from(pattern);
+    run_writer(vector, &mut steps)
+        .map_err(|reason| format!("handed writer_input 0x{pattern:08X}: {reason}"))
+}
+
 /// The measure leg. STANDARD.md makes a measure a BOUND and not the packet size, so the corpus
 /// states a floor and the check is an inequality. A measure that computes alignment from a
 /// running bit index starting at zero under-counts every unaligned start and falls below the
@@ -1011,10 +1071,13 @@ fn run_measure(floor: u64, steps: &mut [Step]) -> Result<(), String> {
 /// Run one vector through every leg it states.
 fn run_vector(vector: &Vector) -> Result<(), String> {
     let mut steps = build_steps(vector)?;
+    if let Some(pattern) = vector.writer_input {
+        run_writer_input(vector, pattern)?;
+    }
     run_reader(vector, &mut steps)?;
     // the writer and the measure are handed the values the reader decoded, so running them
     // after a reader failure would report a second failure about a value never decoded
-    if matches!(vector.expect, Expect::Refused) {
+    if matches!(vector.expect, Expect::Refused(_)) {
         return Ok(());
     }
     if vector.writer_canonical {
@@ -1026,40 +1089,215 @@ fn run_vector(vector: &Vector) -> Result<(), String> {
     Ok(())
 }
 
+/// Every vector in the corpus, parsed, with the file it came from. Vector names are unique
+/// across the corpus (STANDARD.md, "The vector format"), and a duplicate fails here: a
+/// control's `.expected` list names vectors, so a name that means two records means nothing.
+fn corpus_vectors() -> Vec<(String, Vector)> {
+    let mut vectors = Vec::new();
+    let mut names = std::collections::HashSet::new();
+    for (file, text) in corpus() {
+        let parsed = parse(&file, &text);
+        assert!(!parsed.is_empty(), "{file} carries no vectors");
+        for vector in parsed {
+            assert!(
+                !vector.name.is_empty(),
+                "{file}: a vector of operation `{}` has no name",
+                vector.operation
+            );
+            assert!(
+                names.insert(vector.name.clone()),
+                "{file}: the vector name {} is not unique across the corpus",
+                vector.name
+            );
+            vectors.push((file.clone(), vector));
+        }
+    }
+    vectors
+}
+
 #[test]
 fn every_conformance_vector() {
-    let corpus = corpus();
-    let mut run = 0;
+    let files = corpus().len();
+    let vectors = corpus_vectors();
+    let run = vectors.len();
     let mut writer_checks = 0;
+    let mut writer_input_checks = 0;
     let mut measure_checks = 0;
+    let mut refused = 0;
     let mut failures = Vec::new();
-    for (file, text) in &corpus {
-        let vectors = parse(file, text);
-        assert!(!vectors.is_empty(), "{file} carries no vectors");
-        for vector in &vectors {
-            run += 1;
-            if vector.writer_canonical {
-                writer_checks += 1;
-            }
-            if vector.measure_at_least.is_some() {
-                measure_checks += 1;
-            }
-            if let Err(reason) = run_vector(vector) {
-                failures.push(format!("  {file} {}: {reason}", vector.name));
-            }
+    for (file, vector) in &vectors {
+        if vector.writer_canonical {
+            writer_checks += 1;
+        }
+        if vector.writer_input.is_some() {
+            writer_input_checks += 1;
+        }
+        if vector.measure_at_least.is_some() {
+            measure_checks += 1;
+        }
+        if matches!(vector.expect, Expect::Refused(_)) {
+            refused += 1;
+        }
+        if let Err(reason) = run_vector(vector) {
+            failures.push(format!("  {file} {}: {reason}", vector.name));
         }
     }
     assert!(run > 0, "the discovered corpus holds no vectors");
     assert!(
         failures.is_empty(),
         "{} of {run} conformance vectors failed ({writer_checks} writer checks, \
-         {measure_checks} measure checks):\n{}\n\nthis implementation and the shared corpus \
-         disagree. THE IMPLEMENTATION IS THE BUG.",
+         {writer_input_checks} writer input checks, {measure_checks} measure checks):\n{}\n\n\
+         this implementation and the shared corpus disagree. THE IMPLEMENTATION IS THE BUG.",
         failures.len(),
         failures.join("\n")
     );
     println!(
-        "{run} vectors from {} files: {writer_checks} writer checks, {measure_checks} measure checks",
-        corpus.len()
+        "{run} vectors from {files} files ({refused} refused, each for its stated reason): \
+         {writer_checks} writer checks, {writer_input_checks} writer input checks, \
+         {measure_checks} measure checks"
+    );
+}
+
+/// The directory of the vendored negative controls, beside `conformance/`.
+fn controls_directory() -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR")).join("conformance-controls")
+}
+
+/// Control 1 (STANDARD.md, "A runner discovers the directory and runs every vector in it"):
+/// a corpus file whose operation has no runner must FAIL, never skip. Every operation the
+/// format no longer has — `wstring`, removed in 2.0 — is in the same position, so a vector
+/// spelling it must fail too.
+#[test]
+fn control_unknown_operation_is_red() {
+    let path = controls_directory().join("unknown-operation.txt");
+    let text = std::fs::read_to_string(&path)
+        .unwrap_or_else(|error| panic!("{} is not readable: {error}", path.display()));
+    let vectors = parse("unknown-operation.txt", &text);
+    assert!(!vectors.is_empty(), "the control file carries no vector");
+    for vector in &vectors {
+        assert!(
+            run_vector(vector).is_err(),
+            "the runner went GREEN on {}, an operation it has no code for: the corpus has \
+             stopped being an instrument",
+            vector.name
+        );
+    }
+
+    let removed = parse(
+        "wstring",
+        "operation wstring\nname control-wstring-is-gone\nparam buffer_size = 8\nbytes 00\nexpect value = \n",
+    );
+    assert!(run_vector(&removed[0]).is_err(), "wstring still runs");
+    let removed_step = parse(
+        "wstring step",
+        "operation sequence\nname control-wstring-step-is-gone\nparam step = wstring 8\nbytes 00\nexpect value = \n",
+    );
+    assert!(
+        run_vector(&removed_step[0]).is_err(),
+        "the wstring step still runs"
+    );
+}
+
+/// A refused record must state its reason: `expect refused` alone, or with a name outside the
+/// closed list, is a malformed vector and fails.
+#[test]
+fn control_a_refusal_without_a_known_reason_is_malformed() {
+    for expect in [
+        "expect refused",
+        "expect refused no_such_reason",
+        "expect refused Overflow",
+    ] {
+        let text = format!("operation bool\nname control-reason\nbytes\n{expect}\n");
+        let outcome = std::panic::catch_unwind(|| parse("reason control", &text));
+        assert!(
+            outcome.is_err(),
+            "`{expect}` parsed as a well formed vector"
+        );
+    }
+}
+
+/// The names a control's `.expected` file lists: one per line, `#` comments and blank lines
+/// skipped.
+#[cfg(serialize_controls)]
+fn expected_failures(control: serialize::Control) -> std::collections::BTreeSet<String> {
+    let path = controls_directory().join(format!("{}.expected", control.name()));
+    let text = std::fs::read_to_string(&path).unwrap_or_else(|error| {
+        panic!(
+            "control {} has no {} naming the vectors its rule owns: {error}",
+            control.name(),
+            path.display()
+        )
+    });
+    text.lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty() && !line.starts_with('#'))
+        .map(str::to_string)
+        .collect()
+}
+
+/// Control 2, once per refusal rule: a reader with that ONE rule deleted, run against the real
+/// corpus, must fail exactly the vectors `conformance-controls/<rule>.expected` names and no
+/// others. A sabotage that breaks more than its rule, or less, is a control that measures
+/// something other than what it claims; one that stops finding anything to break is a failure
+/// of the control, never a licence to remove it.
+///
+/// A sabotaged reader can hand the writer leg a value outside its declaration, which is a
+/// debug assertion; a panicking vector counts as a failing one, the corpus's verdict.
+#[cfg(serialize_controls)]
+#[test]
+fn controls_fail_exactly_their_expected_vectors() {
+    use std::collections::BTreeSet;
+    let vectors = corpus_vectors();
+    // silence only this thread's panics, the sabotaged writer asserts; the hook is process
+    // wide and the other tests in this binary run beside it
+    let previous: std::sync::Arc<dyn Fn(&std::panic::PanicHookInfo<'_>) + Send + Sync> =
+        std::sync::Arc::from(std::panic::take_hook());
+    let controls_thread = std::thread::current().id();
+    let forward = std::sync::Arc::clone(&previous);
+    std::panic::set_hook(Box::new(move |info| {
+        if std::thread::current().id() != controls_thread {
+            forward(info);
+        }
+    }));
+    let mut mismatches = Vec::new();
+    for control in serialize::Control::ALL {
+        let expected = expected_failures(control);
+        serialize::set_control(Some(control));
+        let mut failing = BTreeSet::new();
+        for (_, vector) in &vectors {
+            let outcome =
+                std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| run_vector(vector)));
+            if !matches!(outcome, Ok(Ok(()))) {
+                failing.insert(vector.name.clone());
+            }
+        }
+        serialize::set_control(None);
+        if failing != expected {
+            let missing: Vec<_> = expected.difference(&failing).collect();
+            let extra: Vec<_> = failing.difference(&expected).collect();
+            mismatches.push(format!(
+                "  {}: expected but passed {missing:?}; failed but not expected {extra:?}",
+                control.name()
+            ));
+        }
+    }
+    let _ = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| previous(info)));
+    assert!(
+        mismatches.is_empty(),
+        "negative controls that did not fail exactly their .expected vectors:\n{}",
+        mismatches.join("\n")
+    );
+    // the real reader again, on this same thread, after every control: the switch is off
+    for (_, vector) in &vectors {
+        assert!(
+            run_vector(vector).is_ok(),
+            "{} failed after the controls",
+            vector.name
+        );
+    }
+    println!(
+        "{} negative controls each failed exactly their .expected vectors",
+        serialize::Control::ALL.len()
     );
 }

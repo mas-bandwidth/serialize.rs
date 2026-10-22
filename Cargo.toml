@@ -1,6 +1,6 @@
 [package]
 name = "serialize-official"
-version = "2.4.0"
+version = "3.0.0"
 edition = "2024"
 rust-version = "1.85"
 description = "A simple bitpacking serializer for Rust, wire compatible with the C++ serialize library"
@@ -21,6 +21,10 @@ name = "serialize"
 
 [lints.rust]
 unsafe_code = "forbid"
+# `--cfg serialize_controls` builds the negative controls (src/control.rs): a reader with one
+# refusal rule deleted, which tests/conformance.rs requires to fail exactly the vectors in
+# conformance-controls/<rule>.expected. CI sets it through RUSTFLAGS for one test step only
+unexpected_cfgs = { level = "warn", check-cfg = ["cfg(serialize_controls)"] }
 missing_docs = "warn"
 missing_debug_implementations = "warn"
 

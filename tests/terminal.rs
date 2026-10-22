@@ -40,9 +40,17 @@ fn assert_terminal(stream: &mut ReadStream, expected: Error) {
     assert_eq!(stream.serialize_string(&mut text, 16), Err(expected));
     assert_eq!(text, "untouched");
 
-    let mut wide = String::from("untouched");
-    assert_eq!(stream.serialize_wide_string(&mut wide, 16), Err(expected));
-    assert_eq!(wide, "untouched");
+    // the end is a read like any other: on a failed stream it is refused with the first
+    // refusal's reason, however many bits remain
+    assert_eq!(stream.serialize_end(), Err(expected));
+
+    let mut real = 1.5_f32;
+    assert_eq!(stream.serialize_f32(&mut real), Err(expected));
+    assert_eq!(
+        real.to_bits(),
+        1.5f32.to_bits(),
+        "a latched read must write no destination"
+    );
 
     // the zero-bit reads: STANDARD.md, Reader Obligations, "every read consults the failure
     // state before it does anything else, zero-bit reads included, so a degenerate ranged
@@ -98,11 +106,11 @@ fn failure_before_consumption_is_terminal() {
     let mut stream = ReadStream::new(&buffer, 1);
 
     let mut value = 1234_u32;
-    assert_eq!(stream.serialize_bits(&mut value, 32), Err(Error::Overflow));
+    assert_eq!(stream.serialize_bits(&mut value, 32), Err(Error::PastEnd));
     assert_eq!(value, 1234, "a refused read must write no destination");
     assert_eq!(stream.bits_processed(), 0, "and consume no bits");
 
-    assert_terminal(&mut stream, Error::Overflow);
+    assert_terminal(&mut stream, Error::PastEnd);
 }
 
 #[test]
@@ -115,12 +123,12 @@ fn failure_after_partial_consumption_is_terminal() {
     let mut value = -1_i64;
     assert_eq!(
         stream.serialize_int64(&mut value, 0, i64::MAX),
-        Err(Error::Overflow)
+        Err(Error::PastEnd)
     );
     assert_eq!(value, -1, "a refused read must write no destination");
     assert_eq!(stream.bits_processed(), 32, "the first group was consumed");
 
-    assert_terminal(&mut stream, Error::Overflow);
+    assert_terminal(&mut stream, Error::PastEnd);
 }
 
 #[test]
@@ -149,9 +157,9 @@ fn failure_on_alignment_is_terminal() {
 
     let mut flag = false;
     stream.serialize_bool(&mut flag).unwrap();
-    assert_eq!(stream.serialize_align(), Err(Error::Align));
+    assert_eq!(stream.serialize_align(), Err(Error::NonzeroPadding));
 
-    assert_terminal(&mut stream, Error::Align);
+    assert_terminal(&mut stream, Error::NonzeroPadding);
 }
 
 #[test]
@@ -166,10 +174,10 @@ fn failure_on_a_malformed_string_is_terminal() {
     let mut text = String::from("untouched");
     assert_eq!(
         stream.serialize_string(&mut text, 16),
-        Err(Error::InvalidString)
+        Err(Error::InvalidUtf8)
     );
 
-    assert_terminal(&mut stream, Error::InvalidString);
+    assert_terminal(&mut stream, Error::InvalidUtf8);
 }
 
 #[test]

@@ -102,6 +102,9 @@ fn main() -> Result {
     let mut received = WorldStatePacket::default();
     let mut reader = ReadStream::new(&buffer, packet_bytes);
     received.serialize(&mut reader)?;
+    // a packet reader reads the end (STANDARD.md, format 2.0): a byte left over, or a set bit
+    // in the final byte's padding, means these are not the bytes the writer reported
+    reader.serialize_end()?;
 
     assert_eq!(received.sequence, packet.sequence);
     assert_eq!(received.players.len(), packet.players.len());

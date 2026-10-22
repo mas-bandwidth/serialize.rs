@@ -137,8 +137,28 @@ fn parse(cursor: &mut Cursor) -> Option<Value> {
             Value::Int64 { value, min, max }
         }
         4 => Value::Bool(cursor.u8()? & 1 == 1),
-        5 => Value::Float(f32::from_bits(cursor.u32()?)),
-        6 => Value::Double(f64::from_bits(cursor.u64()?)),
+        // float and double carry finite values only as of format 2.0 (a non-finite write is
+        // debug asserted, and fuzz builds keep debug assertions on): an all-ones exponent
+        // field loses its top bit, so every finite pattern, -0 and the subnormals included,
+        // is still reachable
+        5 => {
+            let bits = cursor.u32()?;
+            let finite = if bits & 0x7F80_0000 == 0x7F80_0000 {
+                bits & !0x4000_0000
+            } else {
+                bits
+            };
+            Value::Float(f32::from_bits(finite))
+        }
+        6 => {
+            let bits = cursor.u64()?;
+            let finite = if bits & 0x7FF0_0000_0000_0000 == 0x7FF0_0000_0000_0000 {
+                bits & !0x4000_0000_0000_0000
+            } else {
+                bits
+            };
+            Value::Double(f64::from_bits(finite))
+        }
         7 => {
             // non-finite values through a compressed float are non-conforming on write as
             // of 2.0 (debug asserted, and fuzz builds keep debug assertions on): the round
@@ -279,8 +299,8 @@ fn blank(value: &Value) -> Value {
     }
 }
 
-/// Compare a written value against its read-back. Floats compare by bit pattern so NaN round
-/// trips count as equal; the compressed float compares against the clamped written value
+/// Compare a written value against its read-back. Floats compare by bit pattern, so a -0 or a
+/// subnormal that came back altered is a mismatch; the compressed float compares against the clamped written value
 /// within the quantization tolerance.
 fn matches(written: &Value, read: &Value) -> bool {
     match (written, read) {
@@ -336,4 +356,8 @@ fuzz_target!(|data: &[u8]| {
         serialize_value(&mut read_stream, &mut read).expect("read of just-written data failed");
         assert!(matches(written, &read), "wrote {written:?}, read {read:?}");
     }
+    // the stream holds exactly the bytes the writer reported, so its end accepts
+    read_stream
+        .serialize_end()
+        .expect("the end of just-written data was refused");
 });

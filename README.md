@@ -7,18 +7,20 @@
 A simple bitpacking serializer for Rust.
 
 This is a port of the C++ [serialize](https://github.com/mas-bandwidth/serialize) library and
-is **bit-for-bit wire compatible** with it. The golden wire format test pins 112 exact bytes —
-byte for byte the vector `golden_wire_bytes` pins in the C++ test suite — and on every push and
-pull request CI builds the real C++ library at a pinned release (v1.16.0) and runs both
+is **bit-for-bit wire compatible** with it. It carries **serialize format 2.0**: the wire
+carries only integers and bytes, and every value has exactly one encoding (STANDARD.md). The
+golden wire format test pins the 106 exact bytes of STANDARD.md's "The whole message" — byte
+for byte the vector `golden_wire_bytes` pins in the C++ test suite — and on every push and
+pull request CI builds the real C++ library at a pinned release (v2.0.0) and runs both
 implementations head to head over the library's own golden serialize function: they write
-byte-identical data and each decodes the other's output. That machine check covers all 112 of
-those bytes, and continues past them into an extended harness-defined sequence covering what
-the golden data does not: degenerate ranges (`min == max`, zero bits on the wire, 32 and 64
+byte-identical data and each decodes the other's output. That machine check covers all 106 of
+those bytes, and a second, harness-defined packet beside them covering what the golden data
+does not: degenerate ranges (`min == max`, zero bits on the wire, 32 and 64
 bit, mid-sequence) and compressed floats that land between quanta — STANDARD.md's
 discriminating vector, which fails the byte comparison under FMA contraction or double
 widening where an on-quantum value would pass silently. The pin never goes backwards past
-v1.7.0, the C++ release that accepts the degenerate 64 bit range (older releases abort on
-it, asserts live) and pins the compressed float arithmetic to unfused float32.
+v2.0.0, the first C++ release carrying format 2.0: its golden message ends with the end, and
+it reads each packet as exactly the bytes its writer reported.
 
 Nothing here exercises the [C](https://github.com/mas-bandwidth/serialize.c),
 [C#](https://github.com/mas-bandwidth/serialize.cs) and
@@ -27,10 +29,8 @@ family beyond the C++ one. What ties the family together is the C++ library as t
 reference: each port runs its own head-to-head check against it in its own CI, all four ports
 vendor a byte-identical copy of [STANDARD.md](STANDARD.md) and of the shared
 [conformance/](conformance) corpus — the upstream specification and its vectors, with a CI job
-in each repo that fails on drift — and the golden vectors line up, the Go port pinning
-this exact 112 byte vector, the C# port pinning the same bytes in two pieces (the 72 byte core
-and the 40 byte fixed point tail), while the C port pins sequences of its own that its CI
-checks against the C++ library. Compatibility across the family rests on that shared reference
+in each repo that fails on drift. This port runs every vector of that corpus, the golden
+message included, and refuses each refused vector for the reason it states. Compatibility across the family rests on that shared reference
 and that shared specification, not on any Rust-to-Go or Rust-to-C# test.
 
 Zero dependencies, no unsafe code, BSD 3-Clause. Install with `cargo add serialize-official`
@@ -43,7 +43,7 @@ than tracking `main`:
 
 ```toml
 [dependencies]
-serialize-official = { git = "https://github.com/mas-bandwidth/serialize.rs", tag = "v2.4.0" }
+serialize-official = { git = "https://github.com/mas-bandwidth/serialize.rs", tag = "v3.0.0" }
 ```
 
 Two CI jobs hold the registry and this repository to each other, so no version number written
@@ -75,6 +75,17 @@ impl Packet {
         Ok(())
     }
 }
+```
+
+A packet reader reads the end after the packet's top-level object, on a stream holding
+exactly the bytes the writer reported. STANDARD.md requires it: the end refuses a whole byte
+left over (`trailing_data`) and a set bit in the final byte's padding (`nonzero_padding`), so
+one value has one byte sequence. On write and measure the end emits nothing:
+
+```rust
+let mut stream = ReadStream::new(&buffer, bytes_written);
+packet.serialize(&mut stream)?;
+stream.serialize_end()?;     // the packet ends exactly here
 ```
 
 The stream picks the error type: `S::Error` is `Error` for `ReadStream` and `Infallible` for
@@ -128,18 +139,24 @@ controls a loop (a count, a length) is always validated before it drives anythin
 Rust rendering of the C++ library's early-return serialize macros and the Go port's sticky
 errors, and it is the reason serialize methods take `&mut` values and return `Result`.
 
+Every refusal names the rule that refused it, from STANDARD.md's closed list, as an `Error`
+variant whose `name()` is the family-wide spelling: `past_end`, `value_out_of_range`,
+`nonzero_padding`, `trailing_data`, `non_finite_float`, `invalid_utf8`, `embedded_nul` and
+`non_canonical`. `ReadStream::failure()` reports the first refusal's reason; the later
+refusals of a failed stream are its echoes.
+
 Three obligations from STANDARD.md's Reader Obligations hold in every build:
 
 - **A refused read leaves its scalar destination unwritten.** The value the caller passed in
   is exactly what it holds afterwards, so a caller that trusts the destination over the
-  return code never proceeds on a value the stream did not carry. The three operations that
-  fill a caller-owned buffer — `serialize_bytes`, `serialize_string` and
-  `serialize_wide_string` — leave that buffer's contents unspecified after a refusal, and a
+  return code never proceeds on a value the stream did not carry. The two operations that
+  fill a caller-owned buffer — `serialize_bytes` and `serialize_string` — leave that
+  buffer's contents unspecified after a refusal, and a
   composite read may leave earlier members written, because it is a sequence of primitive
   reads and each one carries the rule alone.
 - **Failure is terminal.** The first refused read latches the `ReadStream`: every later read
-  on it fails with the same error, consuming no bits and writing no destination, and
-  `ReadStream::failure()` reports what stopped it. Nothing after a failing operation has a
+  on it fails with the same reason, consuming no bits and writing no destination, and
+  `ReadStream::failure()` reports the first reason. Nothing after a failing operation has a
   defined position, so the stream enforces that rather than the caller's discipline. The
   latch clears only by re-initialization, which here is constructing a new stream. Custom
   serialize functions reject a decoded value with `stream.refuse(error)`, which latches;
@@ -149,8 +166,10 @@ Three obligations from STANDARD.md's Reader Obligations hold in every build:
   a wrapping counter unwraps it before serializing. Every tier reconstructs `current` in a
   width that cannot wrap and then refuses a result outside the domain or not above
   `previous`, the absolute tier's 32 raw bits included: they are unsigned, so a top bit set
-  is `2^31` or above, not a negative sequence number. `previous` is the caller's own state
-  and never arrives off the wire, so a `previous` outside the domain is a debug assertion.
+  is `2^31` or above, not a negative sequence number. The absolute tier is canonical too: a
+  `current` no more than 69914 above `previous` has a bounded encoding, so carried in the
+  absolute tier it is refused as `non_canonical`. `previous` is the caller's own state and
+  never arrives off the wire, so a `previous` outside the domain is a debug assertion.
 
 The write path is trusted and, as of 2.0, **infallible** — the writer-trusted contract the
 whole family shares, matching the C++ library's checkless writer. `WriteStream` and
@@ -170,9 +189,12 @@ family standard is minimal runtime checking in release, and the hard checks rele
 are the read path's buffer-end and content refusals, which validate packet data, never
 arguments. A degenerate range where `min == max` is not misuse — the format defines it as
 costing zero bits, and the ranged integer methods accept it and recover the value from the
-range alone. Non-finite values through `serialize_compressed_float` are non-conforming and
-debug-assert on write, as does a compressed float declaration whose `max - min` or quantum
-count is not finite.
+range alone. `serialize_f32` and `serialize_f64` carry finite values only: a reader refuses
+NaN and both infinities as `non_finite_float`, testing the raw bits, and a writer
+debug-asserts on them; negative zero and the subnormals travel bit exact. Non-finite values
+through `serialize_compressed_float` are non-conforming and debug-assert on write, as does a
+compressed float declaration whose `max - min`, quantum count or top decode (`min` plus
+`max - min`) is not finite; a reader refuses a non-finite decode as `non_finite_float`.
 
 ## Buffer contracts
 
@@ -191,11 +213,10 @@ count is not finite.
   and propagate with `?`. No macros needed. On the write and measure paths the error type is
   uninhabited (`Infallible`), which is Rust for the C++ writer's contract: it cannot fail,
   and the compiler knows it.
-- `serialize_string` operates on `String` and refuses invalid UTF-8 and interior NULs on
-  read (STANDARD.md's refusal rules). `serialize_wide_string` matches the `wchar_t` wire
-  format — each 32 bit group is one UTF-16 code unit, so astral chars travel as surrogate
-  pairs (split on write, recombined on read) — and refuses malformed UTF-16 on read: groups
-  above 0xFFFF, interior NUL groups, and unpaired or misordered surrogates.
+- `serialize_string` operates on `String` and refuses a NUL byte (`embedded_nul`, checked
+  over the whole payload first) and invalid UTF-8 (`invalid_utf8`) on read, accepting every
+  well-formed payload byte for byte. Format 2.0 removed the wide string: text travels as
+  UTF-8 only, and a Rust `String` already is.
 - The stream context is `&dyn Any` instead of `void*`. There is no allocator pointer — Rust
   serialize functions can carry whatever state they need.
 - 128 bit values use Rust's native `i128`/`u128` on every platform; there is no equivalent

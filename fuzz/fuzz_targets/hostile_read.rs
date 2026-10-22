@@ -74,7 +74,7 @@ fuzz_target!(|data: &[u8]| {
                     stream.serialize_bytes(&mut buffer[..len])
                 }
                 1 => stream.serialize_string(&mut string, usize::from(b) % 64 + 2),
-                2 => stream.serialize_wide_string(&mut string, usize::from(b) % 64 + 2),
+                2 => stream.serialize_end(),
                 // previous is caller state and must be in the int_relative domain
                 // [0,i32::MAX] (STANDARD.md): the hostile input is the packet, not the bound
                 3 => stream

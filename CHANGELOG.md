@@ -1,5 +1,73 @@
 # Changelog
 
+## 3.0.0 — 2026-10-22
+
+**Serialize format 2.0: the wire carries only integers and bytes, and every value has exactly
+one encoding.** `STANDARD.md`, `conformance/` and, new here, `IMPLEMENTING.md` and
+`conformance-controls/` are re-vendored verbatim from mas-bandwidth/serialize v2.0.0 (merge
+8dae4cc0, pin dedf58ef). Every finite value 1.1 could carry keeps its exact bytes; the
+changes are refusals, one removal and one new operation. This is a semver major: the wide
+string is gone and `Error` is a different enum.
+
+Breaking, and how to migrate:
+
+- **`serialize_wide_string` is removed**, with its wire form. Text travels as `string`,
+  which is UTF-8, and a Rust `String` already is. A 1.1 stream carrying a wide string field
+  has no 2.0 reading.
+- **`Error` is the closed list of refusal reasons**, spelled as STANDARD.md spells them by
+  `Error::name()` (and `Display`): `PastEnd` (`past_end`, was `Overflow`),
+  `ValueOutOfRange`, `NonzeroPadding` (`nonzero_padding`, was `Align`), `TrailingData`,
+  `NonFiniteFloat`, `InvalidUtf8` and `EmbeddedNul` (both were `InvalidString`), and
+  `NonCanonical`. `Error::ALL` lists them and `Error::from_name` parses a name. The enum is
+  no longer `#[non_exhaustive]`: the list is closed. `ReadStream::failure()` reports the
+  FIRST refusal's reason; the later refusals of a failed stream are its echoes.
+- **`Stream::serialize_end` is new, and a packet reader must call it** after the last field
+  of the packet's top-level object, on a stream holding exactly the bytes the writer
+  reported. On read it consults the failure state first, then refuses a whole byte or more
+  left over as `TrailingData` (checked first), then a set bit in the final byte's padding as
+  `NonzeroPadding`; an accepted end has consumed the stream. Write and measure ends emit
+  nothing and cost nothing. It is a required trait method, so an outside implementor of
+  `Stream` adds it.
+- **`serialize_f32` and `serialize_f64` carry finite values only.** A reader refuses NaN
+  (any payload, either sign) and both infinities as `NonFiniteFloat`, testing the raw bits
+  before any conversion and leaving the destination unwritten; a writer debug-asserts on
+  them. Negative zero and the subnormals travel bit exact.
+- **`serialize_compressed_float` refuses a non-finite decode** as `NonFiniteFloat`: over
+  `[3 * 2^103, FLT_MAX]` at resolution `2^104` the top integer decodes to `+inf`. The write
+  path debug-asserts that the declaration's top decode `min + delta` is finite.
+- **`serialize_int_relative` refuses a non-canonical absolute tier**: after the domain rule
+  (`ValueOutOfRange`, which comes first), an absolute tier carrying a `current` no more than
+  69914 above `previous` is `NonCanonical`. The difference is computed in `i64`.
+- **A string's NUL scan runs over the whole payload before UTF-8 validation**, so a payload
+  breaking both rules (`02 FF 00`) is `EmbeddedNul`. 1.x validated UTF-8 first. The writer
+  debug-asserts on a string holding a NUL.
+
+The runner (`tests/conformance.rs`) parses `expect refused <reason>`, failing a record whose
+reason is missing or outside the closed list, and requires the stream's first refusal to be
+the stated reason, through `failure()` and through the error the refusing read returned, with
+the terminality probe keeping it too. It parses `writer_input bits = 0x...` and hands the
+writer that float32, on refused vectors too; dispatches `end` as an operation and a step;
+drops `wstring`; and fails a corpus whose vector names are not unique. 397 vectors in 18
+files, 149 of them refused, each for its stated reason.
+
+**Negative controls.** `--cfg serialize_controls` (src/control.rs, a thread-local switch that
+every other build compiles to a constant `false`) deletes one refusal rule at a time, and
+`controls_fail_exactly_their_expected_vectors` requires the corpus to fail exactly the
+vectors in the reference's `conformance-controls/<rule>.expected`, for all fifteen of the
+reference's controls: align-padding, ranged-reconstruction, ranged-range,
+fixed-degenerate-terminal, float-finite, double-finite, compressed-float-finite,
+end-trailing-data, end-padding, int-relative-canonical, string-embedded-nul, string-utf8,
+string-utf8-surrogate, int64-through-double and wrong-reason. The unknown-operation control,
+and a `wstring` vector and step, must fail in every build. A new CI job runs the controls.
+`tests/format2.rs` pins each new rule through the public API with the 1.x behaviour named.
+
+The golden wire test pins STANDARD.md's 106-byte "whole message", which carries a CJK string
+where 1.1 carried the wide string and ends with the end. The C++ interop job pins the
+reference at v2.0.0, and its file is now two packets, the golden one and the harness's
+extended one, each read by its own stream and ended by its own end. `tools/revendor.sh
+<tag>` re-vendors the four format paths from a reference tag; the spec-sync job diffs all
+four. The fuzz lockfile, stale at 2.3.2, is refreshed.
+
 ## 2.4.0 — 2026-09-04
 
 **The vendored corpus becomes the 351 vector one, and this is the first release carrying

@@ -106,8 +106,12 @@ fn random_value(rng: &mut Rng) -> Value {
             Value::Int64 { value, min, max }
         }
         4 => Value::Bool(rng.range(2) == 1),
-        5 => Value::Float(f32::from_bits(rng.next() as u32)),
-        6 => Value::Double(f64::from_bits(rng.next())),
+        // the format carries finite values only (format 2.0): a pattern whose exponent field
+        // is all ones has its top exponent bit cleared, which keeps the draw finite and the
+        // generator's consumption unchanged. Every finite pattern, -0 and the subnormals
+        // included, still round trips bit exact
+        5 => Value::Float(f32::from_bits(finite_float_bits(rng.next() as u32))),
+        6 => Value::Double(f64::from_bits(finite_double_bits(rng.next()))),
         7 => {
             let len = rng.range(32) as usize;
             Value::Bytes((0..len).map(|_| rng.next() as u8).collect())
@@ -239,8 +243,26 @@ fn blank(value: &Value) -> Value {
     }
 }
 
-/// Compare a written value against its read-back. Floats compare by bit pattern so NaN
-/// round trips count as equal.
+/// A random float pattern made finite: an all-ones exponent field loses its top bit.
+fn finite_float_bits(bits: u32) -> u32 {
+    if bits & 0x7F80_0000 == 0x7F80_0000 {
+        bits & !0x4000_0000
+    } else {
+        bits
+    }
+}
+
+/// The 64 bit twin of [`finite_float_bits`].
+fn finite_double_bits(bits: u64) -> u64 {
+    if bits & 0x7FF0_0000_0000_0000 == 0x7FF0_0000_0000_0000 {
+        bits & !0x4000_0000_0000_0000
+    } else {
+        bits
+    }
+}
+
+/// Compare a written value against its read-back. Floats compare by bit pattern, so a
+/// negative zero or a subnormal that came back altered counts as a mismatch.
 fn matches(written: &Value, read: &Value) -> bool {
     match (written, read) {
         (Value::Float(a), Value::Float(b)) => a.to_bits() == b.to_bits(),
@@ -328,10 +350,9 @@ fn test_hostile_read() {
                 other => serialize_value(&mut stream, other),
             };
 
-            // wide strings are not in random_value (the write side would need valid chars),
-            // so drive them here against the hostile bytes too
-            let mut wide = String::new();
-            let _ = stream.serialize_wide_string(&mut wide, 64);
+            // the end is not in random_value (it carries no value), so drive it here against
+            // the hostile bytes too
+            let _ = stream.serialize_end();
         }
     }
 }

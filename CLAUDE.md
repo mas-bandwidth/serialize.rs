@@ -33,17 +33,17 @@ zero unsafe, BSD-3.
 
 ## Invariants — never break these
 
-1. **The wire format is frozen and bit-identical to the C++ library.**
-   `test_golden_wire_format` pins 112 golden bytes that match the C++ suite's
-   `golden_wire_bytes` verbatim (bytes 0..72 are the original vector; the fixed point tail
-   was derived from STANDARD.md's stated rules independently of both implementations),
-   and the `cpp-interop` CI job proves it against the real thing on every push and PR: it
-   builds interop/golden.cpp against the actual C++ library (pinned at v1.16.0, never going
-   back past v1.7.0: the harness's extended sequence carries a degenerate 64 bit range that
-   older releases abort on, plus STANDARD.md's between-quanta compressed float vector, and
-   the build keeps asserts live with no -ffp-contract=off), both implementations write the
-   golden data plus the extended sequence, the bytes are compared with `cmp`, and each
-   implementation decodes the other's file (examples/wire_interop.rs is the Rust half).
+1. **The wire format is serialize format 2.0 and bit-identical to the C++ library.**
+   `test_golden_wire_format` pins STANDARD.md's 106-byte "whole message", which matches the
+   C++ suite's `golden_wire_bytes` verbatim and ends with the end, and the `cpp-interop` CI
+   job proves it against the real thing on every push and PR: it builds interop/golden.cpp
+   against the actual C++ library (pinned at v2.0.0, never going back past it: the golden
+   message ends with `serialize_end` and drops `wstring` from v2.0.0 on; the build keeps
+   asserts live with no -ffp-contract=off), both implementations write a file of two
+   packets — the golden one and the harness's extended one (a degenerate 64 bit range,
+   STANDARD.md's between-quanta compressed floats, the clamp witnesses), each ended by its
+   own end — the bytes are compared with `cmp`, and each implementation decodes the
+   other's file (examples/wire_interop.rs is the Rust half).
    Never change any encoding without coordinating with the C++ library. When adding
    serialization features, port them from serialize.h and mirror its tests. Note the golden
    float is the literal `3.1415926` (bit pattern 0x40490FDA) — NOT `f32::consts::PI`, which
@@ -81,13 +81,17 @@ zero unsafe, BSD-3.
 
 ## Layout
 
-- `src/lib.rs` — crate docs, `Error`/`Result`, `bits_required`/`bits_required64`/
+- `src/lib.rs` — crate docs, `Error` (STANDARD.md's closed list of eight refusal reasons;
+  `name()` is the family spelling) / `Result`, `bits_required`/`bits_required64`/
   `bits_required128`, zigzag (all const fn)
+- `src/control.rs` — the negative controls: with `--cfg serialize_controls`, a thread-local
+  switch that deletes one refusal rule; every other build compiles `deleted()` to `false`.
+  A rule guarded by it reads `if <rule fires> && !deleted(Control::X)`
 - `src/bitpacker.rs` — `BitWriter` (64 bit scratch, LE qword stores), `BitReader` (branchless
   windows, `read_byte_slice` returns borrowed subslices for zero-copy strings)
 - `src/stream.rs` — `Stream` trait: `type Error` (Error on read, Infallible on write/measure),
   `fail()` (the error constructor) and `refuse()` (the `&mut self` form every built-in read
-  refusal goes through, so `ReadStream` can latch), required primitives per stream (bits/bytes/align/strings) plus default
+  refusal goes through, so `ReadStream` can latch), required primitives per stream (bits/bytes/align/string/end) plus default
   methods for everything derivable (int/int64/int128/bits64/bool/u8-u64/u128/
   f32/f64/compressed float/fixed point/int relative). `serialize_compressed_float_precomputed`
   is the audited home of the compressed float quantization arithmetic (schema#82):
@@ -111,14 +115,24 @@ zero unsafe, BSD-3.
   machine drives the single operation files and the `sequence`/`object`/`message` ones alike:
   accepts pin the value (as a 128 bit pattern, never through a float) and the bits consumed,
   `writer = canonical` pins the emitted stream byte for byte, `measure_at_least` is a floor,
-  and refusals pin non-mutation of the scalar destination plus terminality by behavior. An
-  empty directory, an operation with no dispatch arm, an unknown parameter and a `fixed`
-  storage width with no Rust integer type all FAIL rather than skip
+  `writer_input` pins the writer's bytes for a given float32, and refusals pin the stated
+  REASON (first refusal, via `failure()`), non-mutation of the scalar destination, and
+  terminality by behavior. An empty directory, an operation with no dispatch arm, an
+  unknown parameter, a refusal with no known reason, a duplicate vector name and a `fixed`
+  storage width with no Rust integer type all FAIL rather than skip. It also runs the
+  controls: `unknown-operation.txt` (and a `wstring` vector) must fail in every build, and
+  under `--cfg serialize_controls` each of the fifteen controls must fail exactly its
+  `conformance-controls/<rule>.expected` list
+- `tests/format2.rs` — format 2.0's new rules through the public API, each with the 1.x
+  behaviour named: reasons, finite floats, the compressed float decode, the canonical
+  int_relative tier, end, the string NUL-before-UTF-8 order, real text byte for byte
 - `tests/terminal.rs` — the terminal-failure latch across six failure shapes (before
   consumption, after partial consumption, range headroom, alignment, malformed string,
   int_relative), plus re-initialization and clone behavior
-- `conformance/` — a VERBATIM VENDORED COPY of the shared conformance corpus from
-  mas-bandwidth/serialize, synced by the same `spec-sync` CI job as STANDARD.md
+- `conformance/`, `conformance-controls/` and `IMPLEMENTING.md` — VERBATIM VENDORED COPIES
+  of the shared corpus, its negative controls and the implementation practice from
+  mas-bandwidth/serialize, synced by the same `spec-sync` CI job as STANDARD.md;
+  `tools/revendor.sh <tag>` copies all four across from a reference tag
 - `examples/packet.rs` — condensed example.cpp; `examples/wire_interop.rs` — the Rust half of
   the C++ interop job (writes the golden + extended interop file, reads the C++ one)
 - `fuzz/` — a separate crate (not in the library's dependency graph) with the `hostile_read`
@@ -131,6 +145,8 @@ zero unsafe, BSD-3.
 ## Commands
 
 - `cargo test` — full suite except the 320 MB test
+- `RUSTFLAGS="--cfg serialize_controls" cargo test --test conformance` — the negative
+  controls (the `conformance-controls` CI job)
 - `cargo test --release -- --include-ignored` — everything
 - `cargo clippy --all-targets -- -D warnings` and `cargo fmt --check` — CI enforces both;
   clippy runs at pedantic via `[lints]` in Cargo.toml, with each allow justified by a comment
@@ -201,14 +217,15 @@ Rejected, with reasons — do not propose again:
 
 ## Releases
 
-v1.0.0 released 2026-07-12 (opened at 1.0.0 deliberately — the wire format is a decade old
-and frozen, like the Go port); latest released tag is v1.6.0 (2026-08-15); main carries
-2.0.0, the infallible write path (semver major, CHANGELOG.md has the migration notes). Release process: bump
+v1.0.0 released 2026-07-12 (opened at 1.0.0 deliberately — the wire format is a decade old,
+like the Go port). 3.0.0 (2026-10-22) carries serialize format 2.0 (Glenn, 2026-10-22: "We
+change the protocol it's v2.0.0"): the one sanctioned wire change, made in lockstep with the
+C++ reference's v2.0.0 and the whole family; CHANGELOG.md has the migration notes. Release process: bump
 `version` in Cargo.toml, refresh both lockfiles (`cargo update -p serialize-official` at the
 root and in fuzz/ — both are committed, and a stale one is the step that gets skipped), verify
 `cargo package`, push, wait for CI fully green, then `git tag -a vX.Y.Z` + `gh release create`
-on that commit. New exported API = minor bump; any wire format change is forbidden (see
-invariant 1), not a version discussion. The cargo-semver-checks CI job flags accidental API
+on that commit. New exported API = minor bump; a wire format change happens only as a
+family-wide format version decided upstream (as 2.0 was), never in this port alone. The cargo-semver-checks CI job flags accidental API
 breaks on PRs.
 
 The repo is public (that flip is done). The one step still waiting on Glenn is `cargo publish`
@@ -220,11 +237,8 @@ automatically on publish.
 
 - Endianness is handled entirely by `to_le_bytes`/`from_le_bytes`; there is no byte-swap
   code and no platform detection. The s390x CI job is the proof.
-- `serialize_string` refuses invalid UTF-8 and interior NULs on read (STANDARD.md's refusal
-  rules, adopted 2026-08-15). `serialize_wide_string` is the family `wchar_t` format: each
-  32 bit group is one UTF-16 CODE UNIT — astral chars travel as surrogate pairs, split on
-  write (`encode_utf16`) and recombined on read — and the reader refuses groups above
-  0xFFFF, interior NUL groups, and unpaired/misordered surrogates in every build mode. The
-  family conformance pin ("a" + U+1F600, 8-unit buffer, 13 bytes) is
-  `test_wstring_utf16_code_units`, byte-identical across serialize, serialize.c and
-  serialize.cs.
+- `serialize_string` refuses an interior NUL (`embedded_nul`, scanned over the whole payload
+  FIRST) and then invalid UTF-8 (`invalid_utf8`) on read; format 2.0 requires that order.
+  `serialize_wide_string` is gone: format 2.0 removed `wstring`, and text is UTF-8 only.
+- `serialize_f32`/`serialize_f64` test the RAW bits for finiteness before `from_bits`, so
+  i686's x87 handling of a signaling NaN can never change the verdict.

@@ -124,30 +124,19 @@ impl Stream for WriteStream<'_> {
         value: &mut String,
         buffer_size: usize,
     ) -> Result<(), Infallible> {
-        let mut length = string_length(value.len(), buffer_size);
+        let mut length = string_length(value, buffer_size);
         self.serialize_int(&mut length, 0, buffer_size as i32 - 1)?;
         self.serialize_align()?;
         self.writer.write_bytes(value.as_bytes());
         Ok(())
     }
 
+    /// The end of the object emits nothing: the writer already leaves the unused bits of
+    /// the final byte zero, and the object ends wherever its last field left the bit index,
+    /// so the bytes [`Stream::bytes_processed`] reports end exactly where a reader's end
+    /// expects them.
     #[inline]
-    fn serialize_wide_string(
-        &mut self,
-        value: &mut String,
-        buffer_size: usize,
-    ) -> Result<(), Infallible> {
-        // each 32 bit group carries one UTF-16 CODE UNIT (STANDARD.md "wstring", adopted
-        // 2026-08-15): the length counts units, and an astral char rides as its surrogate
-        // pair — encode_utf16 performs the split, so the bytes match what a 2 byte wchar_t
-        // platform produces. A Rust String cannot hold unpaired surrogates, so the
-        // well-formed-UTF-16 writer contract holds by construction.
-        let mut length = string_length(value.encode_utf16().count(), buffer_size);
-        self.serialize_int(&mut length, 0, buffer_size as i32 - 1)?;
-        for unit in value.encode_utf16() {
-            let mut group = u32::from(unit);
-            self.serialize_bits(&mut group, 32)?;
-        }
+    fn serialize_end(&mut self) -> Result<(), Infallible> {
         Ok(())
     }
 
@@ -172,19 +161,26 @@ impl Stream for WriteStream<'_> {
     }
 }
 
-/// Shared write/measure-side handling of string lengths: the length must fit the wire range
-/// `[0,buffer_size-1]`. Both violations are write-contract violations on trusted paths —
-/// debug assertions, compiled out in release, where the wrapped length encodes a malformed
-/// stream that checked readers reject (never memory unsafety).
-pub(crate) fn string_length(length: usize, buffer_size: usize) -> i32 {
+/// Shared write/measure-side handling of a string's contract: the length must fit the wire
+/// range `[0,buffer_size-1]`, and the payload must hold no zero byte (STANDARD.md, "string":
+/// a writer is handed well-formed UTF-8 with no NUL, which a Rust `String` guarantees for the
+/// first half). Every violation is a write-contract violation on a trusted path — a debug
+/// assertion, compiled out in release, where the malformed stream is one checked readers
+/// reject (never memory unsafety).
+pub(crate) fn string_length(value: &str, buffer_size: usize) -> i32 {
+    let length = value.len();
     debug_assert!(
         buffer_size >= 1 && i32::try_from(buffer_size).is_ok(),
         "string buffer_size must be in [1,i32::MAX] (got {buffer_size})"
     );
     debug_assert!(
         length < buffer_size,
-        "string of {length} bytes/UTF-16 code units does not fit buffer_size {buffer_size} (max {})",
+        "string of {length} bytes does not fit buffer_size {buffer_size} (max {})",
         buffer_size.saturating_sub(1)
+    );
+    debug_assert!(
+        !value.as_bytes().contains(&0),
+        "string holds a NUL byte, which every reader refuses as embedded_nul"
     );
     length as i32
 }
