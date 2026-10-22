@@ -29,8 +29,8 @@ family beyond the C++ one. What ties the family together is the C++ library as t
 reference: each port runs its own head-to-head check against it in its own CI, all four ports
 vendor a byte-identical copy of [STANDARD.md](STANDARD.md) and of the shared
 [conformance/](conformance) corpus — the upstream specification and its vectors, with a CI job
-in each repo that fails on drift — and every port runs every vector of that corpus, the golden
-message included, refusing each refused vector for the reason it states. Compatibility across the family rests on that shared reference
+in each repo that fails on drift. This port runs every vector of that corpus, the golden
+message included, and refuses each refused vector for the reason it states. Compatibility across the family rests on that shared reference
 and that shared specification, not on any Rust-to-Go or Rust-to-C# test.
 
 Zero dependencies, no unsafe code, BSD 3-Clause. Install with `cargo add serialize-official`

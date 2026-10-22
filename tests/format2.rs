@@ -402,3 +402,47 @@ fn string_real_text_round_trips_byte_for_byte() {
         assert_eq!(decoded.as_bytes(), text.as_bytes());
     }
 }
+
+// ------------------------------------------------------------------------------------------
+// a claimed length is checked against the stream before anything is allocated
+
+#[test]
+fn string_claiming_a_huge_length_is_past_end_before_any_allocation() {
+    // buffer_size i32::MAX: a 31 bit length field claiming 2^31 - 2 bytes, in a 4 byte
+    // stream. The claim is checked against the bytes the stream holds after the align and
+    // refused as past_end; the destination never grows toward the claimed size
+    let claimed = (i32::MAX - 1) as u32;
+    let buffer = with_slack(&claimed.to_le_bytes());
+    let mut stream = ReadStream::new(&buffer, 4);
+    let mut text = String::new();
+    assert_eq!(
+        stream.serialize_string(&mut text, i32::MAX as usize),
+        Err(Error::PastEnd)
+    );
+    assert_eq!(
+        text.capacity(),
+        0,
+        "nothing was allocated for the claimed length"
+    );
+
+    // the same claim one byte short of what the stream holds, and one byte over
+    let buffer = with_slack(&[0x02, 0x41]);
+    let mut stream = ReadStream::new(&buffer, 2);
+    assert_eq!(stream.serialize_string(&mut text, 16), Err(Error::PastEnd));
+    assert_eq!(text.capacity(), 0);
+    let buffer = with_slack(&[0x01, 0x41]);
+    let mut stream = ReadStream::new(&buffer, 2);
+    stream.serialize_string(&mut text, 16).unwrap();
+    assert_eq!(text, "A");
+}
+
+#[test]
+fn bytes_past_the_stream_are_past_end() {
+    // bytes fills a caller-owned buffer and allocates nothing; a count past the stream is
+    // refused before any byte is copied
+    let buffer = with_slack(&[0x41, 0x42]);
+    let mut stream = ReadStream::new(&buffer, 2);
+    let mut data = [0xEE_u8; 3];
+    assert_eq!(stream.serialize_bytes(&mut data), Err(Error::PastEnd));
+    assert_eq!(data, [0xEE; 3]);
+}
