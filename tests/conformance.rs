@@ -62,8 +62,9 @@
 //! signaling bit, so a hexadecimal expectation and its decimal twin are one expectation.
 
 use serialize::{Error, MeasureStream, ReadStream, Serialize, Stream, WriteStream};
+use std::ffi::OsString;
 use std::fmt::Write as _;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 /// The non-zero fill behind (and around) every stream the runner presents.
 const SLACK_FILL: u8 = 0xA5;
@@ -79,10 +80,39 @@ const SENTINEL_BITS: u128 = 0xCAFE_F00D;
 /// every signed width a ranged or fixed point operation uses.
 const SENTINEL_NUMBER: i128 = -1_234_567;
 
-/// The vendored corpus directory. `CARGO_MANIFEST_DIR` is this crate's root, which is where
-/// the corpus sits under `cargo test`, under Miri, and inside the container `cross` runs in.
+/// The directory holding `conformance/` and `conformance-controls/`. By default it is the
+/// vendored copy: `CARGO_MANIFEST_DIR` is this crate's root, which is where the corpus sits
+/// under `cargo test`, under Miri, and inside the container `cross` runs in.
+///
+/// `SERIALIZE_CONFORMANCE_ROOT` names another one, a checkout of mas-bandwidth/serialize. The
+/// nightly conformance job sets it, so this runner reads the CURRENT upstream corpus rather
+/// than the copy vendored at the last re-sync. Empty is the same as unset.
+fn corpus_root(variable: Option<OsString>) -> PathBuf {
+    match variable {
+        Some(root) if !root.is_empty() => PathBuf::from(root),
+        _ => PathBuf::from(env!("CARGO_MANIFEST_DIR")),
+    }
+}
+
+/// The corpus root this run reads, from the environment.
+fn conformance_root() -> PathBuf {
+    corpus_root(std::env::var_os("SERIALIZE_CONFORMANCE_ROOT"))
+}
+
+/// The corpus directory, `conformance/` under the root.
 fn corpus_directory() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR")).join("conformance")
+    conformance_root().join("conformance")
+}
+
+#[test]
+fn corpus_root_defaults_to_the_vendored_copy() {
+    let vendored = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    assert_eq!(corpus_root(None), vendored);
+    assert_eq!(corpus_root(Some(OsString::new())), vendored);
+    assert_eq!(
+        corpus_root(Some(OsString::from("/upstream/serialize"))),
+        PathBuf::from("/upstream/serialize")
+    );
 }
 
 /// Every vector file in the corpus directory, in name order, read at run time.
@@ -1158,9 +1188,9 @@ fn every_conformance_vector() {
     );
 }
 
-/// The directory of the vendored negative controls, beside `conformance/`.
+/// The directory of the negative controls, beside `conformance/` under the same root.
 fn controls_directory() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR")).join("conformance-controls")
+    conformance_root().join("conformance-controls")
 }
 
 /// Control 1 (STANDARD.md, "A runner discovers the directory and runs every vector in it"):

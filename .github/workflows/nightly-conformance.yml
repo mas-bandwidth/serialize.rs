@@ -1,0 +1,128 @@
+name: nightly conformance
+
+# THE CURRENT C/C++ DATA, EVERY NIGHT, ON OUR OWN MACHINES. ci.yml proves this crate
+# against the corpus it VENDORS, and spec-sync proves the vendored copy matches upstream
+# at the moment a commit lands. Neither notices the morning after upstream moves: a new
+# vector, a new refusal rule, a corrected expectation lands in mas-bandwidth/serialize and
+# this port stays green against yesterday's copy until someone re-syncs. This job closes
+# that gap. It builds the C++ reference at main HEAD, certifies the upstream corpus with
+# the reference's own runner, runs THIS port's runner against that corpus rather than the
+# vendored one, and diffs the vendored copy against it. A port behind the standard is what
+# this job exists to catch, so drift fails it.
+#
+# It is a functional test: it clones a second repository, builds C++ and runs on a fleet
+# machine. No push or pull_request trigger, so the per-commit tier is untouched.
+
+on:
+  schedule:
+    # staggered across the serialize ports, between 04:00 and 07:00 UTC
+    - cron: "17 5 * * *"
+  workflow_dispatch:
+    inputs:
+      flip_byte:
+        # THE NEGATIVE CONTROL. A gate nobody has seen go red is a claim, not a
+        # measurement: this flips one byte of an accepted message.txt vector in a scratch copy
+        # of the upstream corpus, and the port step must go red. Nothing is committed.
+        description: "Negative control: flip one byte in a copied vector (the run must go red)"
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  conformance:
+    name: port vs current C/C++ data
+    runs-on: [self-hosted, Linux, X64, fleet]
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1   # v7
+
+      - name: Check out mas-bandwidth/serialize at main HEAD
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1   # v7
+        with:
+          # main, never a tag, on purpose: ci.yml pins the C++ release for a commit's own
+          # proof, and this job asks the other question, whether the port still agrees with
+          # the standard as it stands tonight
+          repository: mas-bandwidth/serialize
+          ref: main
+          path: upstream
+
+      - name: Report the machine and the upstream commit
+        run: |
+          echo "runner: $RUNNER_NAME ($(uname -srm))"
+          echo "upstream: mas-bandwidth/serialize@$(git -C upstream rev-parse HEAD)"
+
+      # Toolchains go under the job's temporary directory, never the machine's: a fleet
+      # runner is shared, and a nightly that upgrades its rustup leaves state behind
+      - name: Keep the Rust toolchain inside the job
+        run: |
+          echo "RUSTUP_HOME=$RUNNER_TEMP/rustup" >> "$GITHUB_ENV"
+          echo "CARGO_HOME=$RUNNER_TEMP/cargo" >> "$GITHUB_ENV"
+          echo "$RUNNER_TEMP/cargo/bin" >> "$GITHUB_PATH"
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec   # stable
+        with:
+          toolchain: stable
+      - uses: jwlawson/actions-setup-cmake@0d6a7d60b009d01c9e7523be22153ff8f19460d3   # v2.2.0
+
+      # The corpus is hand written and never generated from an implementation (STANDARD.md,
+      # Provenance), so there is nothing to regenerate. What the C++ reference does here is
+      # certify it: upstream's own ctest conformance targets run every vector and every
+      # negative control through serialize.h, so the data this port is held to tonight is
+      # data the reference itself passes.
+      - name: Build the C++ reference and certify the upstream corpus with it
+        run: |
+          cmake -S upstream -B upstream-build -DCMAKE_BUILD_TYPE=Release
+          cmake --build upstream-build --parallel
+          ctest --test-dir upstream-build -R conformance --output-on-failure
+
+      - name: Copy the upstream corpus for this port to read
+        env:
+          FLIP_BYTE: ${{ inputs.flip_byte }}
+        run: |
+          mkdir -p "$RUNNER_TEMP/corpus"
+          cp -R upstream/conformance upstream/conformance-controls "$RUNNER_TEMP/corpus/"
+          if [ "$FLIP_BYTE" = "true" ]; then
+            # the first byte of message.txt's first vector, inverted: an accepted vector whose
+            # bytes no longer decode to its stated values
+            file="$RUNNER_TEMP/corpus/conformance/message.txt"
+            line=$(grep -n -m1 '^bytes [0-9a-fA-F][0-9a-fA-F]' "$file" | cut -d: -f1)
+            byte=$(sed -n "${line}p" "$file" | cut -d' ' -f2)
+            flipped=$(printf '%02X' $(( 0x$byte ^ 0xff )))
+            sed -i "${line}s/^bytes $byte/bytes $flipped/" "$file"
+            echo "::warning::NEGATIVE CONTROL: message.txt line $line, first byte $byte flipped to $flipped. This run must go red."
+            if diff -q upstream/conformance/message.txt "$file" > /dev/null; then
+              echo "::error::the negative control flipped nothing"
+              exit 1
+            fi
+          fi
+
+      # Encodes byte for byte, decodes of the C++ bytes by value, every refusal for its
+      # stated reason, and every negative control failing exactly its .expected vectors:
+      # the same runner as ci.yml, pointed at the upstream copy by SERIALIZE_CONFORMANCE_ROOT
+      - name: This port against the upstream corpus
+        env:
+          SERIALIZE_CONFORMANCE_ROOT: ${{ runner.temp }}/corpus
+        run: cargo test --release --test conformance -- --nocapture
+      - name: This port's negative controls against the upstream corpus
+        env:
+          SERIALIZE_CONFORMANCE_ROOT: ${{ runner.temp }}/corpus
+          RUSTFLAGS: --cfg serialize_controls
+        run: cargo test --release --test conformance -- --nocapture
+
+      # runs whatever the port steps did, so a red night reports drift as well as failures
+      - name: The vendored copy against upstream
+        if: success() || failure()
+        run: |
+          status=0
+          for path in STANDARD.md IMPLEMENTING.md conformance conformance-controls; do
+            if ! diff -ru "upstream/$path" "$path"; then
+              echo "::error::$path has drifted from mas-bandwidth/serialize@$(git -C upstream rev-parse --short HEAD). Re-vendor with tools/revendor.sh and port what the diff implies."
+              status=1
+            fi
+          done
+          test "$status" -eq 0
+          echo "the vendored STANDARD.md, IMPLEMENTING.md, conformance/ and conformance-controls/ match upstream"

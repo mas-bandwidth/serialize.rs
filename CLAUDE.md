@@ -177,6 +177,11 @@ zero unsafe, BSD-3.
   `#![forbid(unsafe_code)]` attribute in lib.rs, and the lint table is the one place to look.
   nightly-fuzz.yml runs 30 min per fuzz target daily with a cumulative cached corpus (free now
   that the repo is public).
+  nightly-conformance.yml runs nightly on a fleet runner: it builds the C++ reference at
+  mas-bandwidth/serialize main HEAD, certifies the upstream corpus with its ctest conformance
+  targets, runs tests/conformance.rs against that corpus via `SERIALIZE_CONFORMANCE_ROOT` (plain
+  and under `--cfg serialize_controls`), and fails on any drift of the vendored copies. A
+  dispatch with `flip_byte` is its negative control and must go red.
 
 ## API review decisions (red/blue review, 2026-07-12 — do not relitigate without new evidence)
 
