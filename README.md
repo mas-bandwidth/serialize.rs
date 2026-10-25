@@ -11,7 +11,8 @@ is **bit-for-bit wire compatible** with it. It carries **serialize format 2.0**:
 carries only integers and bytes, and every value has exactly one encoding (STANDARD.md). The
 golden wire format test pins the 106 exact bytes of STANDARD.md's "The whole message" — byte
 for byte the vector `golden_wire_bytes` pins in the C++ test suite — and on every push and
-pull request CI builds the real C++ library at a pinned release (v2.0.0) and runs both
+pull request CI builds the real C++ library at the release pinned in
+`.github/workflows/ci.yml` and runs both
 implementations head to head over the library's own golden serialize function: they write
 byte-identical data and each decodes the other's output. That machine check covers all 106 of
 those bytes, and a second, harness-defined packet beside them covering what the golden data
