@@ -53,7 +53,7 @@ fuzz_target!(|data: &[u8]| {
                 let bound = 1i128 << (20 + u32::from(a) % 100);
                 stream.serialize_int128(&mut 0, -bound, bound)
             }
-            14 => match a % 4 {
+            14 => match a % 9 {
                 // fixed point configurations are constants of the call site, so the ones the
                 // C++ fuzz harness pins are driven here: values read off hostile bytes must
                 // decode within the raw bounds or fail the read
@@ -66,6 +66,11 @@ fuzz_target!(|data: &[u8]| {
                     -1152921504606846976,
                     1152921504606846976,
                 ),
+                3 => stream.serialize_fixed(&mut 0i8, 4, 4, -7, 7),
+                4 => stream.serialize_fixed(&mut 0u8, 4, 4, 0, 15),
+                5 => stream.serialize_fixed(&mut 0u32, 16, 16, 0, 60000),
+                6 => stream.serialize_fixed(&mut 0u64, 48, 16, 0, 1000000000),
+                7 => stream.serialize_fixed(&mut 0u128, 112, 16, 0, 2305843009213693952),
                 _ => stream.serialize_int128(&mut 0, i128::MIN, i128::MAX),
             },
             _ => match a % 5 {

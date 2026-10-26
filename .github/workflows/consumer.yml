@@ -19,6 +19,13 @@
 # The index is resolved by .github/published-version.sh, the same script the
 # published-version job in ci.yml uses, so the two jobs cannot disagree about
 # what crates.io holds.
+#
+# The exact-source job below is a separate proof, not a substitute for the
+# registry check above: it packages the exact reviewed source (`cargo package`),
+# unpacks that .crate outside the checkout, and builds a clean external crate
+# against the unpacked package, so a change that has not been published yet is
+# still exercised through the distribution artifact. The registry job remains
+# the only proof that a consumer can fetch the crate from crates.io.
 name: consumer
 
 on:
@@ -171,3 +178,73 @@ jobs:
           fi
 
           exit "$status"
+
+  consumer-exact-source:
+    name: consumer (exact reviewed source)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Package the exact reviewed source
+        run: |
+          set -eu
+          cargo package --locked
+          crate_file=$(ls target/package/*.crate | head -1)
+          echo "packaged: $crate_file ($(git rev-parse HEAD))"
+          mkdir -p "$RUNNER_TEMP/pkg"
+          tar -xzf "$crate_file" -C "$RUNNER_TEMP/pkg" --strip-components=1
+          test -f "$RUNNER_TEMP/pkg/Cargo.toml"
+          test -f "$RUNNER_TEMP/pkg/STANDARD.md"
+
+      - name: Consume the packaged source from a clean external crate
+        run: |
+          set -eu
+          consumer="$RUNNER_TEMP/consumer-exact"
+          rm -rf "$consumer"
+          cargo init --quiet --vcs none --name consumer-exact "$consumer"
+          cd "$consumer"
+          # the package name on crates.io differs from the lib name; pin both
+          pkg_name=$(sed -n 's/^name = "\(.*\)"/\1/p' "$RUNNER_TEMP/pkg/Cargo.toml" | head -1)
+          cargo add --quiet --path "$RUNNER_TEMP/pkg" "$pkg_name"
+          cat > src/main.rs <<'RUST'
+          use serialize::{ReadStream, Result, Stream, WriteStream};
+          fn message<S: Stream>(
+              s: &mut S,
+              alive: &mut bool,
+              health: &mut i32,
+              sequence: &mut u16,
+          ) -> Result<(), S::Error> {
+              s.serialize_bool(alive)?;
+              s.serialize_int(health, 0, 1000)?;
+              s.serialize_u16(sequence)?;
+              Ok(())
+          }
+          fn main() {
+              const WANT: [u8; 4] = [121, 149, 132, 0];
+              let mut buffer = [0u8; 64];
+              let mut w = WriteStream::new(&mut buffer);
+              message(&mut w, &mut true, &mut 700, &mut 4242).expect("write failed");
+              w.flush();
+              let got = w.data().to_vec();
+              println!("encoded {} bytes: {got:?}", got.len());
+              assert_eq!(got, WANT, "wrong bytes: want {WANT:?}, got {got:?}");
+              let mut r = ReadStream::new(&got, got.len());
+              let (mut alive, mut health, mut sequence) = (false, 0i32, 0u16);
+              message(&mut r, &mut alive, &mut health, &mut sequence).expect("read failed");
+              assert!(alive);
+              assert_eq!(health, 700);
+              assert_eq!(sequence, 4242);
+              println!("decoded {alive} {health} {sequence}");
+          }
+          RUST
+          cargo run --quiet
+          {
+            echo "## Consumer path (exact reviewed source)"
+            echo ""
+            echo "| | |"
+            echo "|---|---|"
+            echo "| head | `$(git -C "$GITHUB_WORKSPACE" rev-parse HEAD)` |"
+            echo "| package | `$pkg_name` from `cargo package` of that head |"
+          } >> "$GITHUB_STEP_SUMMARY"
