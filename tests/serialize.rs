@@ -1420,12 +1420,270 @@ fn check_fixed_rejects_out_of_range<T>(
     );
 }
 
+// One pairwise-matrix case: write/read/measure agree, the bytes are the canonical
+// little-endian offset, the consumed width is the bit length of the raw range, and a
+// smuggled or truncated read is refused terminally with its destination preserved.
+#[allow(clippy::too_many_lines)] // one case shape: splitting it would separate the refusal checks from the round trip they guard
+fn check_fixed_matrix_case<T>(integer_bits: u32, fraction_bits: u32, min_units: i64, max_units: i64)
+where
+    T: FixedPointStorage + PartialEq + core::fmt::Debug,
+{
+    // raw bounds in the unsigned domain, as in the codec: negative bounds wrap
+    let raw_min = (i128::from(min_units) as u128) << fraction_bits;
+    let raw_range = ((i128::from(max_units) - i128::from(min_units)) as u128) << fraction_bits;
+    let bits = if min_units == max_units {
+        0
+    } else {
+        128 - raw_range.leading_zeros()
+    };
+    let one_unit = 1u128 << fraction_bits;
+    let mut offsets = vec![0, raw_range, raw_range / 2];
+    if min_units != max_units {
+        offsets.push(1);
+        offsets.push(raw_range - 1);
+        if max_units - min_units > 2 {
+            offsets.push(one_unit);
+            offsets.push(raw_range - one_unit);
+        }
+    }
+    for offset in offsets {
+        let raw_value = raw_min.wrapping_add(offset);
+        let mut buffer = [0u8; 40];
+        let mut written = T::from_unsigned(raw_value);
+        let (bits_written, bytes_written) = {
+            let mut write_stream = WriteStream::new(&mut buffer[..32]);
+            write_stream
+                .serialize_fixed(
+                    &mut written,
+                    integer_bits,
+                    fraction_bits,
+                    min_units,
+                    max_units,
+                )
+                .unwrap();
+            write_stream.flush();
+            (
+                write_stream.bits_processed(),
+                write_stream.bytes_processed() as usize,
+            )
+        };
+        assert_eq!(
+            bits_written,
+            u64::from(bits),
+            "consumed bits for offset {offset}"
+        );
+        // canonical bytes: the offset from raw_min, least-significant bits first
+        assert_eq!(
+            &buffer[..bytes_written],
+            &offset.to_le_bytes()[..bytes_written],
+            "canonical bytes for offset {offset}"
+        );
+        let mut measure_stream = MeasureStream::new();
+        let mut measured = T::from_unsigned(raw_value);
+        measure_stream
+            .serialize_fixed(
+                &mut measured,
+                integer_bits,
+                fraction_bits,
+                min_units,
+                max_units,
+            )
+            .unwrap();
+        assert_eq!(measure_stream.bits_processed(), bits_written);
+        let mut read_stream = ReadStream::new(&buffer, bytes_written);
+        let mut read_back = T::from_unsigned(0);
+        read_stream
+            .serialize_fixed(
+                &mut read_back,
+                integer_bits,
+                fraction_bits,
+                min_units,
+                max_units,
+            )
+            .unwrap();
+        assert_eq!(read_back, written);
+        assert_eq!(read_stream.bits_processed(), bits_written);
+    }
+
+    if min_units == max_units {
+        return;
+    }
+    let sentinel = T::from_unsigned(0xA5A5_A5A5_A5A5_A5A5_A5A5_A5A5_A5A5_A5A5u128);
+    // refusal terminality on a truncated read: destination preserved, latch held
+    {
+        let buffer = [0u8; 40];
+        let mut stream = ReadStream::new(&buffer, 0);
+        let mut value = sentinel;
+        assert_eq!(
+            stream.serialize_fixed(
+                &mut value,
+                integer_bits,
+                fraction_bits,
+                min_units,
+                max_units
+            ),
+            Err(Error::PastEnd)
+        );
+        assert_eq!(
+            value, sentinel,
+            "a refused read must preserve its destination"
+        );
+        assert_eq!(stream.failure(), Some(Error::PastEnd));
+        let position = stream.bits_processed();
+        let mut follow = sentinel;
+        assert_eq!(
+            stream.serialize_fixed(
+                &mut follow,
+                integer_bits,
+                fraction_bits,
+                min_units,
+                max_units
+            ),
+            Err(Error::PastEnd)
+        );
+        assert_eq!(follow, sentinel);
+        assert_eq!(
+            stream.bits_processed(),
+            position,
+            "a latched read consumes nothing"
+        );
+    }
+    // refusal terminality on a smuggled raw_range + 1, where the encoding has headroom
+    let max_encodable = if bits < 128 {
+        (1u128 << bits) - 1
+    } else {
+        u128::MAX
+    };
+    if raw_range != max_encodable {
+        let mut smuggled = raw_range + 1;
+        let mut buffer = [0u8; 40];
+        {
+            let mut write_stream = WriteStream::new(&mut buffer[..32]);
+            let mut bits_left = bits;
+            while bits_left > 0 {
+                let group_bits = bits_left.min(32);
+                let mut group = (smuggled & 0xFFFF_FFFF) as u32;
+                write_stream.serialize_bits(&mut group, group_bits).unwrap();
+                smuggled >>= group_bits;
+                bits_left -= group_bits;
+            }
+            write_stream.flush();
+        }
+        let mut stream = ReadStream::new(&buffer, 32);
+        let mut value = sentinel;
+        assert_eq!(
+            stream.serialize_fixed(
+                &mut value,
+                integer_bits,
+                fraction_bits,
+                min_units,
+                max_units
+            ),
+            Err(Error::ValueOutOfRange)
+        );
+        assert_eq!(
+            value, sentinel,
+            "a refused read must preserve its destination"
+        );
+        assert_eq!(stream.failure(), Some(Error::ValueOutOfRange));
+        let position = stream.bits_processed();
+        let mut follow = 0xABCD_u32;
+        assert_eq!(
+            stream.serialize_bits(&mut follow, 8),
+            Err(Error::ValueOutOfRange)
+        );
+        assert_eq!(follow, 0xABCD);
+        assert_eq!(
+            stream.bits_processed(),
+            position,
+            "a latched read consumes nothing"
+        );
+    }
+}
+
+// Wire widths immediately below, at and above a group boundary, for the boundaries a
+// storage can represent: a one-unit range at fraction_bits = bits - 1 has raw_range
+// 2^(bits-1), so its wire width is exactly `bits`, in the group holding that bit.
+fn check_fixed_group_boundaries<T>(boundaries: &[u32])
+where
+    T: FixedPointStorage + PartialEq + core::fmt::Debug,
+{
+    for &bits in boundaries {
+        let fraction_bits = bits - 1;
+        let integer_bits = T::BITS - fraction_bits;
+        if T::SIGNED {
+            check_fixed_matrix_case::<T>(integer_bits, fraction_bits, -1, 0);
+        } else {
+            check_fixed_matrix_case::<T>(integer_bits, fraction_bits, 0, 1);
+        }
+    }
+}
+
+#[test]
+fn test_serialize_fixed_pairwise_matrix() {
+    // A compact pairwise matrix, not an exhaustive Cartesian product: every signed and
+    // unsigned 8/16/32/64/128-bit storage, zero and nonzero fractional layouts,
+    // degenerate and nondegenerate ranges, bounds and one-step-inside values, and the
+    // representable 32-bit group boundaries. Each case also pins canonical bytes,
+    // consumed bits, refusal terminality and destination preservation (above).
+    check_fixed_matrix_case::<i8>(8, 0, -128, 127);
+    check_fixed_matrix_case::<i8>(4, 4, -7, 7);
+    check_fixed_matrix_case::<i8>(4, 4, 5, 5);
+    check_fixed_matrix_case::<u8>(8, 0, 0, 255);
+    check_fixed_matrix_case::<u8>(4, 4, 0, 15);
+    check_fixed_matrix_case::<u8>(4, 4, 3, 3);
+    check_fixed_matrix_case::<i16>(16, 0, -32768, 32767);
+    check_fixed_matrix_case::<i16>(8, 8, -100, 100);
+    check_fixed_matrix_case::<i16>(8, 8, -9, -9);
+    check_fixed_matrix_case::<u16>(16, 0, 0, 60000);
+    check_fixed_matrix_case::<u16>(8, 8, 0, 200);
+    check_fixed_matrix_case::<u16>(8, 8, 7, 7);
+    check_fixed_matrix_case::<i32>(32, 0, -100000, 100000);
+    check_fixed_matrix_case::<i32>(16, 16, -30000, 30000);
+    check_fixed_matrix_case::<i32>(16, 16, 2, 2);
+    check_fixed_matrix_case::<u32>(32, 0, 0, 4000000000);
+    check_fixed_matrix_case::<u32>(16, 16, 0, 60000);
+    check_fixed_matrix_case::<u32>(16, 16, 9, 9);
+    check_fixed_matrix_case::<i64>(64, 0, -5000000000, 5000000000);
+    check_fixed_matrix_case::<i64>(48, 16, -100000000000, 100000000000);
+    check_fixed_matrix_case::<i64>(48, 16, -3, -3);
+    check_fixed_matrix_case::<u64>(64, 0, 0, 9000000000000000000);
+    check_fixed_matrix_case::<u64>(48, 16, 0, 1000000000);
+    check_fixed_matrix_case::<u64>(48, 16, 11, 11);
+    check_fixed_matrix_case::<i128>(112, 16, -1152921504606846976, 1152921504606846976);
+    check_fixed_matrix_case::<i128>(64, 64, -1000, 1000);
+    check_fixed_matrix_case::<i128>(64, 64, 4, 4);
+    check_fixed_matrix_case::<u128>(112, 16, 0, 2305843009213693952);
+    check_fixed_matrix_case::<u128>(64, 64, 0, 1000);
+    check_fixed_matrix_case::<u128>(64, 64, 6, 6);
+
+    // Group boundaries each storage can represent. A 32-bit storage tops out at 32 wire
+    // bits (33 is not representable), a 64-bit storage at 64, and 8/16-bit storage below
+    // the first boundary, where its own top widths stand in.
+    check_fixed_group_boundaries::<i8>(&[7, 8]);
+    check_fixed_group_boundaries::<u8>(&[7, 8]);
+    check_fixed_group_boundaries::<i16>(&[15, 16]);
+    check_fixed_group_boundaries::<u16>(&[15, 16]);
+    check_fixed_group_boundaries::<i32>(&[31, 32]);
+    check_fixed_group_boundaries::<u32>(&[31, 32]);
+    check_fixed_group_boundaries::<i64>(&[31, 32, 33, 63, 64]);
+    check_fixed_group_boundaries::<u64>(&[31, 32, 33, 63, 64]);
+    check_fixed_group_boundaries::<i128>(&[31, 32, 33, 63, 64, 65, 95, 96, 97, 127, 128]);
+    check_fixed_group_boundaries::<u128>(&[31, 32, 33, 63, 64, 65, 95, 96, 97, 127, 128]);
+}
+
 #[test]
 fn test_serialize_fixed() {
     // the storage x Q format matrix. every configuration runs the full case list in
     // check_fixed_cases: exact raw bounds, one raw step inside each, whole unit values inside
     // each bound, all fraction bits set, the middle of the range, and zero / +1.0 / -1.0
     // units where the bounds allow them.
+
+    // i8 / u8
+    check_fixed_cases::<i8>(16, 4, 4, -7, 7);
+    check_fixed_cases::<i8>(1, 8, 0, -128, 127);
+    check_fixed_cases::<u8>(16, 4, 4, 0, 15);
+    check_fixed_cases::<u8>(1, 8, 0, 0, 255);
 
     // i16
     check_fixed_cases::<i16>(256, 8, 8, -100, 100);
@@ -1445,6 +1703,7 @@ fn test_serialize_fixed() {
     check_fixed_cases::<u16>(1, 16, 0, 0, 60000);
     check_fixed_cases::<u32>(65536, 16, 16, 0, 60000);
     check_fixed_cases::<u64>(65536, 48, 16, 0, 1000000000);
+    check_fixed_cases::<u128>(65536, 112, 16, 0, 2305843009213693952);
 
     // single unit range: the whole wire is the fractional part
     check_fixed_cases::<i32>(65536, 16, 16, 0, 1);
@@ -1552,6 +1811,8 @@ fn test_serialize_fixed_validation() {
     // a malicious packet can smuggle a raw value past raw_max into the bit headroom of the
     // offset encoding. reads must reject one raw step past the top of the range, on every
     // configuration in the matrix that has headroom.
+    check_fixed_rejects_out_of_range::<i8>(4, 4, -7, 7);
+    check_fixed_rejects_out_of_range::<u8>(4, 4, 0, 15);
     check_fixed_rejects_out_of_range::<i16>(8, 8, -100, 100);
     check_fixed_rejects_out_of_range::<i16>(12, 4, -2000, 2000);
     check_fixed_rejects_out_of_range::<i32>(16, 16, -30000, 30000);
