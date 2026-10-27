@@ -81,6 +81,93 @@ impl<'a> WriteStream<'a> {
         self.writer.write_align();
         self.writer.write_bytes(data);
     }
+
+    /// Write `bits` bits of `value`: the by-value twin of [`Stream::serialize_bits`],
+    /// producing identical wire.
+    ///
+    /// The unified trait signature takes `&mut u32` because the read side writes the value
+    /// back, which forces a write-side caller to copy each field into a `let mut` local first.
+    /// The write side never mutates the value, so this method takes it by value. Like every
+    /// write, it cannot fail and returns nothing.
+    ///
+    /// `bits` outside `[1,32]` or a value that does not fit in `bits` bits is a debug
+    /// assertion, exactly as on [`Stream::serialize_bits`].
+    #[inline(always)]
+    pub fn write_bits(&mut self, value: u32, bits: u32) {
+        self.writer.write_bits(value, bits);
+    }
+
+    /// Write `bits` bits of a 64 bit `value`: the by-value twin of
+    /// [`Stream::serialize_bits64`], producing identical wire (the low dword, then the high
+    /// remainder).
+    #[inline(always)]
+    pub fn write_bits64(&mut self, mut value: u64, bits: u32) {
+        let Ok(()) = self.serialize_bits64(&mut value, bits);
+    }
+
+    /// Write a 32 bit integer in `[min,max]`: the by-value twin of [`Stream::serialize_int`],
+    /// producing identical wire. A degenerate range (`min == max`) writes zero bits.
+    #[inline(always)]
+    pub fn write_int(&mut self, mut value: i32, min: i32, max: i32) {
+        let Ok(()) = self.serialize_int(&mut value, min, max);
+    }
+
+    /// Write a 64 bit integer in `[min,max]`: the by-value twin of
+    /// [`Stream::serialize_int64`], producing identical wire.
+    #[inline(always)]
+    pub fn write_int64(&mut self, mut value: i64, min: i64, max: i64) {
+        let Ok(()) = self.serialize_int64(&mut value, min, max);
+    }
+
+    /// Write a boolean as 1 bit: the by-value twin of [`Stream::serialize_bool`].
+    #[inline(always)]
+    pub fn write_bool(&mut self, value: bool) {
+        self.writer.write_bits(u32::from(value), 1);
+    }
+
+    /// Write an unsigned 8 bit integer as 8 bits: the by-value twin of
+    /// [`Stream::serialize_u8`].
+    #[inline]
+    pub fn write_u8(&mut self, value: u8) {
+        self.writer.write_bits(u32::from(value), 8);
+    }
+
+    /// Write an unsigned 16 bit integer as 16 bits: the by-value twin of
+    /// [`Stream::serialize_u16`].
+    #[inline]
+    pub fn write_u16(&mut self, value: u16) {
+        self.writer.write_bits(u32::from(value), 16);
+    }
+
+    /// Write an unsigned 32 bit integer as 32 bits: the by-value twin of
+    /// [`Stream::serialize_u32`].
+    #[inline]
+    pub fn write_u32(&mut self, value: u32) {
+        self.writer.write_bits(value, 32);
+    }
+
+    /// Write an unsigned 64 bit integer as 64 bits: the by-value twin of
+    /// [`Stream::serialize_u64`].
+    #[inline(always)]
+    pub fn write_u64(&mut self, value: u64) {
+        self.write_bits64(value, 64);
+    }
+
+    /// Write a float as its 32 bit pattern: the by-value twin of [`Stream::serialize_f32`].
+    /// The format carries finite values only; writing NaN or an infinity is a debug
+    /// assertion.
+    #[inline(always)]
+    pub fn write_f32(&mut self, mut value: f32) {
+        let Ok(()) = self.serialize_f32(&mut value);
+    }
+
+    /// Write a double as its 64 bit pattern: the by-value twin of [`Stream::serialize_f64`].
+    /// The format carries finite values only; writing NaN or an infinity is a debug
+    /// assertion.
+    #[inline]
+    pub fn write_f64(&mut self, mut value: f64) {
+        let Ok(()) = self.serialize_f64(&mut value);
+    }
 }
 
 impl Stream for WriteStream<'_> {
