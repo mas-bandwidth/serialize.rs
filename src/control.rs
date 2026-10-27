@@ -50,12 +50,15 @@ pub enum Control {
     /// `wrong-reason`: a refusal names the rule that refused it (this control reports
     /// `invalid_utf8` where `embedded_nul` is due).
     WrongReason,
+    /// `object-terminal`: a nested object on a failed stream refuses before its serialize
+    /// runs (this control calls the object directly, with no gate on either side).
+    ObjectTerminal,
 }
 
 #[cfg(serialize_controls)]
 impl Control {
     /// Every control, in the reference's order.
-    pub const ALL: [Control; 15] = [
+    pub const ALL: [Control; 16] = [
         Control::AlignPadding,
         Control::RangedReconstruction,
         Control::RangedRange,
@@ -71,6 +74,7 @@ impl Control {
         Control::StringUtf8Surrogate,
         Control::Int64ThroughDouble,
         Control::WrongReason,
+        Control::ObjectTerminal,
     ];
 
     /// The control's name, which is its `.expected` file's stem.
@@ -92,6 +96,7 @@ impl Control {
             Control::StringUtf8Surrogate => "string-utf8-surrogate",
             Control::Int64ThroughDouble => "int64-through-double",
             Control::WrongReason => "wrong-reason",
+            Control::ObjectTerminal => "object-terminal",
         }
     }
 }

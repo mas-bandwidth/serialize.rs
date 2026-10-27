@@ -401,7 +401,7 @@ fn run_steps<S: Stream>(
                 base: base + index + 1,
                 failed: None,
             };
-            let outcome = nested.serialize(stream);
+            let outcome = stream.serialize_object(&mut nested);
             let inner = nested.failed;
             if let Err(error) = outcome {
                 *failed = inner;

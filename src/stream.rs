@@ -128,6 +128,32 @@ pub trait Stream {
         Ok(())
     }
 
+    /// Serialize a nested object: the port of the C++ `serialize_object`.
+    ///
+    /// STANDARD.md, "object": a nested object contributes no bytes of its own, so this is
+    /// `object.serialize(self)` with the failure gate on both sides of it. On a read stream
+    /// that has already refused, the object is refused on entry with the latched reason and
+    /// its `serialize` is never called, so even an empty object (zero bits) after a refusal
+    /// refuses, as Reader Obligations require of `object`. If the object's `serialize`
+    /// returns an error the stream latches it, unless an inner read already latched a reason
+    /// (the first refusal wins), and if it returns `Ok` over an inner refusal it swallowed,
+    /// the latched reason is returned on exit. Prefer this to calling `object.serialize`
+    /// directly: a direct call cannot consult the failure state before the object runs.
+    ///
+    /// On a write or measure stream it is exactly `object.serialize(self)`.
+    ///
+    /// # Errors
+    ///
+    /// On a read stream, the latched error if the stream had already failed, or the first
+    /// refusal of the object's own reads.
+    #[inline(always)]
+    fn serialize_object<T: Serialize + ?Sized>(&mut self, object: &mut T) -> Result<(), Self::Error>
+    where
+        Self: Sized,
+    {
+        object.serialize(self)
+    }
+
     /// Serialize `bits` bits of an unsigned integer value in `[0,(1<<bits)-1]`.
     ///
     /// `bits` outside `[1,32]` is API misuse — a debug assertion on every stream, compiled

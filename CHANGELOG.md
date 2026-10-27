@@ -1,5 +1,24 @@
 # Changelog
 
+## 3.1.0 — 2026-10-27
+
+**Object read terminality (reference v2.0.1).** `conformance/` and `conformance-controls/`
+are re-vendored verbatim from mas-bandwidth/serialize v2.0.1 (b812b75c; the fix is 3f40cb5f):
+two `object.txt` vectors and one `sequence.txt` vector gain an empty nested object
+(`object 0`, zero bits) as a successor after the refusal, which must refuse with the latched
+reason, and the new `object-terminal` control lists exactly those three. `STANDARD.md` is
+unchanged and the format stays 2.0; no byte on the wire changes. The C++ interop job is
+pinned to v2.0.1. A minor rather than a patch release, because `serialize_object` is new API.
+
+- **`Stream::serialize_object` is new**, the port of the C++ `serialize_object`. On a read
+  stream it consults the failure state before the object runs (a failed stream refuses the
+  object without calling its `serialize`), latches a refusal the object raises on its own
+  through `Stream::fail`, and returns the latched reason on exit if the object swallowed an
+  inner refusal. On write and measure it is exactly `object.serialize(stream)`. Nested
+  objects should be serialized with it rather than by calling `serialize` directly, which
+  cannot consult the failure state first. It is a provided trait method, so outside
+  implementors of `Stream` need no change.
+
 ## 3.0.0 — 2026-10-22
 
 **Serialize format 2.0: the wire carries only integers and bytes, and every value has exactly
