@@ -100,7 +100,9 @@ zero unsafe, BSD-3.
   a schema compiler derived at generation time. `IS_WRITING`/`IS_READING` are associated
   consts, so the branches monomorphize away, and `misuse_check!` keeps argument misuse a hard
   assert on read but debug-only on the writer-trusted paths. `FixedPointStorage` is the storage trait behind
-  `serialize_fixed` (i8..i128 and their unsigned twins). `Serialize` trait for objects.
+  `serialize_fixed` (i8..i128 and their unsigned twins). `Serialize` trait for objects;
+  nested objects go through `Stream::serialize_object`, which gates on the read latch on
+  entry and exit (a failed stream refuses even an empty object without calling it).
 - `src/write_stream.rs` / `src/read_stream.rs` / `src/measure_stream.rs` — the three streams.
   Context is `Option<&'a dyn Any>` (the C++ void* context; copy out of it before serializing).
   `ReadStream` carries the terminal-failure latch (`failed: Option<Error>`, reported by

@@ -4,7 +4,7 @@ use core::any::Any;
 
 use crate::bitpacker::BitReader;
 use crate::control::{Control, deleted};
-use crate::stream::Stream;
+use crate::stream::{Serialize, Stream};
 use crate::{Error, Result, cold_error};
 
 /// Stream for reading bitpacked data.
@@ -137,6 +137,21 @@ impl Stream for ReadStream<'_> {
         match self.failed {
             Some(error) => cold_error(error),
             None => Ok(()),
+        }
+    }
+
+    #[inline(always)]
+    fn serialize_object<T: Serialize + ?Sized>(&mut self, object: &mut T) -> Result {
+        self.refuse_if_failed()?;
+        match object.serialize(self) {
+            Ok(()) => self.refuse_if_failed(),
+            Err(error) => {
+                // an inner read already latched its reason, which stays the first; a refusal
+                // the object raised on its own (Stream::fail) latches here, so the stream is
+                // terminal either way
+                let _ = self.latch(error);
+                self.refuse_if_failed()
+            }
         }
     }
 
