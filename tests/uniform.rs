@@ -1,0 +1,548 @@
+//! IMPLEMENTING.md's uniform behaviour rules, U1 to U16, one section per rule, each test citing
+//! its rule by number. No corpus vector can observe these (they are write side, measure side,
+//! API shape or caller misuse), so this port proves them here. A rule this port keeps by the
+//! language rather than by a check says so in its section.
+//!
+//! The write-side checks are debug assertions (the write-misuse mechanism, U9), so their
+//! tests run in debug builds only; every read-side rule binds in every build.
+
+// exact float comparison is the contract: compressed floats decode to exact bit patterns
+#![allow(clippy::float_cmp)]
+
+use serialize::{
+    Error, MeasureStream, ReadStream, Serialize, Stream, WriteStream, bits_required, refusal_name,
+    serialize_copy_string,
+};
+
+/// A read buffer with the eight bytes of slack the buffer contract asks for, filled non-zero.
+fn with_slack(bytes: &[u8]) -> Vec<u8> {
+    let mut buffer = bytes.to_vec();
+    buffer.resize(bytes.len() + 8, 0xA5);
+    buffer
+}
+
+/// Write `value` in `bits` bits through the unified API.
+fn put(stream: &mut WriteStream<'_>, mut value: u32, bits: u32) {
+    let Ok(()) = stream.serialize_bits(&mut value, bits);
+}
+
+/// Run `f` and report whether it panicked, without printing the panic.
+fn panics(f: impl FnOnce()) -> bool {
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(f)).is_err()
+}
+
+// ------------------------------------------------------------------------------------------
+// U1. Write buffers are a multiple of 8 bytes.
+
+#[test]
+#[cfg(debug_assertions)]
+#[should_panic(expected = "multiple of 8 bytes")]
+fn u1_write_buffer_not_a_multiple_of_8_asserts() {
+    let mut buffer = [0u8; 12];
+    let _ = WriteStream::new(&mut buffer);
+}
+
+#[test]
+fn u1_write_buffer_multiple_of_8_is_accepted() {
+    for size in [8usize, 16, 64] {
+        let mut buffer = vec![0u8; size];
+        let mut stream = WriteStream::new(&mut buffer);
+        put(&mut stream, 1, 1);
+        stream.flush();
+        assert_eq!(stream.bytes_processed(), 1);
+    }
+}
+
+// ------------------------------------------------------------------------------------------
+// U2. A caller's refusal latches `rejected` (the full set is in tests/format2.rs, the
+// standard 2.1 section; this is the rule's anchor).
+
+#[test]
+fn u2_reject_and_object_composition_latch_rejected() {
+    struct Refuses;
+    impl Serialize for Refuses {
+        fn serialize<S: Stream>(&mut self, _stream: &mut S) -> Result<(), S::Error> {
+            S::fail(Error::Rejected)
+        }
+    }
+    let buffer = with_slack(&[0x00]);
+    let mut stream = ReadStream::new(&buffer, 1);
+    assert_eq!(stream.reject(), Err(Error::Rejected));
+    assert_eq!(stream.failure(), Some(Error::Rejected));
+
+    let mut stream = ReadStream::new(&buffer, 1);
+    assert_eq!(stream.serialize_object(&mut Refuses), Err(Error::Rejected));
+    assert_eq!(stream.failure(), Some(Error::Rejected));
+}
+
+// ------------------------------------------------------------------------------------------
+// U3. A writer never sends bytes that differ from the caller's value. A Rust `&str` is well
+// formed UTF-8 by construction, so there is no lone surrogate to replace: the writer sends
+// the caller's bytes exactly, and the measure counts exactly those bytes.
+
+#[test]
+fn u3_text_is_written_byte_for_byte() {
+    let text = "naïve 日本 \u{1F600} \u{10FFFF}";
+    let mut buffer = [0u8; 64];
+    let mut write = WriteStream::new(&mut buffer);
+    let mut value = text.to_string();
+    let Ok(()) = write.serialize_string(&mut value, 64);
+    write.flush();
+    let bytes = write.bytes_processed() as usize;
+    // the length field for buffer_size 64 is 6 bits, then align to byte 1
+    assert_eq!(&buffer[1..=text.len()], text.as_bytes());
+    let mut measure = MeasureStream::new();
+    let Ok(()) = measure.serialize_string(&mut value, 64);
+    assert!(measure.bits_processed() >= 6 + text.len() as u64 * 8);
+    let read_buffer = with_slack(&buffer[..bytes]);
+    let mut read = ReadStream::new(&read_buffer, bytes);
+    let mut back = String::new();
+    read.serialize_string(&mut back, 64).unwrap();
+    assert_eq!(back, text);
+}
+
+// ------------------------------------------------------------------------------------------
+// U4. UTF-8 and NUL are checked on string write and measure. UTF-8 is the type's guarantee
+// (U3); the NUL check is a debug assertion on both.
+
+#[test]
+#[cfg(debug_assertions)]
+fn u4_nul_in_a_string_asserts_on_write_and_measure() {
+    assert!(panics(|| {
+        let mut buffer = [0u8; 16];
+        let mut write = WriteStream::new(&mut buffer);
+        let mut value = String::from("a\0b");
+        let _ = write.serialize_string(&mut value, 16);
+    }));
+    assert!(panics(|| {
+        let mut measure = MeasureStream::new();
+        let mut value = String::from("a\0b");
+        let _ = measure.serialize_string(&mut value, 16);
+    }));
+}
+
+// ------------------------------------------------------------------------------------------
+// U5. `int` bounds are int32. `serialize_int` takes `i32` bounds, so a bound outside int32
+// cannot be passed: the caller's original value is narrowed (or refused) by the caller's own
+// conversion, which the language makes explicit. The whole int32 range is carried exactly.
+
+#[test]
+fn u5_int_bounds_are_the_int32_range_exactly() {
+    for value in [i32::MIN, -1, 0, 1, i32::MAX] {
+        let mut buffer = [0u8; 8];
+        let mut write = WriteStream::new(&mut buffer);
+        let mut written = value;
+        let Ok(()) = write.serialize_int(&mut written, i32::MIN, i32::MAX);
+        write.flush();
+        assert_eq!(write.bits_processed(), 32);
+        let read_buffer = with_slack(&buffer[..4]);
+        let mut read = ReadStream::new(&read_buffer, 4);
+        let mut back = 0i32;
+        read.serialize_int(&mut back, i32::MIN, i32::MAX).unwrap();
+        assert_eq!(back, value);
+    }
+    // a wider caller value reaches the API only through a conversion the caller writes
+    assert!(i32::try_from(1i64 << 40).is_err());
+}
+
+// ------------------------------------------------------------------------------------------
+// U6. A measure stream refuses nothing: fail records nothing and returns Ok.
+
+#[test]
+fn u6_measure_refuses_nothing() {
+    let mut measure = MeasureStream::new();
+    let Ok(()) = MeasureStream::fail(Error::PastEnd);
+    let Ok(()) = measure.refuse(Error::ValueOutOfRange);
+    let Ok(()) = measure.refuse_if_failed();
+    let mut value = 3u32;
+    let Ok(()) = measure.serialize_bits(&mut value, 2);
+    assert_eq!(measure.bits_processed(), 2);
+}
+
+// ------------------------------------------------------------------------------------------
+// U7. A reader never traps, and a refusal is a value; caller misuse on read refuses as
+// value_out_of_range, after the failure state.
+
+#[test]
+fn u7_a_byte_count_past_the_buffer_refuses_at_initialization() {
+    let buffer = [0xFFu8; 8];
+    let mut stream = ReadStream::new(&buffer, 9);
+    assert_eq!(stream.failure(), Some(Error::ValueOutOfRange));
+    let mut value = 7u32;
+    assert_eq!(
+        stream.serialize_bits(&mut value, 1),
+        Err(Error::ValueOutOfRange)
+    );
+    assert_eq!(value, 7);
+    assert_eq!(stream.bits_processed(), 0);
+}
+
+#[test]
+fn u7_a_string_buffer_size_below_1_refuses() {
+    let buffer = with_slack(&[0x00]);
+    let mut stream = ReadStream::new(&buffer, 1);
+    let mut text = String::new();
+    assert_eq!(
+        stream.serialize_string(&mut text, 0),
+        Err(Error::ValueOutOfRange)
+    );
+}
+
+#[test]
+fn u7_misuse_on_a_failed_stream_keeps_the_first_reason() {
+    let buffer = with_slack(&[0xFF]);
+    let mut stream = ReadStream::new(&buffer, 1);
+    let mut wide = 0u32;
+    assert_eq!(stream.serialize_bits(&mut wide, 16), Err(Error::PastEnd));
+    let mut value = 0i32;
+    assert_eq!(stream.serialize_int(&mut value, 5, 1), Err(Error::PastEnd));
+    let mut bits = 0u32;
+    assert_eq!(stream.serialize_bits(&mut bits, 0), Err(Error::PastEnd));
+    let mut text = String::new();
+    assert_eq!(stream.serialize_string(&mut text, 0), Err(Error::PastEnd));
+    assert_eq!(stream.failure(), Some(Error::PastEnd));
+}
+
+// ------------------------------------------------------------------------------------------
+// U8. Over-wide values on write are caught in the checked build.
+
+#[test]
+#[cfg(debug_assertions)]
+fn u8_over_wide_values_assert_on_write() {
+    assert!(panics(|| {
+        let mut buffer = [0u8; 8];
+        put(&mut WriteStream::new(&mut buffer), 4, 2);
+    }));
+    assert!(panics(|| {
+        let mut buffer = [0u8; 16];
+        let mut value = 1u64 << 40;
+        let _ = WriteStream::new(&mut buffer).serialize_bits64(&mut value, 40);
+    }));
+    assert!(panics(|| {
+        let mut buffer = [0u8; 8];
+        let mut value = 11i32;
+        let _ = WriteStream::new(&mut buffer).serialize_int(&mut value, 0, 10);
+    }));
+    assert!(panics(|| {
+        let mut buffer = [0u8; 8];
+        let mut value = i128::MAX;
+        let _ = WriteStream::new(&mut buffer).serialize_int128(&mut value, 0, 10);
+    }));
+}
+
+// ------------------------------------------------------------------------------------------
+// U9. One write-misuse mechanism, the debug assertion; `fail` on a write or measure stream
+// returns without panicking in every build (the error type is uninhabited, so its "false" is
+// `Ok(())`), and so does `reject` in release.
+
+#[test]
+fn u9_fail_on_a_write_stream_never_panics() {
+    let mut buffer = [0u8; 8];
+    let mut write = WriteStream::new(&mut buffer);
+    let Ok(()) = WriteStream::fail(Error::NonCanonical);
+    let Ok(()) = write.refuse(Error::PastEnd);
+    assert_eq!(write.bits_processed(), 0);
+}
+
+#[test]
+fn u9_a_serialize_function_that_fails_on_write_does_not_panic() {
+    // validation that forgot its IS_READING guard: harmless on write and measure
+    struct Unguarded;
+    impl Serialize for Unguarded {
+        fn serialize<S: Stream>(&mut self, stream: &mut S) -> Result<(), S::Error> {
+            let mut value = 1u32;
+            stream.serialize_bits(&mut value, 1)?;
+            stream.refuse(Error::ValueOutOfRange)
+        }
+    }
+    let mut buffer = [0u8; 8];
+    let mut write = WriteStream::new(&mut buffer);
+    let Ok(()) = Unguarded.serialize(&mut write);
+    let mut measure = MeasureStream::new();
+    let Ok(()) = Unguarded.serialize(&mut measure);
+}
+
+#[test]
+#[cfg(debug_assertions)]
+fn u9_compressed_float_misuse_uses_the_same_mechanism() {
+    assert!(panics(|| {
+        let mut buffer = [0u8; 8];
+        let mut value = 0.5f32;
+        let _ = WriteStream::new(&mut buffer).serialize_compressed_float(&mut value, 1.0, 0.0, 0.1);
+    }));
+}
+
+// ------------------------------------------------------------------------------------------
+// U10. A write checks room for the whole operation before writing any of it.
+
+#[test]
+#[cfg(debug_assertions)]
+fn u10_bytes_that_do_not_fit_write_nothing() {
+    let mut buffer = [0u8; 8];
+    let mut write = WriteStream::new(&mut buffer);
+    put(&mut write, 1, 3); // unaligned: the align bits must not go out ahead of the payload
+    let before = write.bits_processed();
+    let mut payload = [0xAAu8; 8]; // 5 align bits + 64 > the 61 bits left
+    assert!(panics(|| {
+        let _ = write.serialize_bytes(&mut payload);
+    }));
+    assert_eq!(write.bits_processed(), before);
+    assert!(panics(|| write.write_bytes(&payload)));
+    assert_eq!(write.bits_processed(), before);
+}
+
+#[test]
+#[cfg(debug_assertions)]
+fn u10_a_string_that_does_not_fit_writes_no_length() {
+    let mut buffer = [0u8; 8];
+    let mut write = WriteStream::new(&mut buffer);
+    let mut text = String::from("1234567"); // 6 length bits + 2 align + 56 > 64 - 8
+    put(&mut write, 0, 8);
+    let before = write.bits_processed();
+    assert!(panics(|| {
+        let _ = write.serialize_string(&mut text, 64);
+    }));
+    assert_eq!(write.bits_processed(), before);
+    // the same string fits a fresh buffer exactly: the check is the whole operation, no more
+    let mut fresh = [0u8; 8];
+    let mut fits = WriteStream::new(&mut fresh);
+    let Ok(()) = fits.serialize_string(&mut text, 64);
+    assert_eq!(fits.bits_processed(), 64);
+}
+
+// ------------------------------------------------------------------------------------------
+// U11. A writer's buffer is unspecified until flush.
+
+#[test]
+fn u11_flush_stores_the_last_word() {
+    let mut buffer = [0u8; 8];
+    let mut write = WriteStream::new(&mut buffer);
+    put(&mut write, 0xAB, 8);
+    write.flush();
+    assert_eq!(write.data(), [0xAB]);
+}
+
+// ------------------------------------------------------------------------------------------
+// U12. `end` on a write or measure stream is a no-op returning success.
+
+#[test]
+fn u12_end_on_write_and_measure_is_a_no_op() {
+    let mut buffer = [0u8; 8];
+    let mut write = WriteStream::new(&mut buffer);
+    put(&mut write, 1, 3);
+    let Ok(()) = write.serialize_end();
+    assert_eq!(write.bits_processed(), 3);
+    let mut measure = MeasureStream::new();
+    let Ok(()) = measure.serialize_end();
+    assert_eq!(measure.bits_processed(), 0);
+}
+
+// ------------------------------------------------------------------------------------------
+// U13. Re-initialization is constructing a new stream (documented on `ReadStream::failure`):
+// the new stream starts unlatched over the same bytes.
+
+#[test]
+fn u13_a_new_stream_over_the_same_bytes_is_unlatched() {
+    let buffer = with_slack(&[0x05]);
+    let mut first = ReadStream::new(&buffer, 1);
+    assert_eq!(first.reject(), Err(Error::Rejected));
+    let mut second = ReadStream::new(&buffer, 1);
+    assert_eq!(second.failure(), None);
+    let mut value = 0u32;
+    second.serialize_bits(&mut value, 4).unwrap();
+    assert_eq!(value, 5);
+}
+
+// ------------------------------------------------------------------------------------------
+// U14. The refusal-name function, with the family spellings and "none"; a public fail.
+
+#[test]
+fn u14_refusal_names_are_the_family_spellings_and_none() {
+    assert_eq!(refusal_name(None), "none");
+    for reason in Error::ALL {
+        assert_eq!(refusal_name(Some(reason)), reason.name());
+    }
+    assert_eq!(refusal_name(Some(Error::Rejected)), "rejected");
+    let buffer = with_slack(&[0x00]);
+    let mut stream = ReadStream::new(&buffer, 1);
+    assert_eq!(refusal_name(stream.failure()), "none");
+    let _ = stream.reject();
+    assert_eq!(refusal_name(stream.failure()), "rejected");
+    // the public fail: the error constructor, which a read stream returns as the error
+    assert_eq!(
+        ReadStream::fail(Error::TrailingData),
+        Err(Error::TrailingData)
+    );
+}
+
+// ------------------------------------------------------------------------------------------
+// U15. The reference operations exist: serialize_copy_string and the precomputed compressed
+// float.
+
+#[test]
+fn u15_copy_string_truncates_to_what_the_field_carries() {
+    let mut dest = String::from("old");
+    serialize_copy_string(&mut dest, "hello world!", 6);
+    assert_eq!(dest, "hello");
+    serialize_copy_string(&mut dest, "abc\0def", 16);
+    assert_eq!(dest, "abc");
+    serialize_copy_string(&mut dest, "anything", 1);
+    assert_eq!(dest, "");
+    // truncation at a character boundary: "é" is two bytes and does not fit the last byte
+    serialize_copy_string(&mut dest, "aé", 3);
+    assert_eq!(dest, "a");
+    // what it produces always fits the field it was sized for
+    let mut buffer = [0u8; 16];
+    let mut write = WriteStream::new(&mut buffer);
+    serialize_copy_string(&mut dest, "golden", 4);
+    let Ok(()) = write.serialize_string(&mut dest, 4);
+}
+
+#[test]
+fn u15_precomputed_compressed_float_exists_and_matches() {
+    let params = serialize::serialize_compressed_float_params(0.0, 10.0, 0.01);
+    let mut buffer = [0u8; 8];
+    let mut write = WriteStream::new(&mut buffer);
+    let mut value = 2.5f32;
+    let Ok(()) = write.serialize_compressed_float_precomputed(
+        &mut value,
+        params.max_integer_value,
+        params.bits,
+        params.delta,
+        0.0,
+    );
+    assert_eq!(write.bits_processed(), u64::from(params.bits));
+}
+
+// ------------------------------------------------------------------------------------------
+// U16. Caller declarations are validated on every stream before any bits move: refused as
+// value_out_of_range on read, debug assertions on write and measure.
+
+/// A fresh read stream over readable bytes, for a declaration test: anything it refuses is
+/// the declaration, never the wire.
+fn assert_refused_before_any_bits(read: impl FnOnce(&mut ReadStream<'_>) -> serialize::Result) {
+    let buffer = with_slack(&[0x55; 32]);
+    let mut stream = ReadStream::new(&buffer, 32);
+    assert_eq!(read(&mut stream), Err(Error::ValueOutOfRange));
+    assert_eq!(stream.bits_processed(), 0);
+    assert_eq!(stream.failure(), Some(Error::ValueOutOfRange));
+}
+
+#[test]
+fn u16_bit_counts_outside_their_range_are_refused_on_read() {
+    for bits in [0u32, 33, u32::MAX] {
+        assert_refused_before_any_bits(|stream| {
+            let mut value = 0u32;
+            stream.serialize_bits(&mut value, bits)
+        });
+    }
+    for bits in [0u32, 65] {
+        assert_refused_before_any_bits(|stream| {
+            let mut value = 0u64;
+            stream.serialize_bits64(&mut value, bits)
+        });
+    }
+}
+
+#[test]
+fn u16_ranged_min_above_max_is_refused_on_read() {
+    assert_refused_before_any_bits(|stream| {
+        let mut value = 0i32;
+        stream.serialize_int(&mut value, 1, 0)
+    });
+    assert_refused_before_any_bits(|stream| {
+        let mut value = 0i64;
+        stream.serialize_int64(&mut value, 1, 0)
+    });
+    assert_refused_before_any_bits(|stream| {
+        let mut value = 0i128;
+        stream.serialize_int128(&mut value, 1, 0)
+    });
+}
+
+#[test]
+fn u16_int_relative_previous_outside_its_domain_is_refused_on_read() {
+    assert_refused_before_any_bits(|stream| {
+        let mut current = 0i32;
+        stream.serialize_int_relative(-1, &mut current)
+    });
+}
+
+#[test]
+fn u16_fixed_declarations_that_do_not_fit_are_refused_on_read() {
+    assert_refused_before_any_bits(|stream| {
+        let mut value = 0i32;
+        stream.serialize_fixed(&mut value, 16, 8, 0, 100)
+    });
+    assert_refused_before_any_bits(|stream| {
+        let mut value = 0i32;
+        stream.serialize_fixed(&mut value, 16, 16, -40000, 40000)
+    });
+}
+
+#[test]
+fn u16_compressed_float_declarations_are_refused_on_read() {
+    // the declaration form
+    for (min, max, resolution) in [
+        (1.0f32, 0.0f32, 0.1f32),
+        (0.0, 1.0, 0.0),
+        (0.0, 1.0, -1.0),
+        (f32::NAN, 1.0, 0.1),
+        (-f32::MAX, f32::MAX, 0.01),
+        (0.0, f32::MAX, 1.0e-38),
+    ] {
+        assert_refused_before_any_bits(|stream| {
+            let mut value = 0.0f32;
+            stream.serialize_compressed_float(&mut value, min, max, resolution)
+        });
+    }
+    // the precomputed constants: what can be checked without the declaration
+    let good = serialize::serialize_compressed_float_params(0.0, 10.0, 0.01);
+    for (max_integer_value, bits, delta) in [
+        (0u32, 1u32, 10.0f32),
+        (4_294_967_295, 32, 10.0),
+        (good.max_integer_value, good.bits + 1, good.delta),
+        (good.max_integer_value, good.bits, 0.0),
+        (good.max_integer_value, good.bits, -1.0),
+        (good.max_integer_value, good.bits, f32::INFINITY),
+        (good.max_integer_value, good.bits, f32::NAN),
+    ] {
+        assert_refused_before_any_bits(|stream| {
+            let mut value = 0.0f32;
+            stream.serialize_compressed_float_precomputed(
+                &mut value,
+                max_integer_value,
+                bits,
+                delta,
+                0.0,
+            )
+        });
+    }
+    // and the top of the legal range is accepted
+    let top = 4_294_967_040u32;
+    let buffer = with_slack(&[0u8; 8]);
+    let mut stream = ReadStream::new(&buffer, 8);
+    let mut value = 0.0f32;
+    stream
+        .serialize_compressed_float_precomputed(&mut value, top, bits_required(0, top), 1.0, 0.0)
+        .unwrap();
+    assert_eq!(value, 0.0);
+}
+
+#[test]
+#[cfg(debug_assertions)]
+fn u16_bad_declarations_assert_on_write_and_measure() {
+    assert!(panics(|| {
+        let mut buffer = [0u8; 8];
+        let mut value = 0i32;
+        let _ = WriteStream::new(&mut buffer).serialize_int(&mut value, 1, 0);
+    }));
+    assert!(panics(|| {
+        let mut value = 0i32;
+        let _ = MeasureStream::new().serialize_int(&mut value, 1, 0);
+    }));
+    assert!(panics(|| {
+        let mut value = 0u64;
+        let _ = MeasureStream::new().serialize_bits64(&mut value, 65);
+    }));
+}

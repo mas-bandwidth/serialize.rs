@@ -84,12 +84,13 @@
 //! refusal of well formed bytes — or with [`Stream::refuse`] and a reason of the format's;
 //! [`Stream::fail`] is the error constructor both are built from and does not latch.
 //!
-//! API misuse — bits out of `[1,32]` or `[1,64]`, `min > max`, a `buffer_size` below 2, a
-//! write buffer size that is not a multiple of 8 bytes — is a debug assertion everywhere,
-//! read and write alike, compiled out in release exactly like the C++ library's
-//! `serialize_assert` (the family standard: minimal runtime checking in release; the hard
-//! checks release keeps are the read path's buffer-end and content refusals above, which
-//! validate packet data, never arguments). What release cannot compile out is the language
+//! Caller declarations — bits out of `[1,32]` or `[1,64]`, `min > max`, a Q format or
+//! precomputed constants that cannot be right, a `buffer_size` below 1 — are validated before
+//! any bits move (IMPLEMENTING.md U16). A reader never traps (U7): on read a bad declaration
+//! is refused as [`Error::ValueOutOfRange`] in every build. On write and measure it is a debug
+//! assertion, as is every other write misuse (a write buffer size that is not a multiple of
+//! 8 bytes, a value too wide for its field), compiled out in release exactly like the C++
+//! library's `serialize_assert` (U9). What release cannot compile out is the language
 //! itself: writing past the end of a buffer stops at safe Rust's own slice bounds check —
 //! where the C++ library makes an out-of-bounds write the caller's problem, Rust makes it
 //! a panic rather than undefined behavior. Those slice bounds checks are the named cost of
@@ -215,6 +216,40 @@ impl core::fmt::Display for Error {
 }
 
 impl std::error::Error for Error {}
+
+/// The family-wide name of a stream's refusal state (IMPLEMENTING.md U14): the reason's
+/// [`Error::name`], or `"none"` for a stream that has not refused. Pass it
+/// [`ReadStream::failure`]. The port of the C++ `serialize::refusal_name`.
+#[must_use]
+pub const fn refusal_name(refusal: Option<Error>) -> &'static str {
+    match refusal {
+        Some(reason) => reason.name(),
+        None => "none",
+    }
+}
+
+/// Copy `source` into `dest` as a string a field of `buffer_size` can carry: the port of the
+/// C++ `serialize_copy_string` (IMPLEMENTING.md U15).
+///
+/// `dest` is cleared, then receives `source` up to its first NUL and at most
+/// `buffer_size - 1` bytes, the most [`Stream::serialize_string`] accepts for that
+/// `buffer_size`. Where the C++ helper truncates at a byte, this one truncates at the last
+/// character boundary that fits, so `dest` stays well formed UTF-8 and a writer never sends
+/// a split character (U3). A `buffer_size` of zero is caller misuse, a debug assertion; in
+/// release it leaves `dest` empty.
+pub fn serialize_copy_string(dest: &mut String, source: &str, buffer_size: usize) {
+    debug_assert!(
+        buffer_size >= 1,
+        "serialize_copy_string: buffer_size must be at least 1"
+    );
+    dest.clear();
+    let source = source.split('\0').next().unwrap_or("");
+    let mut end = source.len().min(buffer_size.saturating_sub(1));
+    while !source.is_char_boundary(end) {
+        end -= 1;
+    }
+    dest.push_str(&source[..end]);
+}
 
 /// A write or measure stream error can never exist, so it converts to [`enum@Error`] freely:
 /// this is what lets a function returning [`Result`] use `?` on an infallible stream

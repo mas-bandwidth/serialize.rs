@@ -18,16 +18,23 @@ pub trait Serialize {
     fn serialize<S: Stream>(&mut self, stream: &mut S) -> Result<(), S::Error>;
 }
 
-// API misuse checks in the shared serialize methods (invalid arguments — never packet data).
-// Debug assertions in every stream, compiled out in release, matching the C++ library's
-// serialize_assert exactly (the family standard: the caller is responsible for well formed
-// calls; release carries minimal runtime checking). Packet data validation is separate and
-// unaffected: readers bounds check and range validate wire data in every build, returning
-// Error. In release a violated call contract produces a malformed stream on write and
-// garbage-in-garbage-out values on read — never memory unsafety.
-macro_rules! misuse_check {
-    ($cond:expr, $($arg:tt)+) => {
-        debug_assert!($cond, $($arg)+);
+// Caller declaration checks in the shared serialize methods (a bit count, a range, a Q format,
+// precomputed constants, a `previous` — never packet data), IMPLEMENTING.md U16: validated on
+// every stream before any bits move. On a read stream a bad declaration is refused as
+// value_out_of_range in every build, never asserted (U7: a reader never traps), and through
+// `refuse`, so a stream that already failed keeps its first reason. On write and measure it is
+// the write-misuse mechanism, a debug assertion compiled out in release exactly like the C++
+// library's serialize_assert (U9), where a violated call contract produces a malformed stream —
+// never memory unsafety.
+macro_rules! declaration_check {
+    ($stream_type:ty, $stream:expr, $cond:expr, $($arg:tt)+) => {
+        let declared: bool = $cond;
+        if !declared {
+            if <$stream_type as Stream>::IS_READING {
+                return $stream.refuse(Error::ValueOutOfRange);
+            }
+            debug_assert!(declared, $($arg)+);
+        }
     };
 }
 
@@ -76,10 +83,11 @@ pub trait Stream {
     /// On a read stream, always returns `Err(error)` (routed through the crate's `#[cold]`
     /// error constructor, so the failure edge stays cold).
     ///
-    /// # Panics
-    ///
-    /// On a write or measure stream. Those streams cannot fail — reaching a data validation
-    /// failure on one is a bug in the calling code, not a data condition.
+    /// On a write or measure stream there is nothing to refuse and no error to return: the
+    /// error type is uninhabited, so `fail` returns `Ok(())` in every build and never panics
+    /// (IMPLEMENTING.md U9, where the reference returns false; U6, a measure records nothing).
+    /// It is the routing every refusal takes, so like the reference it does not assert;
+    /// validation that calls it belongs under an `IS_READING` guard.
     fn fail(error: Error) -> Result<(), Self::Error>;
 
     /// Refuse the read: report a data validation failure and latch the stream's failure
@@ -94,15 +102,12 @@ pub trait Stream {
     /// operation has a defined position, so the stream — not the caller's discipline —
     /// enforces that nothing after it is interpretable. [`crate::ReadStream`] overrides this
     /// to set its latch; write and measure streams cannot fail, so the default body is just
-    /// [`Stream::fail`].
+    /// [`Stream::fail`], which returns `Ok(())` there (U9).
     ///
     /// # Errors
     ///
-    /// On a read stream, always returns `Err(error)`.
-    ///
-    /// # Panics
-    ///
-    /// On a write or measure stream, exactly as [`Stream::fail`] does.
+    /// On a read stream, always returns `Err` with the stream's first reason: `error`, or the
+    /// reason it already latched.
     #[inline(always)]
     fn refuse(&mut self, error: Error) -> Result<(), Self::Error> {
         Self::fail(error)
@@ -128,7 +133,7 @@ pub trait Stream {
     /// latched.
     #[inline]
     fn reject(&mut self) -> Result<(), Self::Error> {
-        misuse_check!(
+        debug_assert!(
             Self::IS_READING,
             "reject is read only: there is nothing to refuse on a write or measure stream"
         );
@@ -191,8 +196,9 @@ pub trait Stream {
 
     /// Serialize `bits` bits of an unsigned integer value in `[0,(1<<bits)-1]`.
     ///
-    /// `bits` outside `[1,32]` is API misuse — a debug assertion on every stream, compiled
-    /// out in release.
+    /// `bits` outside `[1,32]` is a bad declaration (IMPLEMENTING.md U16): refused as
+    /// [`Error::ValueOutOfRange`] on read in every build, a debug assertion on write and
+    /// measure, compiled out in release.
     ///
     /// # Errors
     ///
@@ -290,8 +296,10 @@ pub trait Stream {
     /// malicious packet can smuggle an out of range value into the bit headroom of the
     /// encoding, so the range is validated, not assumed.
     ///
-    /// `min > max` is API misuse — a debug assertion on every stream, compiled out in
-    /// release. A degenerate range (`min == max`) is legal and costs zero bits.
+    /// `min > max` is a bad declaration (IMPLEMENTING.md U16): refused as
+    /// [`Error::ValueOutOfRange`] on read in every build, a debug assertion on write and
+    /// measure, compiled out in release. A degenerate range (`min == max`) is legal and costs
+    /// zero bits.
     ///
     /// # Errors
     ///
@@ -300,7 +308,9 @@ pub trait Stream {
     /// measures cannot error: a value outside `[min,max]` is a debug assertion.
     #[inline(always)]
     fn serialize_int(&mut self, value: &mut i32, min: i32, max: i32) -> Result<(), Self::Error> {
-        misuse_check!(
+        declaration_check!(
+            Self,
+            self,
             min <= max,
             "serialize_int: min ({min}) must not be greater than max ({max})"
         );
@@ -343,8 +353,10 @@ pub trait Stream {
     /// Serialize a 64 bit integer value in `[min,max]`. The full 64 bit range is supported, and
     /// the minimal number of bits for the range is used on the wire.
     ///
-    /// `min > max` is API misuse — a debug assertion on every stream, compiled out in
-    /// release. A degenerate range (`min == max`) is legal and costs zero bits.
+    /// `min > max` is a bad declaration (IMPLEMENTING.md U16): refused as
+    /// [`Error::ValueOutOfRange`] on read in every build, a debug assertion on write and
+    /// measure, compiled out in release. A degenerate range (`min == max`) is legal and costs
+    /// zero bits.
     ///
     /// # Errors
     ///
@@ -353,7 +365,9 @@ pub trait Stream {
     /// measures cannot error: a value outside `[min,max]` is a debug assertion.
     #[inline(always)]
     fn serialize_int64(&mut self, value: &mut i64, min: i64, max: i64) -> Result<(), Self::Error> {
-        misuse_check!(
+        declaration_check!(
+            Self,
+            self,
             min <= max,
             "serialize_int64: min ({min}) must not be greater than max ({max})"
         );
@@ -418,8 +432,10 @@ pub trait Stream {
     /// bits without changing the wire. Do not confuse this with [`Stream::serialize_u128`],
     /// which is not ranged — it is a raw 128 bit field and always costs 128 bits.
     ///
-    /// `min > max` is API misuse — a debug assertion on every stream, compiled out in
-    /// release. A degenerate range (`min == max`) is legal and costs zero bits.
+    /// `min > max` is a bad declaration (IMPLEMENTING.md U16): refused as
+    /// [`Error::ValueOutOfRange`] on read in every build, a debug assertion on write and
+    /// measure, compiled out in release. A degenerate range (`min == max`) is legal and costs
+    /// zero bits.
     ///
     /// # Errors
     ///
@@ -432,7 +448,9 @@ pub trait Stream {
         min: i128,
         max: i128,
     ) -> Result<(), Self::Error> {
-        misuse_check!(
+        declaration_check!(
+            Self,
+            self,
             min <= max,
             "serialize_int128: min ({min}) must not be greater than max ({max})"
         );
@@ -471,8 +489,9 @@ pub trait Stream {
     /// Serialize `bits` bits of an unsigned 64 bit integer value in `[0,(1<<bits)-1]`. Values
     /// wider than 32 bits are serialized as the low dword then the high remainder.
     ///
-    /// `bits` outside `[1,64]` is API misuse — a debug assertion on every stream, compiled
-    /// out in release.
+    /// `bits` outside `[1,64]` is a bad declaration (IMPLEMENTING.md U16): refused as
+    /// [`Error::ValueOutOfRange`] on read in every build, a debug assertion on write and
+    /// measure, compiled out in release.
     ///
     /// # Errors
     ///
@@ -480,7 +499,9 @@ pub trait Stream {
     /// measures cannot error.
     #[inline(always)]
     fn serialize_bits64(&mut self, value: &mut u64, bits: u32) -> Result<(), Self::Error> {
-        misuse_check!(
+        declaration_check!(
+            Self,
+            self,
             (1..=64).contains(&bits),
             "bits must be in [1,64] (got {bits})"
         );
@@ -694,6 +715,28 @@ pub trait Stream {
         // the wire lives in serialize_compressed_float_precomputed, statement for statement.
         // test_compressed_float_precomputed_differential holds this composition to byte and
         // bit identity against a frozen copy of the original unsplit body.
+        // U16: the declaration is validated before the derivation, whose own checks are debug
+        // assertions (it is a free function with no stream to refuse on)
+        declaration_check!(
+            Self,
+            self,
+            min < max && resolution > 0.0,
+            "serialize_compressed_float: requires min < max and resolution > 0 (got [{min},{max}] at {resolution})"
+        );
+        declaration_check!(
+            Self,
+            self,
+            (max - min).is_finite(),
+            "serialize_compressed_float: max - min must be finite (got {})",
+            max - min
+        );
+        declaration_check!(
+            Self,
+            self,
+            ((max - min) / resolution).is_finite(),
+            "serialize_compressed_float: (max - min) / resolution must be finite (got {})",
+            (max - min) / resolution
+        );
         let params = serialize_compressed_float_params(min, max, resolution);
         self.serialize_compressed_float_precomputed(
             value,
@@ -719,8 +762,11 @@ pub trait Stream {
     /// On write, the value is clamped into the declared range and quantized; writing a
     /// non-finite value is non-conforming (STANDARD.md) and a debug assertion. The constants
     /// must be exactly what [`serialize_compressed_float_params`] derives for a conforming
-    /// declaration — anything else is API misuse, a debug assertion on every stream,
-    /// compiled out in release (writer-trusted).
+    /// declaration. What can be checked without that declaration is (U16): `bits` equal to
+    /// `bits_required(0, max_integer_value)`, `max_integer_value` in `[1,4294967040]`, and
+    /// `delta` positive and finite. A violation is a bad declaration (IMPLEMENTING.md U16):
+    /// refused as [`Error::ValueOutOfRange`] on read in every build, a debug assertion on
+    /// write and measure, compiled out in release.
     ///
     /// # Errors
     ///
@@ -738,19 +784,28 @@ pub trait Stream {
         delta: f32,
         min: f32,
     ) -> Result<(), Self::Error> {
-        misuse_check!(
-            max_integer_value >= 1,
-            "serialize_compressed_float_precomputed: max_integer_value must be at least 1"
+        // U16: what can be checked without the declaration the constants came from
+        declaration_check!(
+            Self,
+            self,
+            (1..=4_294_967_040).contains(&max_integer_value),
+            "serialize_compressed_float_precomputed: max_integer_value ({max_integer_value}) must be in [1,4294967040]"
         );
-        misuse_check!(
+        declaration_check!(
+            Self,
+            self,
             bits == bits_required(0, max_integer_value),
             "serialize_compressed_float_precomputed: bits ({bits}) must equal bits_required(0, {max_integer_value})"
         );
-        misuse_check!(
+        declaration_check!(
+            Self,
+            self,
             delta > 0.0,
             "serialize_compressed_float_precomputed: delta must be positive (got {delta})"
         );
-        misuse_check!(
+        declaration_check!(
+            Self,
+            self,
             delta.is_finite(),
             "serialize_compressed_float_precomputed: delta must be finite (got {delta})"
         );
@@ -844,8 +899,9 @@ pub trait Stream {
     /// every storage width: nothing is written, and the reader recovers the value from the
     /// range alone — the raw value `min_units << fraction_bits`.
     ///
-    /// API misuse — the conditions the C++ library rejects with `static_assert`s — is a
-    /// debug assertion on every stream, compiled out in release: `integer_bits` of zero,
+    /// A bad declaration — the conditions the C++ library rejects with `static_assert`s — is
+    /// refused as [`Error::ValueOutOfRange`] on read in every build and a debug assertion on
+    /// write and measure, compiled out in release (U16): `integer_bits` of zero,
     /// `integer_bits + fraction_bits` not equal to the storage width, `min_units >
     /// max_units` (an inverted range), or bounds that do not fit the Q format's whole unit
     /// capacity.
@@ -865,33 +921,43 @@ pub trait Stream {
         min_units: i64,
         max_units: i64,
     ) -> Result<(), Self::Error> {
-        misuse_check!(
+        declaration_check!(
+            Self,
+            self,
             integer_bits >= 1,
             "serialize_fixed: at least one integer bit is required (the sign bit counts for signed storage)"
         );
-        misuse_check!(
-            integer_bits + fraction_bits == T::BITS,
+        declaration_check!(
+            Self,
+            self,
+            integer_bits.checked_add(fraction_bits) == Some(T::BITS),
             "serialize_fixed: integer_bits + fraction_bits ({integer_bits} + {fraction_bits}) must equal the storage width ({})",
             T::BITS
         );
-        misuse_check!(
+        declaration_check!(
+            Self,
+            self,
             min_units <= max_units,
             "serialize_fixed: min_units ({min_units}) must not be greater than max_units ({max_units})"
         );
 
         // the whole unit capacity of the Q format (the C++ static asserts: the Q format and
-        // the bounds are constants of the call site, so a violation is API misuse — a hard
-        // panic on read, a debug assertion on the writer-trusted paths)
+        // the bounds are constants of the call site, so a violation is a bad declaration —
+        // refused as value_out_of_range on read, a debug assertion on write and measure, U16)
         if T::SIGNED {
             let min_representable = (1u128 << (integer_bits - 1)).wrapping_neg() as i128;
             let max_representable = ((1u128 << (integer_bits - 1)) - 1) as i128;
-            misuse_check!(
+            declaration_check!(
+                Self,
+                self,
                 i128::from(min_units) >= min_representable
                     && i128::from(max_units) <= max_representable,
                 "serialize_fixed: bounds in whole units do not fit the Q format"
             );
         } else {
-            misuse_check!(
+            declaration_check!(
+                Self,
+                self,
                 min_units >= 0
                     && (integer_bits >= 64 || (max_units as u64) < (1u64 << integer_bits)),
                 "serialize_fixed: bounds in whole units do not fit the Q format"
@@ -961,8 +1027,10 @@ pub trait Stream {
     /// encoding this operation carries.
     ///
     /// `previous` is the caller's own state and never arrives off the wire, so a `previous`
-    /// outside the domain is API misuse — a debug assertion on every stream, compiled out in
-    /// release — exactly as `current <= previous` is on write.
+    /// outside the domain is a bad declaration (IMPLEMENTING.md U16): refused as
+    /// [`Error::ValueOutOfRange`] on read in every build, a debug assertion on write and
+    /// measure, compiled out in release. `current <= previous` on write is a debug
+    /// assertion too.
     ///
     /// On read every tier reconstructs `current` in a width that cannot wrap and then checks
     /// the result, so a reconstruction that leaves the domain or fails to exceed `previous`
@@ -998,14 +1066,16 @@ pub trait Stream {
             (69914, 4378, 69914),
         ];
 
-        misuse_check!(
+        declaration_check!(
+            Self,
+            self,
             previous >= 0,
             "serialize_int_relative: previous ({previous}) is outside the domain [0,i32::MAX]"
         );
 
         let mut difference = 0u32;
         if Self::IS_WRITING {
-            misuse_check!(
+            debug_assert!(
                 previous < *current,
                 "serialize_int_relative: current ({}) must be greater than previous ({previous})",
                 *current
@@ -1155,7 +1225,7 @@ pub fn serialize_compressed_float_params(
     max: f32,
     resolution: f32,
 ) -> CompressedFloatParams {
-    misuse_check!(
+    debug_assert!(
         min < max && resolution > 0.0,
         "serialize_compressed_float_params: requires min < max and resolution > 0"
     );

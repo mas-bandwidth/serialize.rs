@@ -78,6 +78,7 @@ impl<'a> WriteStream<'a> {
     /// returns nothing.
     #[inline]
     pub fn write_bytes(&mut self, data: &[u8]) {
+        debug_assert_room(&self.writer, 0, data.len());
         self.writer.write_align();
         self.writer.write_bytes(data);
     }
@@ -179,11 +180,10 @@ impl Stream for WriteStream<'_> {
     /// stream is compiled out.
     type Error = Infallible;
 
+    /// Nothing to refuse on a write: `Ok(())` in every build, never a panic (U9).
     #[inline]
-    fn fail(error: Error) -> Result<(), Infallible> {
-        unreachable!(
-            "a write stream cannot fail: fail({error:?}) must only be reachable under an IS_READING guard"
-        )
+    fn fail(_error: Error) -> Result<(), Infallible> {
+        Ok(())
     }
 
     #[inline(always)]
@@ -194,6 +194,7 @@ impl Stream for WriteStream<'_> {
 
     #[inline]
     fn serialize_bytes(&mut self, data: &mut [u8]) -> Result<(), Infallible> {
+        debug_assert_room(&self.writer, 0, data.len());
         self.serialize_align()?;
         self.writer.write_bytes(data);
         Ok(())
@@ -212,6 +213,11 @@ impl Stream for WriteStream<'_> {
         buffer_size: usize,
     ) -> Result<(), Infallible> {
         let mut length = string_length(value, buffer_size);
+        debug_assert_room(
+            &self.writer,
+            crate::bits_required(0, (buffer_size as u32).saturating_sub(1)),
+            value.len(),
+        );
         self.serialize_int(&mut length, 0, buffer_size as i32 - 1)?;
         self.serialize_align()?;
         self.writer.write_bytes(value.as_bytes());
@@ -245,6 +251,24 @@ impl Stream for WriteStream<'_> {
     #[inline]
     fn context(&self) -> Option<&dyn Any> {
         self.context
+    }
+}
+
+/// U10: a write checks room for the WHOLE operation before writing any of it — a field of
+/// `field_bits`, the align after it, and `payload` bytes — so no length or align bits are
+/// written ahead of a payload that does not fit. A debug assertion, like every write misuse
+/// (U9); in release the payload copy still stops at the slice bounds check.
+#[inline]
+fn debug_assert_room(writer: &BitWriter<'_>, field_bits: u32, payload: usize) {
+    if cfg!(debug_assertions) {
+        let after_field = writer.bits_written() + u64::from(field_bits);
+        let align = (8 - after_field % 8) % 8;
+        let needed = u64::from(field_bits) + align + payload as u64 * 8;
+        debug_assert!(
+            needed <= writer.bits_available(),
+            "write needs {needed} bits for the whole operation but only {} remain",
+            writer.bits_available()
+        );
     }
 }
 
