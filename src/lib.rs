@@ -79,9 +79,10 @@
 //! [`Stream::serialize_string`]) leave that buffer's contents unspecified instead. **Failure is terminal**: the first refused read latches the
 //! [`ReadStream`], every later read on it fails, consumes no bits and writes no destination,
 //! and [`ReadStream::failure`] reports the first refusal's reason ([`enum@Error`], one of
-//! the eight in STANDARD.md's closed list). Custom serialize functions reject a
-//! decoded value with [`Stream::refuse`], which latches — [`Stream::fail`] is the error
-//! constructor it is built from and does not.
+//! the nine in STANDARD.md's closed list). Custom serialize functions reject a
+//! decoded value with [`Stream::reject`], which latches [`Error::Rejected`] — the caller's own
+//! refusal of well formed bytes — or with [`Stream::refuse`] and a reason of the format's;
+//! [`Stream::fail`] is the error constructor both are built from and does not latch.
 //!
 //! API misuse — bits out of `[1,32]` or `[1,64]`, `min > max`, a `buffer_size` below 2, a
 //! write buffer size that is not a multiple of 8 bytes — is a debug assertion everywhere,
@@ -134,7 +135,9 @@ pub use write_stream::WriteStream;
 /// than its `buffer_size`) is a debug assertion instead. Every reason aborts the enclosing
 /// serialize function via the `?` operator.
 ///
-/// The list is closed: these eight reasons are the format's, and there are no others.
+/// The list is closed: these nine reasons are the format's, and there are no others. Eight
+/// name a rule the wire broke; [`Error::Rejected`] (standard 2.1) is the caller's own refusal
+/// of a value whose bytes broke none. Members are only ever appended, as the reference's are.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Error {
     /// `past_end`: the read needs more bits than the stream holds.
@@ -158,11 +161,15 @@ pub enum Error {
     /// `non_canonical`: an encoding a conforming writer never produces for the value it
     /// carries — the `int_relative` absolute tier carrying a difference a bounded tier takes.
     NonCanonical,
+    /// `rejected`: the bytes were well formed, and the reader's caller refused the value they
+    /// carry — through [`Stream::reject`], or a nested object whose `serialize` returned this
+    /// error without any refusal of its own (standard 2.1).
+    Rejected,
 }
 
 impl Error {
     /// Every refusal reason, in STANDARD.md's order.
-    pub const ALL: [Error; 8] = [
+    pub const ALL: [Error; 9] = [
         Error::PastEnd,
         Error::ValueOutOfRange,
         Error::NonzeroPadding,
@@ -171,11 +178,13 @@ impl Error {
         Error::InvalidUtf8,
         Error::EmbeddedNul,
         Error::NonCanonical,
+        Error::Rejected,
     ];
 
     /// The family wide name of the reason, spelled exactly as STANDARD.md and the
     /// conformance corpus spell it: `past_end`, `value_out_of_range`, `nonzero_padding`,
-    /// `trailing_data`, `non_finite_float`, `invalid_utf8`, `embedded_nul`, `non_canonical`.
+    /// `trailing_data`, `non_finite_float`, `invalid_utf8`, `embedded_nul`, `non_canonical`,
+    /// `rejected`.
     #[must_use]
     pub const fn name(self) -> &'static str {
         match self {
@@ -187,6 +196,7 @@ impl Error {
             Error::InvalidUtf8 => "invalid_utf8",
             Error::EmbeddedNul => "embedded_nul",
             Error::NonCanonical => "non_canonical",
+            Error::Rejected => "rejected",
         }
     }
 

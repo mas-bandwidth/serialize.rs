@@ -6,8 +6,11 @@
 //! the same rules through the public API, with the 1.x behaviour named in each one: the bytes
 //! 1.x accepted are the bytes 2.0 refuses, so planting the old behaviour back fails them.
 //! The write-side contracts are debug assertions, so their tests run in debug builds only.
+//!
+//! Standard 2.1 (format 2.0 on the wire) adds one rule, the caller's refusal: its tests are
+//! the last section, cited by IMPLEMENTING.md's U2.
 
-use serialize::{Error, MeasureStream, ReadStream, Stream, WriteStream};
+use serialize::{Error, MeasureStream, ReadStream, Serialize, Stream, WriteStream};
 
 /// A read stream over `bytes` with the eight bytes of slack the buffer contract asks for,
 /// filled non-zero so nothing can pass by reading zeros past the end.
@@ -34,6 +37,7 @@ fn reasons_are_the_closed_list_spelled_exactly() {
             "invalid_utf8",
             "embedded_nul",
             "non_canonical",
+            "rejected",
         ]
     );
     for reason in Error::ALL {
@@ -445,4 +449,152 @@ fn bytes_past_the_stream_are_past_end() {
     let mut data = [0xEE_u8; 3];
     assert_eq!(stream.serialize_bytes(&mut data), Err(Error::PastEnd));
     assert_eq!(data, [0xEE; 3]);
+}
+
+// ------------------------------------------------------------------------------------------
+// standard 2.1: the caller's refusal (STANDARD.md, "Refusal reasons", `rejected`; U2)
+
+/// A message whose own validation refuses a well formed value: four bits, and anything above
+/// 9 is not a value the program knows.
+struct Digit {
+    value: u32,
+}
+
+impl Serialize for Digit {
+    fn serialize<S: Stream>(&mut self, stream: &mut S) -> Result<(), S::Error> {
+        stream.serialize_bits(&mut self.value, 4)?;
+        if S::IS_READING && self.value > 9 {
+            return stream.reject();
+        }
+        Ok(())
+    }
+}
+
+/// An object that refuses on its own by returning `Error::Rejected` without latching: the
+/// Rust spelling of a C++ object whose Serialize returns false.
+struct ReturnsRejected {
+    called: bool,
+}
+
+impl Serialize for ReturnsRejected {
+    fn serialize<S: Stream>(&mut self, _stream: &mut S) -> Result<(), S::Error> {
+        self.called = true;
+        S::fail(Error::Rejected)
+    }
+}
+
+#[test]
+fn reject_latches_rejected_and_is_terminal() {
+    // 0x0C: the four bits read 12, well formed, and the caller refuses the value. A 2.0
+    // reader had no reason for this and reported a wire one (or none)
+    let buffer = with_slack(&[0x0C, 0xAB]);
+    let mut stream = ReadStream::new(&buffer, 2);
+    let mut digit = Digit { value: 0 };
+    assert_eq!(digit.serialize(&mut stream), Err(Error::Rejected));
+    assert_eq!(stream.failure(), Some(Error::Rejected));
+    // terminal: a whole readable byte follows, and a zero-bit read, and both refuse with the
+    // first reason, consuming nothing and writing nothing
+    let before = stream.bits_processed();
+    let mut byte = 0x55u32;
+    assert_eq!(stream.serialize_bits(&mut byte, 8), Err(Error::Rejected));
+    let mut degenerate = 123i32;
+    assert_eq!(
+        stream.serialize_int(&mut degenerate, 7, 7),
+        Err(Error::Rejected)
+    );
+    assert_eq!((byte, degenerate), (0x55, 123));
+    assert_eq!(stream.bits_processed(), before);
+    assert_eq!(stream.failure(), Some(Error::Rejected));
+}
+
+#[test]
+fn reject_accepts_nothing_it_does_not_refuse() {
+    // the negative case: a value the caller accepts reads as it always did
+    let buffer = with_slack(&[0x07]);
+    let mut stream = ReadStream::new(&buffer, 1);
+    let mut digit = Digit { value: 0 };
+    assert_eq!(digit.serialize(&mut stream), Ok(()));
+    assert_eq!(digit.value, 7);
+    assert_eq!(stream.failure(), None);
+}
+
+#[test]
+fn reject_after_a_wire_refusal_keeps_the_wire_reason() {
+    // the first reason wins: past_end, then the caller rejects on the failed stream
+    let buffer = with_slack(&[0xFF]);
+    let mut stream = ReadStream::new(&buffer, 1);
+    let mut wide = 0u32;
+    assert_eq!(stream.serialize_bits(&mut wide, 16), Err(Error::PastEnd));
+    assert_eq!(stream.reject(), Err(Error::PastEnd));
+    assert_eq!(stream.failure(), Some(Error::PastEnd));
+}
+
+#[test]
+fn object_refusing_on_its_own_latches_rejected() {
+    let buffer = with_slack(&[0xAB]);
+    let mut stream = ReadStream::new(&buffer, 1);
+    let mut object = ReturnsRejected { called: false };
+    assert_eq!(stream.serialize_object(&mut object), Err(Error::Rejected));
+    assert!(object.called);
+    // the object only returned the error; the composition latched it, so a refused stream
+    // never reports none, and the readable byte after it refuses
+    assert_eq!(stream.failure(), Some(Error::Rejected));
+    let mut byte = 0u32;
+    assert_eq!(stream.serialize_bits(&mut byte, 8), Err(Error::Rejected));
+    // a nested object on the failed stream is refused before its serialize runs
+    let mut after = ReturnsRejected { called: false };
+    assert_eq!(stream.serialize_object(&mut after), Err(Error::Rejected));
+    assert!(!after.called);
+}
+
+#[test]
+fn object_rejecting_through_the_entry_point_inside_it_latches_rejected() {
+    // the same refusal made with Stream::reject inside a nested object
+    let buffer = with_slack(&[0x0C]);
+    let mut stream = ReadStream::new(&buffer, 1);
+    let mut digit = Digit { value: 0 };
+    assert_eq!(stream.serialize_object(&mut digit), Err(Error::Rejected));
+    assert_eq!(stream.failure(), Some(Error::Rejected));
+}
+
+#[test]
+fn write_and_measure_never_refuse_a_digit() {
+    // reject sits under an IS_READING guard, so the same serialize function writes and
+    // measures any value, and the read side is where the caller's validation runs
+    let mut buffer = [0u8; 8];
+    let mut write = WriteStream::new(&mut buffer);
+    let Ok(()) = Digit { value: 12 }.serialize(&mut write);
+    write.flush();
+    let mut measure = MeasureStream::new();
+    let Ok(()) = Digit { value: 12 }.serialize(&mut measure);
+    assert_eq!(measure.bits_processed(), 4);
+    let written = with_slack(write.data());
+    let mut read = ReadStream::new(&written, 1);
+    assert_eq!(
+        Digit { value: 0 }.serialize(&mut read),
+        Err(Error::Rejected)
+    );
+}
+
+#[test]
+#[cfg(debug_assertions)]
+#[should_panic(expected = "reject is read only")]
+fn reject_on_a_write_stream_is_misuse() {
+    // U9: there is nothing to refuse on a writer; a debug assertion, compiled out in release
+    let mut buffer = [0u8; 8];
+    let mut write = WriteStream::new(&mut buffer);
+    let _ = write.reject();
+}
+
+#[test]
+#[cfg(not(debug_assertions))]
+fn reject_on_a_write_or_measure_stream_never_panics_in_release() {
+    // U9: in release the misuse returns Ok and the stream is unchanged
+    let mut buffer = [0u8; 8];
+    let mut write = WriteStream::new(&mut buffer);
+    let Ok(()) = write.reject();
+    assert_eq!(write.bits_processed(), 0);
+    let mut measure = MeasureStream::new();
+    let Ok(()) = measure.reject();
+    assert_eq!(measure.bits_processed(), 0);
 }

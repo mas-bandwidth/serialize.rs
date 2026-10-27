@@ -53,12 +53,18 @@ pub enum Control {
     /// `object-terminal`: a nested object on a failed stream refuses before its serialize
     /// runs (this control calls the object directly, with no gate on either side).
     ObjectTerminal,
+    /// `object-latch-rejected`: a nested object that refuses on its own latches the stream
+    /// (this control latches nothing for it, as 2.0 did).
+    ObjectLatchRejected,
+    /// `reject-reason`: [`crate::Stream::reject`] refuses as `rejected` (this control
+    /// reports `value_out_of_range` instead).
+    RejectReason,
 }
 
 #[cfg(serialize_controls)]
 impl Control {
     /// Every control, in the reference's order.
-    pub const ALL: [Control; 16] = [
+    pub const ALL: [Control; 18] = [
         Control::AlignPadding,
         Control::RangedReconstruction,
         Control::RangedRange,
@@ -75,6 +81,8 @@ impl Control {
         Control::Int64ThroughDouble,
         Control::WrongReason,
         Control::ObjectTerminal,
+        Control::ObjectLatchRejected,
+        Control::RejectReason,
     ];
 
     /// The control's name, which is its `.expected` file's stem.
@@ -97,6 +105,8 @@ impl Control {
             Control::Int64ThroughDouble => "int64-through-double",
             Control::WrongReason => "wrong-reason",
             Control::ObjectTerminal => "object-terminal",
+            Control::ObjectLatchRejected => "object-latch-rejected",
+            Control::RejectReason => "reject-reason",
         }
     }
 }

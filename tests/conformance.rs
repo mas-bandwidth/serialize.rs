@@ -227,6 +227,11 @@ enum Kind {
     },
     /// `object <n>` wraps the next `n` steps in a nested object.
     Object(usize),
+    /// `reject`: the caller refusing a value whose bytes were well formed (standard 2.1). At
+    /// the top level it is [`Stream::reject`]; inside an object it is the object's
+    /// `serialize` returning [`Error::Rejected`] without refusing on its own, which
+    /// [`Stream::serialize_object`] must latch.
+    Reject,
 }
 
 impl Kind {
@@ -325,7 +330,7 @@ impl Step {
             Kind::Bool => self.boolean.to_string(),
             // none has a value of its own; for align and end the corpus states `0` alone, the
             // padding a conforming read always finds zero
-            Kind::Align | Kind::End | Kind::Object(_) => "0".to_string(),
+            Kind::Align | Kind::End | Kind::Object(_) | Kind::Reject => "0".to_string(),
             Kind::Bytes(_) => hex_bytes(&self.buffer),
             Kind::Text(_) => hex_bytes(self.text.as_bytes()),
             _ => unreachable!("every pattern kind is handled above"),
@@ -366,11 +371,42 @@ struct Nested<'a> {
     steps: &'a mut [Step],
     base: usize,
     failed: Option<usize>,
+    called: bool,
 }
 
 impl Serialize for Nested<'_> {
     fn serialize<S: Stream>(&mut self, stream: &mut S) -> Result<(), S::Error> {
-        run_steps(stream, self.steps, self.base, &mut self.failed)
+        self.called = true;
+        run_steps(stream, self.steps, self.base, &mut self.failed, true)
+    }
+}
+
+/// An object whose `serialize` refuses on its own: it reads nothing and returns
+/// [`Error::Rejected`] without latching, the Rust spelling of the C++ callback returning
+/// false. [`Stream::serialize_object`] must latch the stream as `rejected` (STANDARD.md,
+/// "object", standard 2.1).
+struct CallbackRefuses;
+
+impl Serialize for CallbackRefuses {
+    fn serialize<S: Stream>(&mut self, _stream: &mut S) -> Result<(), S::Error> {
+        if S::IS_READING {
+            return S::fail(Error::Rejected);
+        }
+        Ok(())
+    }
+}
+
+/// An object that runs its steps, ignores their refusal and returns `Ok`: the composition
+/// must still report the inner refusal on exit and keep its reason.
+struct Swallowing<'a> {
+    steps: &'a mut [Step],
+}
+
+impl Serialize for Swallowing<'_> {
+    fn serialize<S: Stream>(&mut self, stream: &mut S) -> Result<(), S::Error> {
+        let mut ignored = None;
+        let _ = run_steps(stream, self.steps, 0, &mut ignored, true);
+        Ok(())
     }
 }
 
@@ -385,11 +421,16 @@ fn step_span(steps: &[Step], index: usize) -> usize {
 
 /// Run a step list against any stream, recording the absolute index of the leaf step a run
 /// stopped on so the destination check knows where to look.
+///
+/// `inside` says whether the run is a nested object's `serialize`, which decides how a
+/// `reject` step refuses: through [`Stream::reject`] at the top level, and as the object
+/// returning [`Error::Rejected`] on its own inside one.
 fn run_steps<S: Stream>(
     stream: &mut S,
     steps: &mut [Step],
     base: usize,
     failed: &mut Option<usize>,
+    inside: bool,
 ) -> Result<(), S::Error> {
     let mut index = 0;
     while index < steps.len() {
@@ -400,12 +441,22 @@ fn run_steps<S: Stream>(
                 steps: &mut rest[..count],
                 base: base + index + 1,
                 failed: None,
+                called: false,
             };
             let outcome = stream.serialize_object(&mut nested);
             let inner = nested.failed;
             if let Err(error) = outcome {
-                *failed = inner;
+                *failed = inner.or(Some(base + index));
                 return Err(error);
+            }
+        } else if matches!(steps[index].kind, Kind::Reject) && inside {
+            // the object's serialize refuses on its own: it returns failure and touches
+            // nothing, and serialize_object must latch it. Only a read can be refused; a
+            // reject reaching a writer or a measure belongs to a vector that expects
+            // acceptance, which the reader leg has already failed
+            if S::IS_READING {
+                *failed = Some(base + index);
+                return S::fail(Error::Rejected);
             }
         } else if let Err(error) = run_step(stream, &mut steps[index]) {
             *failed = Some(base + index);
@@ -506,6 +557,17 @@ fn run_step<S: Stream>(stream: &mut S, step: &mut Step) -> Result<(), S::Error> 
                 "nesting is driven by run_steps, which owns the step range an object wraps"
             )
         }
+        // the caller's refusal through the reject entry point. Only a read can be refused: a
+        // reject reaching a writer or a measure belongs to a vector that expects acceptance,
+        // which the reader leg has already failed, so it is not called there, where it is
+        // write-side misuse
+        Kind::Reject => {
+            if S::IS_READING {
+                stream.reject()
+            } else {
+                Ok(())
+            }
+        }
     }
 }
 
@@ -558,6 +620,8 @@ enum Expect {
 
 #[derive(Debug)]
 struct Vector {
+    /// The corpus file the vector came from, by file name.
+    file: String,
     operation: String,
     name: String,
     params: Vec<(String, String)>,
@@ -574,6 +638,7 @@ struct Vector {
 impl Vector {
     fn new() -> Self {
         Vector {
+            file: String::new(),
             operation: String::new(),
             name: String::new(),
             params: Vec::new(),
@@ -657,7 +722,10 @@ fn parse(file: &str, text: &str) -> Vec<Vector> {
         let rest = rest.trim();
         let where_ = || format!("{file}:{}", number + 1);
         match key {
-            "operation" => current.operation = rest.to_string(),
+            "operation" => {
+                current.operation = rest.to_string();
+                current.file = file.to_string();
+            }
             "name" => current.name = rest.to_string(),
             "param" => {
                 let (name, value) = rest
@@ -748,6 +816,7 @@ fn step_from_words(text: &str) -> Result<Kind, String> {
         (Some("bytes"), 2) => Ok(Kind::Bytes(number(1)? as usize)),
         (Some("string"), 2) => Ok(Kind::Text(number(1)? as usize)),
         (Some("end"), 1) => Ok(Kind::End),
+        (Some("reject"), 1) => Ok(Kind::Reject),
         (Some("int_relative"), 2) => Ok(Kind::IntRelative(number(1)? as i32)),
         (Some("int"), 3) => Ok(Kind::Int(number(1)? as i32, number(2)? as i32)),
         (Some("int64"), 3) => Ok(Kind::Int64(number(1)? as i64, number(2)? as i64)),
@@ -923,6 +992,66 @@ fn check_terminal(stream: &mut ReadStream<'_>, reason: Error) -> Result<(), Stri
     Ok(())
 }
 
+/// The object composition's own refusals, run against every refused vector in `object.txt`
+/// as the reference runner does: a callback that refuses on its own latches `rejected` and
+/// is terminal (zero-bit reads, nested objects and bit reads all refuse afterwards and keep
+/// the reason), and an object that swallows an inner refusal and returns `Ok` still refuses
+/// on exit with the inner reason (STANDARD.md, "object" and "Refusal reasons", standard 2.1).
+fn check_object_refusals(
+    vector: &Vector,
+    buffer: &[u8],
+    bytes: usize,
+    steps: &mut [Step],
+    reason: Error,
+) -> Result<(), String> {
+    let mut stream = ReadStream::new(buffer, bytes);
+    if stream.serialize_object(&mut CallbackRefuses).is_ok() {
+        return Err("serialize_object accepted a callback that refused on its own".into());
+    }
+    if stream.failure() != Some(Error::Rejected) {
+        return Err(format!(
+            "serialize_object latched {:?} for a callback that refused on its own, the standard requires rejected",
+            stream.failure()
+        ));
+    }
+    let mut probe = 12345i32;
+    if stream.serialize_int(&mut probe, 7, 7).is_ok() || probe != 12345 {
+        return Err("a zero-bit read succeeded after the callback refusal".into());
+    }
+    let mut empty: [Step; 0] = [];
+    let mut after = Nested {
+        steps: &mut empty,
+        base: 0,
+        failed: None,
+        called: false,
+    };
+    if stream.serialize_object(&mut after).is_ok() || after.called {
+        return Err(
+            "a nested object succeeded or ran its serialize after the callback refusal".into(),
+        );
+    }
+    check_terminal(&mut stream, Error::Rejected)?;
+
+    for step in steps.iter_mut() {
+        step.seed();
+    }
+    let mut swallowed = ReadStream::new(buffer, bytes);
+    let mut object = Swallowing { steps };
+    if swallowed.serialize_object(&mut object).is_ok() {
+        return Err(format!(
+            "{}: serialize_object accepted an object that returned Ok over an inner refusal",
+            vector.name
+        ));
+    }
+    if swallowed.failure() != Some(reason) {
+        return Err(format!(
+            "serialize_object reported {:?} for an object that swallowed an inner refusal, the first reason is {reason}",
+            swallowed.failure()
+        ));
+    }
+    Ok(())
+}
+
 /// The reader leg: every vector runs it.
 fn run_reader(vector: &Vector, steps: &mut [Step]) -> Result<(), String> {
     let (buffer, bytes) = stream_buffer(vector);
@@ -932,7 +1061,7 @@ fn run_reader(vector: &Vector, steps: &mut [Step]) -> Result<(), String> {
     }
 
     let mut failed = None;
-    let outcome = run_steps(&mut stream, steps, 0, &mut failed);
+    let outcome = run_steps(&mut stream, steps, 0, &mut failed, false);
     let accepted = outcome.is_ok();
 
     if let Expect::Refused(reason) = vector.expect {
@@ -982,6 +1111,7 @@ fn run_reader(vector: &Vector, steps: &mut [Step]) -> Result<(), String> {
                 &mut steps[index..index + span],
                 index,
                 &mut ignored,
+                false,
             )
             .is_ok()
             {
@@ -996,7 +1126,11 @@ fn run_reader(vector: &Vector, steps: &mut [Step]) -> Result<(), String> {
 
         // and the same rule against a read the vector does not name, so every refused vector
         // carries the terminality check and not only the sequences that spell a successor
-        return check_terminal(&mut stream, reason);
+        check_terminal(&mut stream, reason)?;
+        if vector.file == "object.txt" {
+            return check_object_refusals(vector, &buffer, bytes, steps, reason);
+        }
+        return Ok(());
     }
 
     if !accepted {
@@ -1050,7 +1184,7 @@ fn run_writer(vector: &Vector, steps: &mut [Step]) -> Result<(), String> {
     let mut scratch = vec![SLACK_FILL; capacity];
     let mut stream = WriteStream::new(&mut scratch);
     let mut failed = None;
-    let Ok(()) = run_steps(&mut stream, steps, 0, &mut failed);
+    let Ok(()) = run_steps(&mut stream, steps, 0, &mut failed, false);
     stream.flush();
     let written = stream.data();
     if written != vector.bytes.as_slice() {
@@ -1088,7 +1222,7 @@ fn run_writer_input(vector: &Vector, pattern: u32) -> Result<(), String> {
 fn run_measure(floor: u64, steps: &mut [Step]) -> Result<(), String> {
     let mut stream = MeasureStream::new();
     let mut failed = None;
-    let Ok(()) = run_steps(&mut stream, steps, 0, &mut failed);
+    let Ok(()) = run_steps(&mut stream, steps, 0, &mut failed, false);
     let measured = stream.bits_processed();
     if measured < floor {
         return Err(format!(

@@ -1,5 +1,36 @@
 # Changelog
 
+## 4.0.0 — unreleased
+
+**Standard 2.1: the caller's refusal (reference v2.1.0).** `STANDARD.md`, `IMPLEMENTING.md`,
+`conformance/` and `conformance-controls/` are re-vendored verbatim from mas-bandwidth/serialize
+v2.1.0 (884bc309). The wire stays at format 2.0: no byte a 2.0 writer emits reads differently.
+The C++ interop job is pinned to v2.1.0. A semver major, because `Error` gains a variant.
+
+Breaking, and how to migrate:
+
+- **`Error::Rejected` is new** (`rejected`), the ninth member of the closed list, appended
+  last: the bytes were well formed and the reader's caller refused the value they carry.
+  `Error::ALL` is now `[Error; 9]`. An exhaustive `match` on `Error` needs one more arm.
+
+Added:
+
+- **`Stream::reject`**, the port of the C++ `serialize_reject`: on a read stream it latches
+  `Error::Rejected` through the same latch as every wire refusal, so it is terminal and the
+  first reason wins. On a write or measure stream it is misuse, a debug assertion, and returns
+  `Ok(())` in release (IMPLEMENTING.md U2, U9). A provided trait method: outside implementors
+  of `Stream` need no change.
+- A nested object whose `serialize` returns `S::fail(Error::Rejected)` without a refusal of its
+  own is latched as `rejected` by `serialize_object`, as before for any reason it returns; the
+  corpus's new `reject` step drives both spellings, and the two new negative controls
+  (`object-latch-rejected`, `reject-reason`) each fail exactly their `.expected` lists.
+
+Changed:
+
+- A refusal on a `ReadStream` that has already failed (`refuse`, `reject`) now returns the
+  latched first reason, as every read on a failed stream already did; it used to return the
+  new reason while `failure()` kept the first.
+
 ## 3.1.0 — 2026-10-27
 
 **Object read terminality (reference v2.0.1).** `conformance/` and `conformance-controls/`

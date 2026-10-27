@@ -81,14 +81,13 @@ impl<'a> ReadStream<'a> {
     }
 
     /// Latch the failure and report it. The first failure wins: it is the one that made the
-    /// rest of the stream uninterpretable.
+    /// rest of the stream uninterpretable, and a refusal on a stream that already failed is
+    /// its echo, so it reports the first reason too, as every read on a failed stream does.
     #[cold]
     #[inline(never)]
     fn latch(&mut self, error: Error) -> Result {
-        if self.failed.is_none() {
-            self.failed = Some(error);
-        }
-        Err(error)
+        let first = *self.failed.get_or_insert(error);
+        Err(first)
     }
 
     /// The gate every public read passes: true once the stream has latched, or when this read
@@ -150,9 +149,14 @@ impl Stream for ReadStream<'_> {
         match object.serialize(self) {
             Ok(()) => self.refuse_if_failed(),
             Err(error) => {
+                if deleted(Control::ObjectLatchRejected) && self.failed.is_none() {
+                    // the control: the 2.0 composition, which latches nothing for a refusal
+                    // the object raised on its own
+                    return Err(error);
+                }
                 // an inner read already latched its reason, which stays the first; a refusal
-                // the object raised on its own (Stream::fail) latches here, so the stream is
-                // terminal either way
+                // the object raised on its own (Stream::fail, Error::Rejected for the
+                // caller's own refusal) latches here, so the stream is terminal either way
                 let _ = self.latch(error);
                 self.refuse_if_failed()
             }
