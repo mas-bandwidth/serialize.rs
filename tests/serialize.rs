@@ -715,6 +715,110 @@ fn test_write_bytes_wire_identical() {
 }
 
 #[test]
+fn test_write_by_value_wire_identical() {
+    // The by-value write methods are the write-path twins of the unified serialize_*
+    // family: byte-identical wire, field for field, including unaligned starts, a 64 bit
+    // value split across the low dword and the high remainder, the full 64 bit range and a
+    // degenerate range that writes zero bits.
+    let mut via_trait = [0u8; 64];
+    let trait_bytes = {
+        let mut write_stream = WriteStream::new(&mut via_trait);
+        let mut bits = 5u32;
+        let mut bits64 = 0x1_2345_6789u64;
+        let mut int = -17i32;
+        let mut degenerate = 9i32;
+        let mut int64 = i64::MIN + 3;
+        let mut flag = true;
+        let mut u8_value = 0xA5u8;
+        let mut u16_value = 0xBEEFu16;
+        let mut u32_value = 0xDEAD_BEEFu32;
+        let mut u64_value = 0x0123_4567_89AB_CDEFu64;
+        let mut f32_value = f32::from_bits(0x40490FDA);
+        let mut f64_value = -0.0f64;
+        write_stream.serialize_bits(&mut bits, 3).unwrap();
+        write_stream.serialize_bits64(&mut bits64, 33).unwrap();
+        write_stream.serialize_int(&mut int, -100, 100).unwrap();
+        write_stream.serialize_int(&mut degenerate, 9, 9).unwrap();
+        write_stream
+            .serialize_int64(&mut int64, i64::MIN, i64::MAX)
+            .unwrap();
+        write_stream.serialize_bool(&mut flag).unwrap();
+        write_stream.serialize_u8(&mut u8_value).unwrap();
+        write_stream.serialize_u16(&mut u16_value).unwrap();
+        write_stream.serialize_u32(&mut u32_value).unwrap();
+        write_stream.serialize_u64(&mut u64_value).unwrap();
+        write_stream.serialize_f32(&mut f32_value).unwrap();
+        write_stream.serialize_f64(&mut f64_value).unwrap();
+        write_stream.flush();
+        write_stream.bytes_processed() as usize
+    };
+
+    let mut via_write = [0u8; 64];
+    let write_bytes = {
+        let mut write_stream = WriteStream::new(&mut via_write);
+        // no mutable copy of any value, no Result: writes cannot fail
+        write_stream.write_bits(5, 3);
+        write_stream.write_bits64(0x1_2345_6789, 33);
+        write_stream.write_int(-17, -100, 100);
+        write_stream.write_int(9, 9, 9);
+        write_stream.write_int64(i64::MIN + 3, i64::MIN, i64::MAX);
+        write_stream.write_bool(true);
+        write_stream.write_u8(0xA5);
+        write_stream.write_u16(0xBEEF);
+        write_stream.write_u32(0xDEAD_BEEF);
+        write_stream.write_u64(0x0123_4567_89AB_CDEF);
+        write_stream.write_f32(f32::from_bits(0x40490FDA));
+        write_stream.write_f64(-0.0);
+        write_stream.flush();
+        write_stream.bytes_processed() as usize
+    };
+
+    assert_eq!(trait_bytes, write_bytes);
+    assert_eq!(via_trait, via_write);
+
+    // and the read side round trips it
+    let mut read_stream = ReadStream::new(&via_write, write_bytes);
+    let mut bits = 0u32;
+    let mut bits64 = 0u64;
+    let mut int = 0i32;
+    let mut degenerate = 0i32;
+    let mut int64 = 0i64;
+    let mut flag = false;
+    let mut u8_value = 0u8;
+    let mut u16_value = 0u16;
+    let mut u32_value = 0u32;
+    let mut u64_value = 0u64;
+    let mut f32_value = 0.0f32;
+    let mut f64_value = 0.0f64;
+    read_stream.serialize_bits(&mut bits, 3).unwrap();
+    read_stream.serialize_bits64(&mut bits64, 33).unwrap();
+    read_stream.serialize_int(&mut int, -100, 100).unwrap();
+    read_stream.serialize_int(&mut degenerate, 9, 9).unwrap();
+    read_stream
+        .serialize_int64(&mut int64, i64::MIN, i64::MAX)
+        .unwrap();
+    read_stream.serialize_bool(&mut flag).unwrap();
+    read_stream.serialize_u8(&mut u8_value).unwrap();
+    read_stream.serialize_u16(&mut u16_value).unwrap();
+    read_stream.serialize_u32(&mut u32_value).unwrap();
+    read_stream.serialize_u64(&mut u64_value).unwrap();
+    read_stream.serialize_f32(&mut f32_value).unwrap();
+    read_stream.serialize_f64(&mut f64_value).unwrap();
+    assert_eq!(bits, 5);
+    assert_eq!(bits64, 0x1_2345_6789);
+    assert_eq!(int, -17);
+    assert_eq!(degenerate, 9);
+    assert_eq!(int64, i64::MIN + 3);
+    assert!(flag);
+    assert_eq!(u8_value, 0xA5);
+    assert_eq!(u16_value, 0xBEEF);
+    assert_eq!(u32_value, 0xDEAD_BEEF);
+    assert_eq!(u64_value, 0x0123_4567_89AB_CDEF);
+    assert_eq!(f32_value.to_bits(), 0x40490FDA);
+    assert_eq!(f64_value.to_bits(), (-0.0f64).to_bits());
+}
+
+#[test]
 fn test_int_relative_absolute_tier_refusals() {
     // the absolute tier must reject a value that violates the previous < current contract,
     // and leave the destination unwritten while doing it
