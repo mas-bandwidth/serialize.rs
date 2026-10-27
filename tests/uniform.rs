@@ -414,6 +414,183 @@ fn u15_precomputed_compressed_float_exists_and_matches() {
     assert_eq!(write.bits_processed(), u64::from(params.bits));
 }
 
+/// The prefix that places the forms under test at `offset` bits into a 64 bit word.
+fn prefix(stream: &mut WriteStream<'_>, offset: u32) {
+    let mut remaining = offset;
+    while remaining > 0 {
+        let bits = remaining.min(32);
+        let pattern = if bits == 32 {
+            0x5A5A_5A5A
+        } else {
+            0x5A5A_5A5A & ((1u32 << bits) - 1)
+        };
+        put(stream, pattern, bits);
+        remaining -= bits;
+    }
+}
+
+/// Every field through the unified `serialize_*` forms.
+fn write_unified(stream: &mut WriteStream<'_>) {
+    let mut bits = 21u32;
+    let mut bits64 = 0x1_FFFF_FFFFu64;
+    let mut flag = true;
+    let mut byte = 0xA5u8;
+    let mut half = 0xBEEFu16;
+    let mut word = 0xDEAD_BEEFu32;
+    let mut wide = u64::MAX;
+    let mut int = -17i32;
+    let mut degenerate = 9i32;
+    let mut int_full = i32::MIN;
+    let mut int64 = i64::MIN + 3;
+    let mut int64_degenerate = -77i64;
+    let mut float = f32::from_bits(0x4049_0FDA);
+    let mut double = -0.0f64;
+    let mut bytes = [0x30u8, 0x55, 0x7A, 0x9F, 0xC4, 0xE9, 0x0E];
+    let Ok(()) = stream.serialize_bits(&mut bits, 5);
+    let Ok(()) = stream.serialize_bits64(&mut bits64, 33);
+    let Ok(()) = stream.serialize_bool(&mut flag);
+    let Ok(()) = stream.serialize_u8(&mut byte);
+    let Ok(()) = stream.serialize_u16(&mut half);
+    let Ok(()) = stream.serialize_u32(&mut word);
+    let Ok(()) = stream.serialize_u64(&mut wide);
+    let Ok(()) = stream.serialize_int(&mut int, -100, 100);
+    let Ok(()) = stream.serialize_int(&mut degenerate, 9, 9);
+    let Ok(()) = stream.serialize_int(&mut int_full, i32::MIN, i32::MAX);
+    let Ok(()) = stream.serialize_int64(&mut int64, i64::MIN, i64::MAX);
+    let Ok(()) = stream.serialize_int64(&mut int64_degenerate, -77, -77);
+    let Ok(()) = stream.serialize_f32(&mut float);
+    let Ok(()) = stream.serialize_f64(&mut double);
+    let Ok(()) = stream.serialize_bytes(&mut bytes);
+}
+
+/// The same fields through the split `write_*` forms.
+fn write_split(stream: &mut WriteStream<'_>) {
+    stream.write_bits(21, 5);
+    stream.write_bits64(0x1_FFFF_FFFF, 33);
+    stream.write_bool(true);
+    stream.write_u8(0xA5);
+    stream.write_u16(0xBEEF);
+    stream.write_u32(0xDEAD_BEEF);
+    stream.write_u64(u64::MAX);
+    stream.write_int(-17, -100, 100);
+    stream.write_int(9, 9, 9);
+    stream.write_int(i32::MIN, i32::MIN, i32::MAX);
+    stream.write_int64(i64::MIN + 3, i64::MIN, i64::MAX);
+    stream.write_int64(-77, -77, -77);
+    stream.write_f32(f32::from_bits(0x4049_0FDA));
+    stream.write_f64(-0.0);
+    stream.write_bytes(&[0x30, 0x55, 0x7A, 0x9F, 0xC4, 0xE9, 0x0E]);
+}
+
+// The edges each split form's operation has: the 64 bit split (bits64, u64, f64), degenerate
+// ranges (int, int64), the full ranges (int over i32, int64 over i64) and a float's exact bits.
+// Rust has no split form for int128, fixed, string or compressed_float, so there is nothing
+// of theirs to compare; their unified forms are the only spelling.
+#[test]
+fn u15_split_write_forms_are_wire_identical_from_every_offset() {
+    // the conformance note: after a prefix of every length 0 to 63, so each form starts at
+    // every position in a 64 bit word, alignment and word carry included
+    for offset in 0..64 {
+        let mut unified_buffer = [0xCDu8; 64];
+        let mut unified = WriteStream::new(&mut unified_buffer);
+        prefix(&mut unified, offset);
+        write_unified(&mut unified);
+        unified.flush();
+        let unified_bits = unified.bits_processed();
+        let unified_bytes = unified.data().to_vec();
+
+        let mut split_buffer = [0xCDu8; 64];
+        let mut split = WriteStream::new(&mut split_buffer);
+        prefix(&mut split, offset);
+        write_split(&mut split);
+        split.flush();
+
+        assert_eq!(split.bits_processed(), unified_bits, "offset {offset}");
+        assert_eq!(split.data(), unified_bytes.as_slice(), "offset {offset}");
+    }
+}
+
+// Every write misuse a Rust split form can meet, through the form and its twin: over-wide
+// values, a bad bit count (U16), out of range and inverted ranges, non-finite floats, and a
+// payload with no room for the whole operation (U10). The C++ cases with no Rust counterpart
+// are kept by the language: no split string form exists (U4), `int` bounds are `i32` (U5),
+// and a byte slice cannot be null.
+#[test]
+#[cfg(debug_assertions)]
+fn u15_split_write_forms_catch_misuse_as_their_twins() {
+    // the same misuse through each unified form and its split twin: both must assert
+    fn both(unified: impl FnOnce(&mut WriteStream<'_>), split: impl FnOnce(&mut WriteStream<'_>)) {
+        let unified_panics = panics(|| {
+            let mut buffer = [0u8; 8];
+            unified(&mut WriteStream::new(&mut buffer));
+        });
+        let split_panics = panics(|| {
+            let mut buffer = [0u8; 8];
+            split(&mut WriteStream::new(&mut buffer));
+        });
+        assert!(unified_panics && split_panics);
+    }
+    both(|s| put(s, 4, 2), |s| s.write_bits(4, 2));
+    both(|s| put(s, 1, 0), |s| s.write_bits(1, 0));
+    both(
+        |s| {
+            let mut v = 1u64 << 40;
+            let Ok(()) = s.serialize_bits64(&mut v, 40);
+        },
+        |s| s.write_bits64(1 << 40, 40),
+    );
+    both(
+        |s| {
+            let mut v = 0u64;
+            let Ok(()) = s.serialize_bits64(&mut v, 65);
+        },
+        |s| s.write_bits64(0, 65),
+    );
+    both(
+        |s| {
+            let mut v = 11i32;
+            let Ok(()) = s.serialize_int(&mut v, 0, 10);
+        },
+        |s| s.write_int(11, 0, 10),
+    );
+    both(
+        |s| {
+            let mut v = 5i32;
+            let Ok(()) = s.serialize_int(&mut v, 10, 0);
+        },
+        |s| s.write_int(5, 10, 0),
+    );
+    both(
+        |s| {
+            let mut v = -11i64;
+            let Ok(()) = s.serialize_int64(&mut v, -10, 10);
+        },
+        |s| s.write_int64(-11, -10, 10),
+    );
+    both(
+        |s| {
+            let mut v = f32::INFINITY;
+            let Ok(()) = s.serialize_f32(&mut v);
+        },
+        |s| s.write_f32(f32::INFINITY),
+    );
+    both(
+        |s| {
+            let mut v = f64::NAN;
+            let Ok(()) = s.serialize_f64(&mut v);
+        },
+        |s| s.write_f64(f64::NAN),
+    );
+    // U10: a payload with no room for all of it
+    both(
+        |s| {
+            let mut data = [0u8; 9];
+            let Ok(()) = s.serialize_bytes(&mut data);
+        },
+        |s| s.write_bytes(&[0u8; 9]),
+    );
+}
+
 // ------------------------------------------------------------------------------------------
 // U16. Caller declarations are validated on every stream before any bits move: refused as
 // value_out_of_range on read, debug assertions on write and measure.
