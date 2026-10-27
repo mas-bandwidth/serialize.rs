@@ -49,9 +49,11 @@ zero unsafe, BSD-3.
    float is the literal `3.1415926` (bit pattern 0x40490FDA) — NOT `f32::consts::PI`, which
    differs in the last bit.
 2. **Malicious packet data never panics.** Every ReadStream operation is bounds checked and
-   range validated and fails with an `Error`. Since 2.1.2 API misuse is `debug_assert!` on
-   every stream, read and write alike, compiled out in release (the check model: the caller
-   is responsible for well formed calls); the only hard panics left are the two structural
+   range validated and fails with an `Error`. Caller declarations (bit counts, ranges, Q
+   formats, precomputed constants, `previous`, string `buffer_size`) are refused as
+   `ValueOutOfRange` on read in every build, never asserted (IMPLEMENTING.md U7, U16, since
+   4.0.0), and write-side misuse is `debug_assert!`, compiled out in release (U9); `fail` on
+   a write or measure stream returns `Ok(())` and never panics; the only hard panics left are the two structural
    write cases the language itself enforces — a write buffer that is not a multiple of 8
    bytes, and writing past the end of a buffer, which is the slice bounds check. Three read
    obligations bind in every build (STANDARD.md, Reader Obligations): a refused read leaves
@@ -98,8 +100,8 @@ zero unsafe, BSD-3.
   `serialize_compressed_float` derives its constants per call with the free function
   `serialize_compressed_float_params` and forwards there, and generated code passes constants
   a schema compiler derived at generation time. `IS_WRITING`/`IS_READING` are associated
-  consts, so the branches monomorphize away, and `misuse_check!` keeps argument misuse a hard
-  assert on read but debug-only on the writer-trusted paths. `FixedPointStorage` is the storage trait behind
+  consts, so the branches monomorphize away, and `declaration_check!` refuses a bad caller
+  declaration as `ValueOutOfRange` on read and debug-asserts it on write and measure (U16). `FixedPointStorage` is the storage trait behind
   `serialize_fixed` (i8..i128 and their unsigned twins). `Serialize` trait for objects;
   nested objects go through `Stream::serialize_object`, which gates on the read latch on
   entry and exit (a failed stream refuses even an empty object without calling it).
@@ -123,11 +125,13 @@ zero unsafe, BSD-3.
   unknown parameter, a refusal with no known reason, a duplicate vector name and a `fixed`
   storage width with no Rust integer type all FAIL rather than skip. It also runs the
   controls: `unknown-operation.txt` (and a `wstring` vector) must fail in every build, and
-  under `--cfg serialize_controls` each of the sixteen controls must fail exactly its
+  under `--cfg serialize_controls` each of the eighteen controls must fail exactly its
   `conformance-controls/<rule>.expected` list
 - `tests/format2.rs` — format 2.0's new rules through the public API, each with the 1.x
   behaviour named: reasons, finite floats, the compressed float decode, the canonical
   int_relative tier, end, the string NUL-before-UTF-8 order, real text byte for byte
+- `tests/uniform.rs` — IMPLEMENTING.md's uniform rules U1 to U16, one section per rule, each
+  test citing its number
 - `tests/terminal.rs` — the terminal-failure latch across six failure shapes (before
   consumption, after partial consumption, range headroom, alignment, malformed string,
   int_relative), plus re-initialization and clone behavior

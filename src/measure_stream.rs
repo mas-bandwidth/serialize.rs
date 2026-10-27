@@ -58,11 +58,11 @@ impl Stream for MeasureStream<'_> {
     /// [`crate::WriteStream`] — the measure path shares the write path's trust model.
     type Error = Infallible;
 
+    /// A measure refuses nothing (U6): `Ok(())` in every build, never a panic, and nothing
+    /// is recorded (U9).
     #[inline]
-    fn fail(error: Error) -> Result<(), Infallible> {
-        unreachable!(
-            "a measure stream cannot fail: fail({error:?}) must only be reachable under an IS_READING guard"
-        )
+    fn fail(_error: Error) -> Result<(), Infallible> {
+        Ok(())
     }
 
     #[inline]

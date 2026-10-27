@@ -976,15 +976,18 @@ fn test_int_relative_previous_outside_the_domain_asserts_in_debug() {
 }
 
 #[test]
-#[cfg(debug_assertions)]
-#[should_panic(expected = "is outside the domain")]
-fn test_int_relative_previous_outside_the_domain_asserts_on_read_in_debug() {
-    // the same contract on the read side: the assertion is on the caller's parameter, not
-    // on packet data, so it binds on every stream
+fn test_int_relative_previous_outside_the_domain_is_refused_on_read() {
+    // the same contract on the read side is a bad declaration, refused as value_out_of_range
+    // before any bits move and never asserted (IMPLEMENTING.md U7, U16)
     let buffer = [0u8; 16];
     let mut read_stream = ReadStream::new(&buffer, 8);
-    let mut current = 0i32;
-    let _ = read_stream.serialize_int_relative(-1, &mut current);
+    let mut current = 5i32;
+    assert_eq!(
+        read_stream.serialize_int_relative(-1, &mut current),
+        Err(Error::ValueOutOfRange)
+    );
+    assert_eq!(current, 5);
+    assert_eq!(read_stream.bits_processed(), 0);
 }
 
 #[test]
@@ -1843,18 +1846,29 @@ fn test_serialize_fixed() {
 }
 
 // the C++ library refuses these configurations at compile time with static_asserts; the Q
-// format and bounds are runtime arguments here, so the refusals are validated (API misuse,
-// exactly like bits out of range or min >= max): debug assertions on every stream,
-// compiled out in release per the family standard
+// format and bounds are runtime arguments here, so they are validated as declarations
+// (IMPLEMENTING.md U16, exactly like bits out of range or min > max): refused as
+// value_out_of_range on read in every build, debug assertions on write
+
+/// Read a fixed point field with a bad declaration and require the U16 refusal: before any
+/// bits move, with the destination untouched.
+fn assert_fixed_declaration_refused(integer_bits: u32, fraction_bits: u32, min: i64, max: i64) {
+    let buffer = [0u8; 16];
+    let mut stream = ReadStream::new(&buffer, 8);
+    let mut value = 99i32;
+    assert_eq!(
+        stream.serialize_fixed(&mut value, integer_bits, fraction_bits, min, max),
+        Err(Error::ValueOutOfRange)
+    );
+    assert_eq!(value, 99);
+    assert_eq!(stream.bits_processed(), 0);
+}
 
 #[test]
-#[cfg(debug_assertions)]
-#[should_panic(expected = "must equal the storage width")]
 fn test_serialize_fixed_q_format_must_fill_storage() {
-    let buffer = [0u8; 8];
-    let mut stream = ReadStream::new(&buffer, 8);
-    let mut value = 0i32;
-    let _ = stream.serialize_fixed(&mut value, 16, 8, 0, 100); // 16 + 8 != 32
+    assert_fixed_declaration_refused(16, 8, 0, 100); // 16 + 8 != 32
+    assert_fixed_declaration_refused(0, 32, 0, 0); // no integer bit
+    assert_fixed_declaration_refused(u32::MAX, 33, 0, 1); // the sum overflows u32
 }
 
 #[test]
@@ -1868,14 +1882,9 @@ fn test_serialize_fixed_q_format_must_fill_storage_write_debug() {
 }
 
 #[test]
-#[cfg(debug_assertions)]
-#[should_panic(expected = "do not fit the Q format")]
 fn test_serialize_fixed_bounds_must_fit_q_format() {
-    let buffer = [0u8; 8];
-    let mut stream = ReadStream::new(&buffer, 8);
-    let mut value = 0i32;
     // bounds exceed the Q16.16 whole unit capacity [-32768,32767]
-    let _ = stream.serialize_fixed(&mut value, 16, 16, -40000, 40000);
+    assert_fixed_declaration_refused(16, 16, -40000, 40000);
 }
 
 #[test]
@@ -1889,15 +1898,10 @@ fn test_serialize_fixed_bounds_must_fit_q_format_write_debug() {
 }
 
 #[test]
-#[cfg(debug_assertions)]
-#[should_panic(expected = "must not be greater than max_units")]
 fn test_serialize_fixed_min_must_not_exceed_max() {
-    // an INVERTED range is API misuse. a degenerate range (min == max) is NOT:
+    // an INVERTED range is a bad declaration. a degenerate range (min == max) is NOT:
     // it is legal and costs zero bits -- see tests/degenerate.rs
-    let buffer = [0u8; 8];
-    let mut stream = ReadStream::new(&buffer, 8);
-    let mut value = 0i32;
-    let _ = stream.serialize_fixed(&mut value, 16, 16, 200, 100);
+    assert_fixed_declaration_refused(16, 16, 200, 100);
 }
 
 #[test]

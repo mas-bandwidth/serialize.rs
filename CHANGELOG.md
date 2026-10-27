@@ -25,6 +25,30 @@ Added:
   corpus's new `reject` step drives both spellings, and the two new negative controls
   (`object-latch-rejected`, `reject-reason`) each fail exactly their `.expected` lists.
 
+Added, the uniform rules (IMPLEMENTING.md U1 to U16, each proven in the new `tests/uniform.rs`):
+
+- **`refusal_name(Option<Error>)`**, the family names with `"none"` for no refusal (U14).
+- **`serialize_copy_string`**, the port of the reference helper, truncating at a character
+  boundary so the result stays UTF-8 (U15, U3).
+
+Changed, the uniform rules:
+
+- **A bad caller declaration is refused on read, never asserted** (U7, U16): a bit count
+  outside `[1,32]` or `[1,64]`, `min > max` on the ranged integers and fixed point, a fixed
+  point Q format or bounds that do not fit, an `int_relative` `previous` outside its domain,
+  a compressed float declaration or precomputed constants that cannot be right (now including
+  `max_integer_value` above 4294967040), and a string `buffer_size` of zero. Each is refused
+  as `ValueOutOfRange` before any bits move, after the failure state. These were debug
+  assertions on read, and wrong data or a trap in release. Write and measure keep the debug
+  assertion.
+- **`ReadStream::new` with a byte count past the buffer** starts the stream refused as
+  `ValueOutOfRange` instead of asserting (U7).
+- **`Stream::fail` on a write or measure stream returns `Ok(())`** in every build instead of
+  panicking (U9, U6); `refuse` follows it.
+- **A write checks room for the whole operation first** (U10): `serialize_bytes`,
+  `write_bytes` and `serialize_string` debug-assert the field, align and payload together
+  before writing any bit.
+
 Changed:
 
 - A refusal on a `ReadStream` that has already failed (`refuse`, `reject`) now returns the

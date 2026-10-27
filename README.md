@@ -191,12 +191,18 @@ malformed stream that checked readers reject; it is never memory unsafety, and w
 the end of a buffer still panics via the slice bounds check rather than being undefined
 behavior. Readers keep every packet data check: fully fallible, in every build.
 
-API misuse (bits out of [1,32]/[1,64], `min > max`, a `buffer_size` below 2, a write
-buffer not a multiple of 8 bytes) is a debug assertion on every stream, read and write
-alike, compiled out in release exactly like the C++ library's `serialize_assert` — the
-family standard is minimal runtime checking in release, and the hard checks release keeps
-are the read path's buffer-end and content refusals, which validate packet data, never
-arguments. A degenerate range where `min == max` is not misuse — the format defines it as
+Caller declarations (bits out of [1,32]/[1,64], `min > max`, a fixed point Q format that does
+not fit, precomputed compressed float constants that cannot be right, an `int_relative`
+`previous` outside its domain, a string `buffer_size` below 1) are validated on every stream
+before any bits move (IMPLEMENTING.md U16). A reader never traps (U7): on read a bad
+declaration is refused as `value_out_of_range` in every build, after the failure state, so a
+stream that already refused keeps its first reason, and a `ReadStream` handed a byte count
+past its buffer starts refused the same way. On write and measure, declarations and every
+other write misuse (a write buffer not a multiple of 8 bytes, a value too wide for its field,
+an operation without room for all of it) are a debug assertion, compiled out in release
+exactly like the C++ library's `serialize_assert` (U9). `Stream::fail` on a write or measure
+stream returns `Ok(())` and never panics. The uniform rules U1 to U16 are each proven by
+`tests/uniform.rs`. A degenerate range where `min == max` is not misuse — the format defines it as
 costing zero bits, and the ranged integer methods accept it and recover the value from the
 range alone. `serialize_f32` and `serialize_f64` carry finite values only: a reader refuses
 NaN and both infinities as `non_finite_float`, testing the raw bits, and a writer

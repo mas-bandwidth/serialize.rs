@@ -55,14 +55,23 @@ impl<'a> ReadStream<'a> {
     /// `buffer` is the full allocation view: pass a slice extending at least 8 bytes past the
     /// packet data to keep every read on the branchless fast path. See [`BitReader::new`].
     ///
-    /// `bytes` must not exceed the buffer length — a caller contract, debug asserted and
-    /// compiled out in release. See [`BitReader::new`].
+    /// `bytes` must not exceed the buffer length. A larger count is caller misuse on read,
+    /// which never traps (IMPLEMENTING.md U7): the stream starts refused, with
+    /// [`ReadStream::failure`] reporting [`Error::ValueOutOfRange`], and every read on it
+    /// refuses with that reason.
     #[must_use]
     #[inline]
     pub fn new(buffer: &'a [u8], bytes: usize) -> Self {
+        // a byte count past the buffer is caller misuse on read: the stream is born refused
+        // as value_out_of_range rather than asserting (U7), and reads nothing
+        let fits = bytes <= buffer.len();
         ReadStream {
-            reader: BitReader::new(buffer, bytes),
-            failed: None,
+            reader: BitReader::new(buffer, if fits { bytes } else { 0 }),
+            failed: if fits {
+                None
+            } else {
+                Some(Error::ValueOutOfRange)
+            },
             context: None,
         }
     }
@@ -96,6 +105,20 @@ impl<'a> ReadStream<'a> {
     #[inline(always)]
     fn refuses(&self, bits: u32) -> bool {
         self.failed.is_some() | self.reader.would_read_past_end(bits)
+    }
+
+    /// The cold refusal of `serialize_bits`: the latched reason if the stream already failed
+    /// (U7: the failure state is checked first), then a bit count outside `[1,32]` as
+    /// [`Error::ValueOutOfRange`] (U16, before any bits move), otherwise past the end.
+    #[cold]
+    #[inline(never)]
+    fn refuse_bits(&mut self, bits: u32) -> Result {
+        let error = if self.failed.is_none() && bits.wrapping_sub(1) >= 32 {
+            Error::ValueOutOfRange
+        } else {
+            self.refusal()
+        };
+        self.latch(error)
     }
 
     /// The error a refused read reports: the latched one if the stream already failed,
@@ -165,12 +188,10 @@ impl Stream for ReadStream<'_> {
 
     #[inline(always)]
     fn serialize_bits(&mut self, value: &mut u32, bits: u32) -> Result {
-        debug_assert!(
-            bits.wrapping_sub(1) < 32,
-            "bits must be in [1,32] (got {bits})"
-        );
-        if self.refuses(bits) {
-            return self.latch(self.refusal());
+        // a bit count outside [1,32] is a bad declaration: refused, never asserted (U7, U16),
+        // folded into the one refusal branch so the happy path keeps a single test
+        if self.refuses(bits) | (bits.wrapping_sub(1) >= 32) {
+            return self.refuse_bits(bits);
         }
         *value = self.reader.read_bits(bits);
         Ok(())
@@ -201,10 +222,11 @@ impl Stream for ReadStream<'_> {
 
     #[inline]
     fn serialize_string(&mut self, value: &mut String, buffer_size: usize) -> Result {
-        debug_assert!(
-            buffer_size >= 1 && i32::try_from(buffer_size).is_ok(),
-            "string buffer_size must be in [1,i32::MAX] (got {buffer_size})"
-        );
+        // a buffer_size outside [1,i32::MAX] is a bad declaration, refused as
+        // value_out_of_range after the failure state, never asserted (U7, U16)
+        if buffer_size == 0 || i32::try_from(buffer_size).is_err() {
+            return self.refuse(Error::ValueOutOfRange);
+        }
         let mut length = 0i32;
         self.serialize_int(&mut length, 0, buffer_size as i32 - 1)?;
         self.serialize_align()?;
