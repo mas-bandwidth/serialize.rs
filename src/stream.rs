@@ -108,6 +108,41 @@ pub trait Stream {
         Self::fail(error)
     }
 
+    /// Reject the read: the caller's own refusal of a value whose bytes were well formed —
+    /// an enum value the program does not know, say, or two fields that contradict each
+    /// other. The port of the C++ `serialize_reject`.
+    ///
+    /// STANDARD.md, "Refusal reasons" (standard 2.1): a refusal the caller decides, rather
+    /// than the wire, is [`Error::Rejected`]. It goes through the same latch as every wire
+    /// refusal, so it is terminal and the first reason wins: rejecting a stream that already
+    /// refused leaves the wire's reason in place. Guard it the way any read-side validation
+    /// is guarded, `if S::IS_READING { ... return stream.reject(); }`.
+    ///
+    /// Reject is read only (IMPLEMENTING.md, U2 and U9): on a write or measure stream there
+    /// is nothing to refuse, so calling it there is caller misuse, a debug assertion compiled
+    /// out in release, where it returns `Ok(())` and never panics.
+    ///
+    /// # Errors
+    ///
+    /// On a read stream, always: [`Error::Rejected`], or the reason the stream already
+    /// latched.
+    #[inline]
+    fn reject(&mut self) -> Result<(), Self::Error> {
+        misuse_check!(
+            Self::IS_READING,
+            "reject is read only: there is nothing to refuse on a write or measure stream"
+        );
+        if Self::IS_READING {
+            let reason = if deleted(Control::RejectReason) {
+                Error::ValueOutOfRange
+            } else {
+                Error::Rejected
+            };
+            return self.refuse(reason);
+        }
+        Ok(())
+    }
+
     /// The failure gate an operation that touches no bits still passes.
     ///
     /// STANDARD.md, Reader Obligations: "every read consults the failure state before it

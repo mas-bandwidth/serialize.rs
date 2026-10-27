@@ -142,9 +142,16 @@ errors, and it is the reason serialize methods take `&mut` values and return `Re
 
 Every refusal names the rule that refused it, from STANDARD.md's closed list, as an `Error`
 variant whose `name()` is the family-wide spelling: `past_end`, `value_out_of_range`,
-`nonzero_padding`, `trailing_data`, `non_finite_float`, `invalid_utf8`, `embedded_nul` and
-`non_canonical`. `ReadStream::failure()` reports the first refusal's reason; the later
-refusals of a failed stream are its echoes.
+`nonzero_padding`, `trailing_data`, `non_finite_float`, `invalid_utf8`, `embedded_nul`,
+`non_canonical`, and (standard 2.1) `rejected`, the caller's own refusal of a value whose bytes
+were well formed. `ReadStream::failure()` reports the first refusal's reason; the later
+refusals of a failed stream are its echoes, and a refused stream never reports none.
+
+The caller refuses with `stream.reject()`, the port of the C++ `serialize_reject`, under an
+`IS_READING` guard; a nested object whose `serialize` returns `S::fail(Error::Rejected)` is
+latched as `rejected` by `serialize_object` the same way. Either goes through the one latch,
+so it is terminal and the first reason wins. Reject is read only: on a write or measure stream
+it is a debug assertion, and returns `Ok(())` in release.
 
 Three obligations from STANDARD.md's Reader Obligations hold in every build:
 
@@ -160,8 +167,9 @@ Three obligations from STANDARD.md's Reader Obligations hold in every build:
   `ReadStream::failure()` reports the first reason. Nothing after a failing operation has a
   defined position, so the stream enforces that rather than the caller's discipline. The
   latch clears only by re-initialization, which here is constructing a new stream. Custom
-  serialize functions reject a decoded value with `stream.refuse(error)`, which latches;
-  `Stream::fail` is the error constructor it is built from and does not.
+  serialize functions reject a decoded value with `stream.reject()` (or `stream.refuse(error)`
+  for a reason of the format's), which latches; `Stream::fail` is the error constructor both
+  are built from and does not.
 - **`serialize_int_relative` carries the non-negative int32 domain, `0` to `i32::MAX`.** Both
   `previous` and `current` lie in it, and the sequence is strictly increasing — a caller with
   a wrapping counter unwraps it before serializing. Every tier reconstructs `current` in a
