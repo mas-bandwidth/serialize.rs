@@ -9,7 +9,59 @@
 //! The follow-up reads include the zero-bit ones — a degenerate range on every width, and a
 //! `bytes` call of zero count — which touch no bits at all, so only the latch can refuse them.
 
-use serialize::{Error, ReadStream, Stream};
+use serialize::{Error, MeasureStream, ReadStream, Serialize, Stream, WriteStream};
+
+/// A nested object with no fields: it consumes zero bits, so on a failed stream only the
+/// gate in `serialize_object` can refuse it.
+#[derive(Default)]
+struct EmptyObject {
+    called: bool,
+}
+
+impl Serialize for EmptyObject {
+    fn serialize<S: Stream>(&mut self, _stream: &mut S) -> Result<(), S::Error> {
+        self.called = true;
+        Ok(())
+    }
+}
+
+/// An object whose own validation refuses (custom validation through `Stream::fail`, which
+/// does not latch by itself).
+#[derive(Default)]
+struct RefusingObject {
+    called: bool,
+}
+
+impl Serialize for RefusingObject {
+    fn serialize<S: Stream>(&mut self, _stream: &mut S) -> Result<(), S::Error> {
+        self.called = true;
+        S::fail(Error::ValueOutOfRange)
+    }
+}
+
+/// An object that swallows an inner refusal and reports success.
+struct SwallowingObject {
+    value: i32,
+}
+
+impl Serialize for SwallowingObject {
+    fn serialize<S: Stream>(&mut self, stream: &mut S) -> Result<(), S::Error> {
+        let _ = stream.serialize_int(&mut self.value, 0, 10);
+        Ok(())
+    }
+}
+
+/// An object holding one byte.
+#[derive(Default)]
+struct ByteObject {
+    value: u32,
+}
+
+impl Serialize for ByteObject {
+    fn serialize<S: Stream>(&mut self, stream: &mut S) -> Result<(), S::Error> {
+        stream.serialize_bits(&mut self.value, 8)
+    }
+}
 
 /// The stream is latched with `expected`: every public read shape fails with it, consumes
 /// nothing and writes nothing.
@@ -89,6 +141,12 @@ fn assert_terminal(stream: &mut ReadStream, expected: Error) {
 
     let mut nothing: [u8; 0] = [];
     assert_eq!(stream.serialize_bytes(&mut nothing), Err(expected));
+
+    // an empty nested object consumes nothing either: the failed stream refuses it on entry,
+    // before its serialize runs
+    let mut empty = EmptyObject::default();
+    assert_eq!(stream.serialize_object(&mut empty), Err(expected));
+    assert!(!empty.called, "a failed stream must not call the object");
 
     assert_eq!(
         stream.bits_processed(),
@@ -246,4 +304,109 @@ fn a_clone_carries_the_latch() {
     assert_eq!(speculative.failure(), None);
     assert_eq!(speculative.serialize_bits(&mut bits, 3), Ok(()));
     assert_eq!(bits, 7);
+}
+
+#[test]
+fn a_failed_stream_refuses_an_empty_object_without_calling_it() {
+    // serialize.h test_read_stream_failure_is_terminal, "prior failure before serialize_object"
+    let mut buffer = [0_u8; 4 + 8];
+    buffer[0] = 0xFF;
+    let mut stream = ReadStream::new(&buffer, 4);
+
+    let mut out_of_range = -1_i32;
+    assert_eq!(
+        stream.serialize_int(&mut out_of_range, 0, 10),
+        Err(Error::ValueOutOfRange)
+    );
+    assert_eq!(out_of_range, -1);
+    let position = stream.bits_processed();
+
+    let mut empty = EmptyObject::default();
+    assert_eq!(
+        stream.serialize_object(&mut empty),
+        Err(Error::ValueOutOfRange)
+    );
+    assert!(!empty.called, "a failed stream must not call the object");
+    assert_eq!(stream.bits_processed(), position);
+    assert_eq!(stream.failure(), Some(Error::ValueOutOfRange));
+}
+
+#[test]
+fn an_object_that_refuses_on_its_own_latches_the_stream() {
+    // the object's own validation refuses through Stream::fail, which touches no latch:
+    // serialize_object latches it, so every later read refuses, zero-bit ones included
+    let buffer = [0xAF_u8; 4 + 8];
+    let mut stream = ReadStream::new(&buffer, 4);
+    let mut leading = 0_u32;
+    assert_eq!(stream.serialize_bits(&mut leading, 4), Ok(()));
+    assert_eq!(leading, 0x0F);
+
+    let mut refusing = RefusingObject::default();
+    assert_eq!(
+        stream.serialize_object(&mut refusing),
+        Err(Error::ValueOutOfRange)
+    );
+    assert!(refusing.called);
+
+    assert_terminal(&mut stream, Error::ValueOutOfRange);
+
+    // a new stream over the same buffer is not latched
+    let mut fresh = ReadStream::new(&buffer, 4);
+    let mut byte = ByteObject::default();
+    assert_eq!(fresh.serialize_object(&mut byte), Ok(()));
+    assert_eq!(byte.value, 0xAF);
+}
+
+#[test]
+fn an_object_that_swallows_an_inner_refusal_still_refuses() {
+    // the inner read latched value_out_of_range and the object reported success anyway: the
+    // exit gate returns the latched reason, and the destination stays unwritten
+    let mut buffer = [0_u8; 4 + 8];
+    buffer[0] = 0xFF;
+    let mut stream = ReadStream::new(&buffer, 4);
+
+    let mut swallowing = SwallowingObject { value: -77 };
+    assert_eq!(
+        stream.serialize_object(&mut swallowing),
+        Err(Error::ValueOutOfRange)
+    );
+    assert_eq!(swallowing.value, -77);
+
+    assert_terminal(&mut stream, Error::ValueOutOfRange);
+}
+
+#[test]
+fn an_empty_object_at_the_exact_end_is_accepted() {
+    // a healthy stream at its exact end has nothing left to read, and an empty object reads
+    // nothing: it is accepted, called, and latches nothing
+    let buffer = [0x5A_u8, 0, 0, 0, 0, 0, 0, 0, 0];
+    let mut stream = ReadStream::new(&buffer, 1);
+    let mut value = 0_u32;
+    assert_eq!(stream.serialize_bits(&mut value, 8), Ok(()));
+    assert_eq!(value, 0x5A);
+
+    let mut empty = EmptyObject::default();
+    assert_eq!(stream.serialize_object(&mut empty), Ok(()));
+    assert!(empty.called);
+    assert_eq!(stream.failure(), None);
+    assert_eq!(stream.serialize_end(), Ok(()));
+}
+
+#[test]
+fn write_and_measure_objects_are_the_object_itself() {
+    // on the infallible streams serialize_object is exactly object.serialize(stream)
+    let mut buffer = [0_u8; 8];
+    let mut writer = WriteStream::new(&mut buffer);
+    let mut byte = ByteObject { value: 0xAF };
+    let Ok(()) = writer.serialize_object(&mut byte);
+    let mut empty = EmptyObject::default();
+    let Ok(()) = writer.serialize_object(&mut empty);
+    assert!(empty.called);
+    writer.flush();
+    assert_eq!(writer.bits_processed(), 8);
+    assert_eq!(buffer[0], 0xAF);
+
+    let mut measure = MeasureStream::new();
+    let Ok(()) = measure.serialize_object(&mut byte);
+    assert_eq!(measure.bits_processed(), 8);
 }

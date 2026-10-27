@@ -45,7 +45,7 @@ impl Serialize for WorldStatePacket {
             self.players = (0..num_players).map(|_| Player::default()).collect();
         }
         for player in &mut self.players {
-            player.serialize(stream)?;
+            stream.serialize_object(player)?;
         }
 
         stream.serialize_string(&mut self.map_name, 64)?;

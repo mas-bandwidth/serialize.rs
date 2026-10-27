@@ -142,9 +142,10 @@ jobs:
           # go red, the cross-language proof serialize#94 found missing;
           # and v2.0.0 is the first release carrying format 2.0, whose golden
           # message ends with serialize_end and drops wstring, which the
-          # harness's two-packet file and its ends depend on.
+          # harness's two-packet file and its ends depend on. v2.0.1 (object
+          # read terminality, the corpus this port vendors) changes no wire byte.
           repository: mas-bandwidth/serialize
-          ref: v2.0.0
+          ref: v2.0.1
           path: cpp-serialize
       - uses: dtolnay/rust-toolchain@stable
       # no -DNDEBUG on purpose: serialize_assert stays live, so the degenerate

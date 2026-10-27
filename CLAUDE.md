@@ -37,7 +37,7 @@ zero unsafe, BSD-3.
    `test_golden_wire_format` pins STANDARD.md's 106-byte "whole message", which matches the
    C++ suite's `golden_wire_bytes` verbatim and ends with the end, and the `cpp-interop` CI
    job proves it against the real thing on every push and PR: it builds interop/golden.cpp
-   against the actual C++ library (pinned at v2.0.0, never going back past it: the golden
+   against the actual C++ library (pinned at v2.0.1, never going back past v2.0.0: the golden
    message ends with `serialize_end` and drops `wstring` from v2.0.0 on; the build keeps
    asserts live with no -ffp-contract=off), both implementations write a file of two
    packets — the golden one and the harness's extended one (a degenerate 64 bit range,
@@ -100,7 +100,9 @@ zero unsafe, BSD-3.
   a schema compiler derived at generation time. `IS_WRITING`/`IS_READING` are associated
   consts, so the branches monomorphize away, and `misuse_check!` keeps argument misuse a hard
   assert on read but debug-only on the writer-trusted paths. `FixedPointStorage` is the storage trait behind
-  `serialize_fixed` (i8..i128 and their unsigned twins). `Serialize` trait for objects.
+  `serialize_fixed` (i8..i128 and their unsigned twins). `Serialize` trait for objects;
+  nested objects go through `Stream::serialize_object`, which gates on the read latch on
+  entry and exit (a failed stream refuses even an empty object without calling it).
 - `src/write_stream.rs` / `src/read_stream.rs` / `src/measure_stream.rs` — the three streams.
   Context is `Option<&'a dyn Any>` (the C++ void* context; copy out of it before serializing).
   `ReadStream` carries the terminal-failure latch (`failed: Option<Error>`, reported by
@@ -121,7 +123,7 @@ zero unsafe, BSD-3.
   unknown parameter, a refusal with no known reason, a duplicate vector name and a `fixed`
   storage width with no Rust integer type all FAIL rather than skip. It also runs the
   controls: `unknown-operation.txt` (and a `wstring` vector) must fail in every build, and
-  under `--cfg serialize_controls` each of the fifteen controls must fail exactly its
+  under `--cfg serialize_controls` each of the sixteen controls must fail exactly its
   `conformance-controls/<rule>.expected` list
 - `tests/format2.rs` — format 2.0's new rules through the public API, each with the 1.x
   behaviour named: reasons, finite floats, the compressed float decode, the canonical
