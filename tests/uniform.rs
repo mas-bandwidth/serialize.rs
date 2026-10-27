@@ -440,7 +440,9 @@ fn write_unified(stream: &mut WriteStream<'_>) {
     let mut wide = u64::MAX;
     let mut int = -17i32;
     let mut degenerate = 9i32;
+    let mut int_full = i32::MIN;
     let mut int64 = i64::MIN + 3;
+    let mut int64_degenerate = -77i64;
     let mut float = f32::from_bits(0x4049_0FDA);
     let mut double = -0.0f64;
     let mut bytes = [0x30u8, 0x55, 0x7A, 0x9F, 0xC4, 0xE9, 0x0E];
@@ -453,7 +455,9 @@ fn write_unified(stream: &mut WriteStream<'_>) {
     let Ok(()) = stream.serialize_u64(&mut wide);
     let Ok(()) = stream.serialize_int(&mut int, -100, 100);
     let Ok(()) = stream.serialize_int(&mut degenerate, 9, 9);
+    let Ok(()) = stream.serialize_int(&mut int_full, i32::MIN, i32::MAX);
     let Ok(()) = stream.serialize_int64(&mut int64, i64::MIN, i64::MAX);
+    let Ok(()) = stream.serialize_int64(&mut int64_degenerate, -77, -77);
     let Ok(()) = stream.serialize_f32(&mut float);
     let Ok(()) = stream.serialize_f64(&mut double);
     let Ok(()) = stream.serialize_bytes(&mut bytes);
@@ -470,12 +474,18 @@ fn write_split(stream: &mut WriteStream<'_>) {
     stream.write_u64(u64::MAX);
     stream.write_int(-17, -100, 100);
     stream.write_int(9, 9, 9);
+    stream.write_int(i32::MIN, i32::MIN, i32::MAX);
     stream.write_int64(i64::MIN + 3, i64::MIN, i64::MAX);
+    stream.write_int64(-77, -77, -77);
     stream.write_f32(f32::from_bits(0x4049_0FDA));
     stream.write_f64(-0.0);
     stream.write_bytes(&[0x30, 0x55, 0x7A, 0x9F, 0xC4, 0xE9, 0x0E]);
 }
 
+// The edges each split form's operation has: the 64 bit split (bits64, u64, f64), degenerate
+// ranges (int, int64), the full ranges (int over i32, int64 over i64) and a float's exact bits.
+// Rust has no split form for int128, fixed, string or compressed_float, so there is nothing
+// of theirs to compare; their unified forms are the only spelling.
 #[test]
 fn u15_split_write_forms_are_wire_identical_from_every_offset() {
     // the conformance note: after a prefix of every length 0 to 63, so each form starts at
@@ -500,6 +510,11 @@ fn u15_split_write_forms_are_wire_identical_from_every_offset() {
     }
 }
 
+// Every write misuse a Rust split form can meet, through the form and its twin: over-wide
+// values, a bad bit count (U16), out of range and inverted ranges, non-finite floats, and a
+// payload with no room for the whole operation (U10). The C++ cases with no Rust counterpart
+// are kept by the language: no split string form exists (U4), `int` bounds are `i32` (U5),
+// and a byte slice cannot be null.
 #[test]
 #[cfg(debug_assertions)]
 fn u15_split_write_forms_catch_misuse_as_their_twins() {
