@@ -142,6 +142,10 @@ impl Stream for ReadStream<'_> {
 
     #[inline(always)]
     fn serialize_object<T: Serialize + ?Sized>(&mut self, object: &mut T) -> Result {
+        if deleted(Control::ObjectTerminal) {
+            // the control: the composition without the gates, the object called directly
+            return object.serialize(self);
+        }
         self.refuse_if_failed()?;
         match object.serialize(self) {
             Ok(()) => self.refuse_if_failed(),

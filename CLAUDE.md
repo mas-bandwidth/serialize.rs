@@ -37,7 +37,7 @@ zero unsafe, BSD-3.
    `test_golden_wire_format` pins STANDARD.md's 106-byte "whole message", which matches the
    C++ suite's `golden_wire_bytes` verbatim and ends with the end, and the `cpp-interop` CI
    job proves it against the real thing on every push and PR: it builds interop/golden.cpp
-   against the actual C++ library (pinned at v2.0.0, never going back past it: the golden
+   against the actual C++ library (pinned at v2.0.1, never going back past v2.0.0: the golden
    message ends with `serialize_end` and drops `wstring` from v2.0.0 on; the build keeps
    asserts live with no -ffp-contract=off), both implementations write a file of two
    packets — the golden one and the harness's extended one (a degenerate 64 bit range,
@@ -123,7 +123,7 @@ zero unsafe, BSD-3.
   unknown parameter, a refusal with no known reason, a duplicate vector name and a `fixed`
   storage width with no Rust integer type all FAIL rather than skip. It also runs the
   controls: `unknown-operation.txt` (and a `wstring` vector) must fail in every build, and
-  under `--cfg serialize_controls` each of the fifteen controls must fail exactly its
+  under `--cfg serialize_controls` each of the sixteen controls must fail exactly its
   `conformance-controls/<rule>.expected` list
 - `tests/format2.rs` — format 2.0's new rules through the public API, each with the 1.x
   behaviour named: reasons, finite floats, the compressed float decode, the canonical
