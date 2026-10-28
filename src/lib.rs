@@ -56,7 +56,11 @@
 //! The write path is trusted and infallible: field-level writes return
 //! `Result<(), Infallible>` — an error value cannot exist, so `?` compiles away and the
 //! monomorphized write function carries no error control flow. Invalid arguments and out of
-//! range values are debug assertions, compiled out in release, where correctness is the
+//! range values are write misuse, caught by one mechanism, the trap (IMPLEMENTING.md U9): in a
+//! checked build (`debug_assertions`) a panic at the call, through `debug_assert!`, on a
+//! [`WriteStream`] and on a [`MeasureStream`] alike (U6). Write misuse never latches: neither
+//! stream has a refusal state, so nothing is recorded and no later operation fails. In
+//! release the checks compile out, and correctness is the
 //! caller's responsibility (size buffers conservatively, or pre-measure with
 //! [`MeasureStream`]; a violated write contract in release produces a malformed stream that
 //! checked readers reject — never memory unsafety). The read path is the trust boundary:
@@ -87,8 +91,8 @@
 //! Caller declarations — bits out of `[1,32]` or `[1,64]`, `min > max`, a Q format or
 //! precomputed constants that cannot be right, a `buffer_size` below 1 — are validated before
 //! any bits move (IMPLEMENTING.md U16). A reader never traps (U7): on read a bad declaration
-//! is refused as [`Error::ValueOutOfRange`] in every build. On write and measure it is a debug
-//! assertion, as is every other write misuse (a write buffer size that is not a multiple of
+//! is refused as [`Error::ValueOutOfRange`] in every build. On write and measure it traps, a
+//! `debug_assert!` panic, as does every other write misuse (a write buffer size that is not a multiple of
 //! 8 bytes, a value too wide for its field), compiled out in release exactly like the C++
 //! library's `serialize_assert` (U9). What release cannot compile out is the language
 //! itself: writing past the end of a buffer stops at safe Rust's own slice bounds check —

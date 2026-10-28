@@ -26,7 +26,9 @@ fn put(stream: &mut WriteStream<'_>, mut value: u32, bits: u32) {
     let Ok(()) = stream.serialize_bits(&mut value, bits);
 }
 
-/// Run `f` and report whether it panicked, without printing the panic.
+/// Run `f` and report whether it panicked, without printing the panic. Every caller is a
+/// checked-build test (the trap is compiled out in release), so the helper is too.
+#[cfg(debug_assertions)]
 fn panics(f: impl FnOnce()) -> bool {
     std::panic::catch_unwind(std::panic::AssertUnwindSafe(f)).is_err()
 }
@@ -159,6 +161,71 @@ fn u6_measure_refuses_nothing() {
     assert_eq!(measure.bits_processed(), 2);
 }
 
+// U6 (2.1.1 ruling): a measure makes every check a write makes, except room and buffer size,
+// by the same trap (U9), and latches nothing.
+#[test]
+#[cfg(debug_assertions)]
+fn u6_measure_traps_what_write_traps() {
+    // a value too wide for its bits: the gap the 2.1.1 survey found
+    assert!(panics(|| {
+        let mut value = 0x1FFu32;
+        let _ = MeasureStream::new().serialize_bits(&mut value, 8);
+    }));
+    assert!(panics(|| {
+        let mut value = 1u64 << 40;
+        let _ = MeasureStream::new().serialize_bits64(&mut value, 40);
+    }));
+    assert!(panics(|| {
+        let mut value = 11i32;
+        let _ = MeasureStream::new().serialize_int(&mut value, 0, 10);
+    }));
+    assert!(panics(|| {
+        let mut value = 0u32;
+        let _ = MeasureStream::new().serialize_bits(&mut value, 33);
+    }));
+    assert!(panics(|| {
+        let mut value = f32::NAN;
+        let _ = MeasureStream::new().serialize_f32(&mut value);
+    }));
+    assert!(panics(|| {
+        let mut value = f64::INFINITY;
+        let _ = MeasureStream::new().serialize_f64(&mut value);
+    }));
+    assert!(panics(|| {
+        let mut value = f32::NAN;
+        let _ = MeasureStream::new().serialize_compressed_float(&mut value, 0.0, 1.0, 0.1);
+    }));
+    assert!(panics(|| {
+        let mut text = String::from("abcd");
+        let _ = MeasureStream::new().serialize_string(&mut text, 4);
+    }));
+    assert!(panics(|| {
+        let mut text = String::from("a\0b");
+        let _ = MeasureStream::new().serialize_string(&mut text, 16);
+    }));
+    assert!(panics(|| {
+        let mut text = String::new();
+        let _ = MeasureStream::new().serialize_string(&mut text, 0);
+    }));
+    // the trap latches nothing: the same measure keeps measuring after a caught misuse
+    let mut measure = MeasureStream::new();
+    assert!(panics(|| {
+        let mut value = 0x1FFu32;
+        let _ = measure.serialize_bits(&mut value, 8);
+    }));
+    let mut value = 0xFFu32;
+    let Ok(()) = measure.serialize_bits(&mut value, 8);
+}
+
+// U6: what a measure does not check is room: it has no buffer.
+#[test]
+fn u6_measure_has_no_room_to_check() {
+    let mut measure = MeasureStream::new();
+    let mut payload = vec![0u8; 4096];
+    let Ok(()) = measure.serialize_bytes(&mut payload);
+    assert_eq!(measure.bits_processed(), 7 + 4096 * 8);
+}
+
 // ------------------------------------------------------------------------------------------
 // U7. A reader never traps, and a refusal is a value; caller misuse on read refuses as
 // value_out_of_range, after the failure state.
@@ -231,7 +298,8 @@ fn u8_over_wide_values_assert_on_write() {
 }
 
 // ------------------------------------------------------------------------------------------
-// U9. One write-misuse mechanism, the debug assertion; `fail` on a write or measure stream
+// U9. One write-misuse mechanism, the trap (a `debug_assert!` panic in a checked build), never a
+// latch; `fail` on a write or measure stream
 // returns without panicking in every build (the error type is uninhabited, so its "false" is
 // `Ok(())`), and so does `reject` in release.
 
@@ -270,6 +338,52 @@ fn u9_compressed_float_misuse_uses_the_same_mechanism() {
         let mut value = 0.5f32;
         let _ = WriteStream::new(&mut buffer).serialize_compressed_float(&mut value, 1.0, 0.0, 0.1);
     }));
+}
+
+// U9 (2.1.1 ruling): a NaN or infinite compressed_float value traps in a checked build, on
+// write and on measure, and is never clamped into range there.
+#[test]
+#[cfg(debug_assertions)]
+fn u9_compressed_float_non_finite_value_traps() {
+    for bad in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
+        assert!(panics(|| {
+            let mut buffer = [0u8; 8];
+            let mut value = bad;
+            let _ =
+                WriteStream::new(&mut buffer).serialize_compressed_float(&mut value, 0.0, 1.0, 0.1);
+        }));
+        assert!(panics(|| {
+            let mut value = bad;
+            let _ = MeasureStream::new().serialize_compressed_float(&mut value, 0.0, 1.0, 0.1);
+        }));
+    }
+}
+
+// U9: `reject` on a measure is caller misuse and traps in a checked build, as on a write
+// (tests/format2.rs::reject_on_a_write_stream_is_misuse).
+#[test]
+#[cfg(debug_assertions)]
+#[should_panic(expected = "reject is read only")]
+fn u9_reject_on_a_measure_traps() {
+    let _ = MeasureStream::new().reject();
+}
+
+// U9: write misuse never latches. A write stream has no refusal state: after a caught trap the
+// same stream writes on, and emits exactly what it would have without the misuse.
+#[test]
+#[cfg(debug_assertions)]
+fn u9_write_misuse_never_latches() {
+    let mut buffer = [0u8; 8];
+    let mut write = WriteStream::new(&mut buffer);
+    assert!(panics(|| {
+        let mut value = 11i32;
+        let _ = write.serialize_int(&mut value, 0, 10);
+    }));
+    assert_eq!(write.bits_processed(), 0);
+    let mut value = 0xA5u32;
+    let Ok(()) = write.serialize_bits(&mut value, 8);
+    write.flush();
+    assert_eq!(write.data()[0], 0xA5);
 }
 
 // ------------------------------------------------------------------------------------------
@@ -396,6 +510,44 @@ fn u15_copy_string_truncates_to_what_the_field_carries() {
     let mut write = WriteStream::new(&mut buffer);
     serialize_copy_string(&mut dest, "golden", 4);
     let Ok(()) = write.serialize_string(&mut dest, 4);
+}
+
+// U15 (2.1.1 ruling): the reference test_copy_string vectors. Bytes before the first NUL; past
+// dest_size - 1, keep that many, then drop bytes from the end while the first byte left out is
+// a continuation byte. The two ill-formed sources of the reference ("ab\x80\x80" and
+// "\xC3\xA9\xA9\xA9") cannot be held by a &str, so this value-string port skips them.
+#[test]
+fn u15_copy_string_matches_the_reference_vectors() {
+    let vectors: [(&str, usize, &str); 11] = [
+        ("abc", 8, "abc"),
+        ("a\0bc", 8, "a"),
+        ("abcdefghij", 4, "abc"),
+        ("\u{e9}\u{e9}", 4, "\u{e9}"),
+        ("\u{e9}\u{e9}", 3, "\u{e9}"),
+        ("a\u{1F600}", 3, "a"),
+        ("a\u{1F600}", 4, "a"),
+        ("a\u{1F600}", 5, "a"),
+        ("a\u{1F600}", 6, "a\u{1F600}"),
+        ("abc", 1, ""),
+        ("", 1, ""),
+    ];
+    for (source, dest_size, expected) in vectors {
+        let mut dest = String::from("stale");
+        serialize_copy_string(&mut dest, source, dest_size);
+        assert_eq!(dest, expected, "copy_string({source:?}, {dest_size})");
+        // and serialize_string with buffer_size = dest_size accepts what it made
+        let mut buffer = [0u8; 64];
+        let Ok(()) = WriteStream::new(&mut buffer).serialize_string(&mut dest, dest_size);
+    }
+}
+
+// U15: dest_size below 1 is write misuse, so it traps (U9).
+#[test]
+#[cfg(debug_assertions)]
+#[should_panic(expected = "buffer_size must be at least 1")]
+fn u15_copy_string_dest_size_0_traps() {
+    let mut dest = String::new();
+    serialize_copy_string(&mut dest, "abc", 0);
 }
 
 #[test]

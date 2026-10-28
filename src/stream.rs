@@ -83,11 +83,14 @@ pub trait Stream {
     /// On a read stream, always returns `Err(error)` (routed through the crate's `#[cold]`
     /// error constructor, so the failure edge stays cold).
     ///
-    /// On a write or measure stream there is nothing to refuse and no error to return: the
-    /// error type is uninhabited, so `fail` returns `Ok(())` in every build and never panics
-    /// (IMPLEMENTING.md U9, where the reference returns false; U6, a measure records nothing).
-    /// It is the routing every refusal takes, so like the reference it does not assert;
-    /// validation that calls it belongs under an `IS_READING` guard.
+    /// On a write or measure stream there is nothing to refuse and no error to return.
+    /// IMPLEMENTING.md U9 has `fail` there return false, record nothing and never trap, in
+    /// every build; this port's write and measure error type is uninhabited (the 2.0 #52
+    /// ruling), so its result type has no false, and `fail` returns `Ok(())`, the only value
+    /// it has. It records nothing (U6) and never panics. It is the routing every refusal
+    /// takes, so like the reference it does not assert; a serialize function that returns
+    /// through it returns there, and validation that calls it belongs under an `IS_READING`
+    /// guard.
     fn fail(error: Error) -> Result<(), Self::Error>;
 
     /// Refuse the read: report a data validation failure and latch the stream's failure
@@ -124,8 +127,9 @@ pub trait Stream {
     /// is guarded, `if S::IS_READING { ... return stream.reject(); }`.
     ///
     /// Reject is read only (IMPLEMENTING.md, U2 and U9): on a write or measure stream there
-    /// is nothing to refuse, so calling it there is caller misuse, a debug assertion compiled
-    /// out in release, where it returns `Ok(())` and never panics.
+    /// is nothing to refuse, so calling it there is write misuse: it traps in a checked build
+    /// (a `debug_assert!` panic, U9), and in release returns `Ok(())`, this port's only value
+    /// for U9's false (the write and measure error type is uninhabited), recording nothing.
     ///
     /// # Errors
     ///
@@ -1280,6 +1284,10 @@ mod sealed {
 ///
 /// The trait is sealed: the storage set is part of the wire format contract and cannot be
 /// extended outside this crate.
+///
+/// Exported as a language necessity (IMPLEMENTING.md U15, "Exports beyond the reference
+/// operations"): it is the bound that lets one generic [`Stream::serialize_fixed`] take every
+/// storage width, where C++ overloads the operation per integer type.
 pub trait FixedPointStorage: sealed::Sealed + Copy {
     /// The width of the storage type in bits: the width of the Q format.
     const BITS: u32;
