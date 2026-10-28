@@ -1,11 +1,38 @@
 //! Hostile read: arbitrary bytes driven through every `ReadStream` primitive. Mirrors the
-//! hostile pass of the C++ library's fuzz harness (fuzz.cpp). Errors are expected and
-//! ignored — the only requirements are no panic and no unvalidated value escaping.
+//! hostile pass of the C++ library's fuzz harness (fuzz.cpp). Errors are expected; the
+//! requirements are the reader obligations of STANDARD.md: no panic, a refused scalar read
+//! leaves its destination unwritten (every scalar starts at a sentinel), an accepted ranged
+//! value is inside its declaration, and a refusal latches (the next read refuses and consumes
+//! no bits).
 
 #![no_main]
 
+use core::fmt::Debug;
 use libfuzzer_sys::fuzz_target;
-use serialize::{ReadStream, Stream};
+use serialize::{Error, ReadStream, Stream};
+
+/// Runs one scalar read from a sentinel destination: a refusal must leave the sentinel, an
+/// accept must satisfy `valid`.
+fn kept<T: Copy + PartialEq + Debug>(
+    sentinel: T,
+    valid: impl FnOnce(T) -> bool,
+    read: impl FnOnce(&mut T) -> Result<(), Error>,
+) -> Result<(), Error> {
+    let mut value = sentinel;
+    let result = read(&mut value);
+    match result {
+        Err(_) => assert_eq!(value, sentinel, "a refused read wrote its destination"),
+        Ok(()) => assert!(
+            valid(value),
+            "an accepted value escaped its declaration: {value:?}"
+        ),
+    }
+    result
+}
+
+fn any<T>(_: T) -> bool {
+    true
+}
 
 fuzz_target!(|data: &[u8]| {
     if data.len() < 4 {
@@ -34,24 +61,46 @@ fuzz_target!(|data: &[u8]| {
         let op = chunk[0];
         let a = *chunk.get(1).unwrap_or(&0);
         let b = *chunk.get(2).unwrap_or(&0);
-        let _ = match op % 16 {
-            0 => stream.serialize_bits(&mut 0, u32::from(a) % 32 + 1),
-            1 => stream.serialize_bits64(&mut 0, u32::from(a) % 64 + 1),
-            2 => stream.serialize_int(&mut 0, -i32::from(a) - 1, i32::from(b) + 1),
-            3 => stream.serialize_int64(&mut 0, -i64::from(a) - 1, i64::from(b) + 1),
-            4 => stream.serialize_bool(&mut false),
-            5 => stream.serialize_u8(&mut 0),
-            6 => stream.serialize_u16(&mut 0),
-            7 => stream.serialize_u32(&mut 0),
-            8 => stream.serialize_u64(&mut 0),
-            9 => stream.serialize_f32(&mut 0.0),
-            10 => stream.serialize_f64(&mut 0.0),
+        let result = match op % 16 {
+            0 => kept(0xDEAD_BEEFu32, any, |v| {
+                stream.serialize_bits(v, u32::from(a) % 32 + 1)
+            }),
+            1 => kept(99u64, any, |v| {
+                stream.serialize_bits64(v, u32::from(a) % 64 + 1)
+            }),
+            2 => {
+                let (min, max) = (-i32::from(a) - 1, i32::from(b) + 1);
+                kept(
+                    i32::MIN,
+                    |v| (min..=max).contains(&v),
+                    |v| stream.serialize_int(v, min, max),
+                )
+            }
+            3 => {
+                let (min, max) = (-i64::from(a) - 1, i64::from(b) + 1);
+                kept(
+                    i64::MIN,
+                    |v| (min..=max).contains(&v),
+                    |v| stream.serialize_int64(v, min, max),
+                )
+            }
+            4 => kept(true, any, |v| stream.serialize_bool(v)),
+            5 => kept(0xA5u8, any, |v| stream.serialize_u8(v)),
+            6 => kept(0xA5A5u16, any, |v| stream.serialize_u16(v)),
+            7 => kept(0xA5A5_A5A5u32, any, |v| stream.serialize_u32(v)),
+            8 => kept(0xA5A5_A5A5_A5A5_A5A5u64, any, |v| stream.serialize_u64(v)),
+            9 => kept(1.5f32, f32::is_finite, |v| stream.serialize_f32(v)),
+            10 => kept(2.5f64, f64::is_finite, |v| stream.serialize_f64(v)),
             11 => stream.serialize_align(),
-            12 => stream.serialize_u128(&mut 0),
+            12 => kept(7u128, any, |v| stream.serialize_u128(v)),
             13 => {
                 // the bound width walks every group structure: one group, two, three and four
                 let bound = 1i128 << (20 + u32::from(a) % 100);
-                stream.serialize_int128(&mut 0, -bound, bound)
+                kept(
+                    i128::MIN,
+                    |v| (-bound..=bound).contains(&v),
+                    |v| stream.serialize_int128(v, -bound, bound),
+                )
             }
             14 => match a % 9 {
                 // fixed point configurations are constants of the call site, so the ones the
@@ -82,10 +131,34 @@ fuzz_target!(|data: &[u8]| {
                 2 => stream.serialize_end(),
                 // previous is caller state and must be in the int_relative domain
                 // [0,i32::MAX] (STANDARD.md): the hostile input is the packet, not the bound
-                3 => stream
-                    .serialize_int_relative((i32::from(a) << 8) | i32::from(b), &mut 0),
-                _ => stream.serialize_compressed_float(&mut 0.0, 0.0, f32::from(b) + 1.0, 0.01),
+                3 => {
+                    let previous = (i32::from(a) << 8) | i32::from(b);
+                    kept(
+                        -1i32,
+                        |v| v > previous,
+                        |v| stream.serialize_int_relative(previous, v),
+                    )
+                }
+                _ => kept(-3.0f32, f32::is_finite, |v| {
+                    stream.serialize_compressed_float(v, 0.0, f32::from(b) + 1.0, 0.01)
+                }),
             },
         };
+
+        // a refusal latches: the stream reports it, and the next read refuses without
+        // consuming a bit
+        if result.is_err() {
+            assert!(stream.failure().is_some(), "a refusal did not latch");
+            let before = stream.bits_processed();
+            assert!(
+                kept(true, any, |v| stream.serialize_bool(v)).is_err(),
+                "a read after a refusal was accepted"
+            );
+            assert_eq!(
+                before,
+                stream.bits_processed(),
+                "a latched stream consumed bits"
+            );
+        }
     }
 });

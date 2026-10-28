@@ -55,6 +55,15 @@ Changed:
   latched first reason, as every read on a failed stream already did; it used to return the
   new reason while `failure()` kept the first.
 
+Tests:
+
+- **The hostile read checks the reader obligations, not only no-panic** (the 2026-10-27
+  audit). The `hostile_read` fuzz target starts every scalar at a sentinel and asserts a
+  refused read leaves it, an accepted ranged value is inside its declaration, and a refusal
+  latches (the next read refuses and consumes no bits). `tests/hostile.rs` runs the same
+  checks as a seeded unit test over 100,000 hostile packets. A planted defect (`serialize_f32`
+  writing its destination before refusing) fails both.
+
 ## 3.1.0 — 2026-10-27
 
 **Object read terminality (reference v2.0.1).** `conformance/` and `conformance-controls/`
