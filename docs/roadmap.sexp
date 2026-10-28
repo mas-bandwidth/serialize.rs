@@ -1,26 +1,157 @@
-; The serialize.rs roadmap: the data ROADMAP.md is generated from.
-; Same shape as nova-sprint's docs/roadmap.sexp (internal/roadmapdoc's package comment):
-; data, never evaluated. Edit this file, then regenerate ROADMAP.md with nova-sprint's
-; generator, from a nova-sprint checkout:
-;   go build -o /tmp/roadmap ./tools/roadmap && (cd <this repo> && /tmp/roadmap --file docs/roadmap.sexp --out ROADMAP.md)
-; Never edit ROADMAP.md by hand. Created 2026-10-14 when this repository's open GitHub issues and
-; unfinished pull requests were moved into it.
-(roadmap "v1"
- :title "serialize.rs roadmap"
- :text "Planned work for serialize.rs. The items below were open GitHub issues and pull requests, moved here on 2026-10-14 when roadmaps became the standard for future work (Glenn, 2026-10-14). Each item names its issue or pull request; the branches of moved pull requests are kept to resume from. Landed work is in git."
-
- :groups
- (
-  (group "github-issues" :title "Moved from GitHub issues on 2026-10-14"
-   :text "Open GitHub issues of mas-bandwidth/serialize.rs, recorded here on 2026-10-14 when roadmaps became the standard for future work (Glenn, 2026-10-14). Each item names its issue; the issue is closed with a pointer here.")
- )
-
- :items
- (
-  (item "issue-78" :group "github-issues" :area "serialize.rs"
-   :title "Keep ordinary change CI under two minutes; schedule extended fuzz runs"
-   :text "The image-only README logo change in PR77 ran the entire fuzz smoke job (60s per target), exceeding the per-change two-minute ceiling while no Rust source changed. Keep useful source-change gates, but move the multi-target extended fuzz work to scheduled/explicitly invoked CI and use a small bounded smoke or paths-aware gate for ordinary changes."
-   :date "2026-10-14"
-   :origin "mas-bandwidth/serialize.rs issue #78, opened 2026-09-13 by gafferongames; moved here 2026-10-14"
-   :kept (:github-issue "78" :labels ""))
- ))
+; serialize.rs roadmap: the data ROADMAP.md is generated from (nova-roadmap, a nova-tools release binary;
+; make roadmap renders, make roadmap-check fails on drift). Read as data, never evaluated.
+; A cell is done only when its task is :done with :evidence, a test or a commit;
+; :tested-revision is the main commit whose CI passed with that evidence.
+(:schema 1
+ :root "goal"
+ :page (:title "serialize.rs roadmap"
+        :roadmaps ("encoding" "untrusted" "compat" "platforms" "testing"))
+ :nodes
+ ((:id "goal" :type :work-set :children ("encoding" "untrusted" "compat" "platforms" "testing"))
+  (:id "encoding" :type :roadmap :title "Encoding"
+   :text "The values one serialize function can write, read and measure, each packed into exactly the bits it needs."
+   :rows (("one-function" "one serialize function for write, read and measure")
+          ("bits" "raw bits, 1 to 64 at a time")
+          ("bool-uints" "bool, u8, u16, u32 and u64")
+          ("ranged-int" "ranged 32 and 64 bit integers")
+          ("int128" "128 bit integers, raw and ranged")
+          ("degenerate" "a min == max range costs zero bits")
+          ("floats" "f32 and f64")
+          ("compressed-float" "compressed floats")
+          ("compressed-float-precomputed" "precomputed compressed float entry points")
+          ("fixed" "fixed point (Q formats) serialized exactly")
+          ("int-relative" "relative sequence numbers (int_relative)")
+          ("bytes-align" "byte arrays and alignment")
+          ("strings" "UTF-8 strings and UTF-16 wide strings")
+          ("measure" "a conservative size estimate before writing")
+          ("large-buffers" "buffers past 256 MB round trip"))
+   :columns (("done" "done"))
+   :cells (("one-function" "done" "encoding/one-function")
+           ("bits" "done" "encoding/bits")
+           ("bool-uints" "done" "encoding/bool-uints")
+           ("ranged-int" "done" "encoding/ranged-int")
+           ("int128" "done" "encoding/int128")
+           ("degenerate" "done" "encoding/degenerate")
+           ("floats" "done" "encoding/floats")
+           ("compressed-float" "done" "encoding/compressed-float")
+           ("compressed-float-precomputed" "done" "encoding/compressed-float-precomputed")
+           ("fixed" "done" "encoding/fixed")
+           ("int-relative" "done" "encoding/int-relative")
+           ("bytes-align" "done" "encoding/bytes-align")
+           ("strings" "done" "encoding/strings")
+           ("measure" "done" "encoding/measure")
+           ("large-buffers" "done" "encoding/large-buffers")))
+  (:id "encoding/one-function" :type :task :title "one serialize function for write, read and measure" :state :done :evidence ("tests/serialize.rs: test_serialize" "tests/serialize.rs: test_read_write" "examples/packet.rs (ci.yml test job, Example step)") :tested-revision "6b1559a7135fb1d06b6cda7f93011834c27883ac")
+  (:id "encoding/bits" :type :task :title "raw bits, 1 to 64 at a time" :state :done :evidence ("tests/serialize.rs: test_bitpacker" "tests/serialize.rs: test_read_bits_group" "tests/serialize.rs: test_unaligned_writer") :tested-revision "6b1559a7135fb1d06b6cda7f93011834c27883ac")
+  (:id "encoding/bool-uints" :type :task :title "bool, u8, u16, u32 and u64" :state :done :evidence ("tests/serialize.rs: test_serialize" "tests/serialize.rs: test_read_write") :tested-revision "6b1559a7135fb1d06b6cda7f93011834c27883ac")
+  (:id "encoding/ranged-int" :type :task :title "ranged 32 and 64 bit integers" :state :done :evidence ("tests/serialize.rs: test_serialize_integer_full_range" "tests/serialize.rs: test_serialize_int64_full_range" "tests/serialize.rs: test_serialize_integer_validation") :tested-revision "6b1559a7135fb1d06b6cda7f93011834c27883ac")
+  (:id "encoding/int128" :type :task :title "128 bit integers, raw and ranged" :state :done :evidence ("tests/serialize.rs: test_serialize_uint128" "tests/serialize.rs: test_serialize_int128" "tests/serialize.rs: test_bits_required128") :tested-revision "6b1559a7135fb1d06b6cda7f93011834c27883ac")
+  (:id "encoding/degenerate" :type :task :title "a min == max range costs zero bits" :state :done :evidence ("tests/degenerate.rs: degenerate_range_costs_nothing" "tests/degenerate.rs: degenerate_range_64_and_128" "tests/degenerate.rs: degenerate_fixed_costs_nothing_on_every_width") :tested-revision "6b1559a7135fb1d06b6cda7f93011834c27883ac")
+  (:id "encoding/floats" :type :task :title "f32 and f64" :state :done :evidence ("tests/serialize.rs: test_serialize" "tests/serialize.rs: test_read_write") :tested-revision "6b1559a7135fb1d06b6cda7f93011834c27883ac")
+  (:id "encoding/compressed-float" :type :task :title "compressed floats" :state :done :evidence ("tests/serialize.rs: test_compressed_float_validation" "tests/serialize.rs: test_compressed_float_top_of_range_clamp") :tested-revision "6b1559a7135fb1d06b6cda7f93011834c27883ac")
+  (:id "encoding/compressed-float-precomputed" :type :task :title "precomputed compressed float entry points" :state :done :evidence ("tests/serialize.rs: test_compressed_float_precomputed_conformance" "tests/serialize.rs: test_compressed_float_precomputed_differential" "tests/serialize.rs: test_compressed_float_precomputed_validation") :tested-revision "6b1559a7135fb1d06b6cda7f93011834c27883ac")
+  (:id "encoding/fixed" :type :task :title "fixed point (Q formats) serialized exactly" :state :done :evidence ("tests/serialize.rs: test_serialize_fixed" "tests/serialize.rs: test_serialize_fixed_wide" "tests/serialize.rs: test_serialize_fixed_matches_int64") :tested-revision "6b1559a7135fb1d06b6cda7f93011834c27883ac")
+  (:id "encoding/int-relative" :type :task :title "relative sequence numbers (int_relative)" :state :done :evidence ("tests/serialize.rs: test_int_relative_round_trip" "tests/serialize.rs: test_int_relative_reconstruction_is_checked_in_every_tier") :tested-revision "6b1559a7135fb1d06b6cda7f93011834c27883ac")
+  (:id "encoding/bytes-align" :type :task :title "byte arrays and alignment" :state :done :evidence ("tests/serialize.rs: test_serialize_bytes_validation" "tests/serialize.rs: test_write_bytes_wire_identical" "tests/serialize.rs: test_serialize") :tested-revision "6b1559a7135fb1d06b6cda7f93011834c27883ac")
+  (:id "encoding/strings" :type :task :title "UTF-8 strings and UTF-16 wide strings" :state :done :evidence ("tests/serialize.rs: test_wstring_utf16_code_units" "tests/serialize.rs: test_wstring_family_vector_emoji_first" "tests/degenerate.rs: degenerate_string_buffer_holds_the_empty_string") :tested-revision "6b1559a7135fb1d06b6cda7f93011834c27883ac")
+  (:id "encoding/measure" :type :task :title "a conservative size estimate before writing" :state :done :evidence ("tests/serialize.rs: test_measure") :tested-revision "6b1559a7135fb1d06b6cda7f93011834c27883ac")
+  (:id "encoding/large-buffers" :type :task :title "buffers past 256 MB round trip" :state :done :evidence ("tests/serialize.rs: test_large_buffer (ci.yml test job, release step with --include-ignored)") :tested-revision "6b1559a7135fb1d06b6cda7f93011834c27883ac")
+  (:id "untrusted" :type :roadmap :title "Reading untrusted data"
+   :text "The read path is the trust boundary: hostile packet data is refused with an error, never a panic."
+   :rows (("no-panic" "hostile data is refused, never panics")
+          ("range-checked" "out-of-range values in bit headroom refused")
+          ("destination-unwritten" "a refused read leaves its destination unwritten")
+          ("terminal" "failure is terminal until the stream is rebuilt")
+          ("string-refusals" "malformed UTF-8 and UTF-16 refused")
+          ("int-relative-domain" "int_relative results outside the int32 domain refused")
+          ("custom-refuse" "custom serialize functions refuse decoded values (stream.refuse)")
+          ("infallible-write" "write and measure cannot fail (Infallible error type)")
+          ("no-unsafe" "no unsafe code, enforced by the compiler"))
+   :columns (("done" "done"))
+   :cells (("no-panic" "done" "untrusted/no-panic")
+           ("range-checked" "done" "untrusted/range-checked")
+           ("destination-unwritten" "done" "untrusted/destination-unwritten")
+           ("terminal" "done" "untrusted/terminal")
+           ("string-refusals" "done" "untrusted/string-refusals")
+           ("int-relative-domain" "done" "untrusted/int-relative-domain")
+           ("custom-refuse" "done" "untrusted/custom-refuse")
+           ("infallible-write" "done" "untrusted/infallible-write")
+           ("no-unsafe" "done" "untrusted/no-unsafe")))
+  (:id "untrusted/no-panic" :type :task :title "hostile data is refused, never panics" :state :done :evidence ("tests/differential.rs: test_hostile_read" "fuzz/fuzz_targets/hostile_read.rs (ci.yml fuzz job)") :tested-revision "6b1559a7135fb1d06b6cda7f93011834c27883ac")
+  (:id "untrusted/range-checked" :type :task :title "out-of-range values in bit headroom refused" :state :done :evidence ("tests/serialize.rs: test_serialize_integer_validation" "tests/serialize.rs: test_serialize_int64_validation" "tests/serialize.rs: test_serialize_fixed_validation") :tested-revision "6b1559a7135fb1d06b6cda7f93011834c27883ac")
+  (:id "untrusted/destination-unwritten" :type :task :title "a refused read leaves its destination unwritten" :state :done :evidence ("tests/conformance.rs: every_conformance_vector") :tested-revision "6b1559a7135fb1d06b6cda7f93011834c27883ac")
+  (:id "untrusted/terminal" :type :task :title "failure is terminal until the stream is rebuilt" :state :done :evidence ("tests/terminal.rs: failure_before_consumption_is_terminal" "tests/terminal.rs: failure_after_partial_consumption_is_terminal" "tests/terminal.rs: re_initialization_clears_the_latch" "tests/terminal.rs: a_clone_carries_the_latch") :tested-revision "6b1559a7135fb1d06b6cda7f93011834c27883ac")
+  (:id "untrusted/string-refusals" :type :task :title "malformed UTF-8 and UTF-16 refused" :state :done :evidence ("tests/serialize.rs: test_string_read_refusals" "tests/serialize.rs: test_wstring_read_refusals" "tests/terminal.rs: failure_on_a_malformed_string_is_terminal") :tested-revision "6b1559a7135fb1d06b6cda7f93011834c27883ac")
+  (:id "untrusted/int-relative-domain" :type :task :title "int_relative results outside the int32 domain refused" :state :done :evidence ("tests/serialize.rs: test_int_relative_absolute_tier_refusals" "tests/terminal.rs: failure_on_int_relative_is_terminal") :tested-revision "6b1559a7135fb1d06b6cda7f93011834c27883ac")
+  (:id "untrusted/custom-refuse" :type :task :title "custom serialize functions refuse decoded values (stream.refuse)" :state :unknown
+   :note "stream.refuse is public and documented, but no test calls it from a custom serialize function; a test that a custom refuse fails the read and latches the stream makes this done.")
+  (:id "untrusted/infallible-write" :type :task :title "write and measure cannot fail (Infallible error type)" :state :done :evidence ("examples/packet.rs: irrefutable let Ok(()) on the write and measure streams" "commit 17254fb (Infallible writes in safe Rust, 2.0.0, #39)") :tested-revision "6b1559a7135fb1d06b6cda7f93011834c27883ac")
+  (:id "untrusted/no-unsafe" :type :task :title "no unsafe code, enforced by the compiler" :state :done :evidence ("commit 1746514 (forbid(unsafe_code), Miri, MSRV, libFuzzer)" ".github/workflows/ci.yml: miri job (the whole suite under Miri)") :tested-revision "6b1559a7135fb1d06b6cda7f93011834c27883ac")
+  (:id "compat" :type :roadmap :title "Compatibility"
+   :text "Bit-for-bit wire compatibility with the C++ serialize library and the shared family standard."
+   :rows (("golden" "the 112 byte golden wire vector, byte for byte")
+          ("cpp-interop" "head to head with the real C++ library, both directions")
+          ("conformance" "the shared conformance corpus, every vector")
+          ("standard-sync" "STANDARD.md and conformance/ kept in sync with upstream")
+          ("endian" "endian independent (big-endian s390x)"))
+   :columns (("done" "done"))
+   :cells (("golden" "done" "compat/golden")
+           ("cpp-interop" "done" "compat/cpp-interop")
+           ("conformance" "done" "compat/conformance")
+           ("standard-sync" "done" "compat/standard-sync")
+           ("endian" "done" "compat/endian")))
+  (:id "compat/golden" :type :task :title "the 112 byte golden wire vector, byte for byte" :state :done :evidence ("tests/serialize.rs: test_golden_wire_format") :tested-revision "6b1559a7135fb1d06b6cda7f93011834c27883ac")
+  (:id "compat/cpp-interop" :type :task :title "head to head with the real C++ library, both directions" :state :done :evidence (".github/workflows/ci.yml: cpp-interop job (C++ wire compatibility, pinned v1.16.0)" "examples/wire_interop.rs + interop/golden.cpp") :tested-revision "6b1559a7135fb1d06b6cda7f93011834c27883ac")
+  (:id "compat/conformance" :type :task :title "the shared conformance corpus, every vector" :state :done :evidence ("tests/conformance.rs: every_conformance_vector") :tested-revision "6b1559a7135fb1d06b6cda7f93011834c27883ac")
+  (:id "compat/standard-sync" :type :task :title "STANDARD.md and conformance/ kept in sync with upstream" :state :done :evidence (".github/workflows/ci.yml: spec-sync job") :tested-revision "6b1559a7135fb1d06b6cda7f93011834c27883ac")
+  (:id "compat/endian" :type :task :title "endian independent (big-endian s390x)" :state :done :evidence (".github/workflows/ci.yml: cross-targets job, s390x-unknown-linux-gnu under qemu") :tested-revision "6b1559a7135fb1d06b6cda7f93011834c27883ac")
+  (:id "platforms" :type :roadmap :title "Platforms and packaging"
+   :text "Where the crate builds and how it reaches users."
+   :rows (("desktop" "Linux, macOS and Windows, debug and release")
+          ("32-bit" "32 bit (i686)")
+          ("wasm" "wasm32 builds")
+          ("msrv" "minimum supported Rust 1.85")
+          ("zero-deps" "zero dependencies")
+          ("crates-io" "published on crates.io as serialize-official")
+          ("semver" "API compatibility checked on pull requests"))
+   :columns (("done" "done"))
+   :cells (("desktop" "done" "platforms/desktop")
+           ("32-bit" "done" "platforms/32-bit")
+           ("wasm" "done" "platforms/wasm")
+           ("msrv" "done" "platforms/msrv")
+           ("zero-deps" "done" "platforms/zero-deps")
+           ("crates-io" "done" "platforms/crates-io")
+           ("semver" "done" "platforms/semver")))
+  (:id "platforms/desktop" :type :task :title "Linux, macOS and Windows, debug and release" :state :done :evidence (".github/workflows/ci.yml: test job, matrix ubuntu-latest, macos-latest, windows-latest, green on 6b1559a") :tested-revision "6b1559a7135fb1d06b6cda7f93011834c27883ac")
+  (:id "platforms/32-bit" :type :task :title "32 bit (i686)" :state :done :evidence (".github/workflows/ci.yml: cross-targets job, i686-unknown-linux-gnu under qemu") :tested-revision "6b1559a7135fb1d06b6cda7f93011834c27883ac")
+  (:id "platforms/wasm" :type :task :title "wasm32 builds" :state :done :evidence (".github/workflows/ci.yml: wasm job") :tested-revision "6b1559a7135fb1d06b6cda7f93011834c27883ac")
+  (:id "platforms/msrv" :type :task :title "minimum supported Rust 1.85" :state :done :evidence (".github/workflows/ci.yml: msrv job") :tested-revision "6b1559a7135fb1d06b6cda7f93011834c27883ac")
+  (:id "platforms/zero-deps" :type :task :title "zero dependencies" :state :done :evidence (".github/workflows/ci.yml: lint job, Zero dependencies step") :tested-revision "6b1559a7135fb1d06b6cda7f93011834c27883ac")
+  (:id "platforms/crates-io" :type :task :title "published on crates.io as serialize-official" :state :done :evidence (".github/workflows/consumer.yml: consumer job (installs from crates.io, nightly and on push)" ".github/workflows/ci.yml: published-version job") :tested-revision "6b1559a7135fb1d06b6cda7f93011834c27883ac")
+  (:id "platforms/semver" :type :task :title "API compatibility checked on pull requests" :state :done :evidence (".github/workflows/ci.yml: semver job (cargo semver-checks against main)") :tested-revision "6b1559a7135fb1d06b6cda7f93011834c27883ac")
+  (:id "testing" :type :roadmap :title "Testing"
+   :text "How the crate is checked on every change."
+   :rows (("cpp-suite" "the C++ test suite, ported test for test")
+          ("differential" "differential write-read round trip")
+          ("miri" "the whole suite under Miri")
+          ("fuzz" "libFuzzer targets, smoke on every change")
+          ("nightly-fuzz" "extended fuzzing on a nightly schedule")
+          ("lint" "pedantic clippy, rustfmt and rustdoc")
+          ("fast-ci" "ordinary change CI under two minutes"))
+   :columns (("done" "done"))
+   :cells (("cpp-suite" "done" "testing/cpp-suite")
+           ("differential" "done" "testing/differential")
+           ("miri" "done" "testing/miri")
+           ("fuzz" "done" "testing/fuzz")
+           ("nightly-fuzz" "done" "testing/nightly-fuzz")
+           ("lint" "done" "testing/lint")
+           ("fast-ci" "done" "testing/fast-ci")))
+  (:id "testing/cpp-suite" :type :task :title "the C++ test suite, ported test for test" :state :done :evidence ("tests/serialize.rs: test_serialize" "tests/serialize.rs: test_measure" "tests/serialize.rs: test_bits_required" "tests/serialize.rs: test_zigzag") :tested-revision "6b1559a7135fb1d06b6cda7f93011834c27883ac")
+  (:id "testing/differential" :type :task :title "differential write-read round trip" :state :done :evidence ("tests/differential.rs: test_differential_round_trip") :tested-revision "6b1559a7135fb1d06b6cda7f93011834c27883ac")
+  (:id "testing/miri" :type :task :title "the whole suite under Miri" :state :done :evidence (".github/workflows/ci.yml: miri job") :tested-revision "6b1559a7135fb1d06b6cda7f93011834c27883ac")
+  (:id "testing/fuzz" :type :task :title "libFuzzer targets, smoke on every change" :state :done :evidence ("fuzz/fuzz_targets/hostile_read.rs" "fuzz/fuzz_targets/round_trip.rs" ".github/workflows/ci.yml: fuzz job") :tested-revision "6b1559a7135fb1d06b6cda7f93011834c27883ac")
+  (:id "testing/nightly-fuzz" :type :task :title "extended fuzzing on a nightly schedule" :state :done :evidence (".github/workflows/nightly-fuzz.yml: fuzz job (30 min per target, cumulative corpus)") :tested-revision "6b1559a7135fb1d06b6cda7f93011834c27883ac")
+  (:id "testing/lint" :type :task :title "pedantic clippy, rustfmt and rustdoc" :state :done :evidence (".github/workflows/ci.yml: lint job") :tested-revision "6b1559a7135fb1d06b6cda7f93011834c27883ac")
+  (:id "testing/fast-ci" :type :task :title "ordinary change CI under two minutes" :state :todo
+   :note "The per-change fuzz smoke runs 60 s per target on every change, including docs-only ones (PR 77). Keep a small bounded smoke or a paths-aware gate per change; the long runs already live in nightly-fuzz.yml."
+   :github-issue "78")))
