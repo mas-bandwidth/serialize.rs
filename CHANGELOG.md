@@ -1,6 +1,6 @@
 # Changelog
 
-## 4.0.0 — unreleased
+## 4.0.0 — 2026-10-27
 
 **Standard 2.1: the caller's refusal (reference v2.1.0).** `STANDARD.md`, `IMPLEMENTING.md`,
 `conformance/` and `conformance-controls/` are re-vendored verbatim from mas-bandwidth/serialize
