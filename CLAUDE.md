@@ -135,6 +135,9 @@ zero unsafe, BSD-3.
 - `tests/terminal.rs` — the terminal-failure latch across six failure shapes (before
   consumption, after partial consumption, range headroom, alignment, malformed string,
   int_relative), plus re-initialization and clone behavior
+- `tests/hostile.rs` — seeded hostile packets through every read with sentinel
+  destinations: refused reads leave the sentinel, accepts stay in bounds, refusals latch
+  (the `hostile_read` fuzz target asserts the same)
 - `conformance/`, `conformance-controls/` and `IMPLEMENTING.md` — VERBATIM VENDORED COPIES
   of the shared corpus, its negative controls and the implementation practice from
   mas-bandwidth/serialize, synced by the same `spec-sync` CI job as STANDARD.md;
