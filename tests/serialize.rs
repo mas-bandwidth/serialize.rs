@@ -972,7 +972,9 @@ fn test_int_relative_previous_outside_the_domain_asserts_in_debug() {
     let mut buffer = [0u8; 8];
     let mut write_stream = WriteStream::new(&mut buffer);
     let mut current = 0i32;
-    let Ok(()) = write_stream.serialize_int_relative(-1000, &mut current);
+    write_stream
+        .serialize_int_relative(-1000, &mut current)
+        .unwrap();
 }
 
 #[test]
@@ -1165,7 +1167,9 @@ fn test_write_out_of_range_int_asserts_in_debug() {
     let mut buffer = [0u8; 8];
     let mut write_stream = WriteStream::new(&mut buffer);
     let mut out_of_range = 200i32;
-    let Ok(()) = write_stream.serialize_int(&mut out_of_range, 0, 100);
+    write_stream
+        .serialize_int(&mut out_of_range, 0, 100)
+        .unwrap();
 }
 
 #[test]
@@ -1176,7 +1180,9 @@ fn test_write_too_long_string_asserts_in_debug() {
     // As of 2.0 the write path cannot fail: the same misuse is a debug assertion.
     let mut buffer = [0u8; 64];
     let mut write_stream = WriteStream::new(&mut buffer);
-    let Ok(()) = write_stream.serialize_string(&mut "this string is too long".to_string(), 8);
+    write_stream
+        .serialize_string(&mut "this string is too long".to_string(), 8)
+        .unwrap();
 }
 
 #[test]
@@ -1188,7 +1194,9 @@ fn test_write_string_with_nul_asserts_in_debug() {
     // the NUL is the half of the contract the writer asserts on
     let mut buffer = [0u8; 64];
     let mut write_stream = WriteStream::new(&mut buffer);
-    let Ok(()) = write_stream.serialize_string(&mut "a\0b".to_string(), 8);
+    write_stream
+        .serialize_string(&mut "a\0b".to_string(), 8)
+        .unwrap();
 }
 
 #[test]
@@ -1279,7 +1287,9 @@ fn test_compressed_float_nan_write_asserts_in_debug() {
     let mut buffer = [0u8; 8];
     let mut write_stream = WriteStream::new(&mut buffer);
     let mut value = f32::from_bits(0x7fc00000); // quiet NaN bit pattern
-    let Ok(()) = write_stream.serialize_compressed_float(&mut value, 0.0, 10.0, 0.01);
+    write_stream
+        .serialize_compressed_float(&mut value, 0.0, 10.0, 0.01)
+        .unwrap();
 }
 
 #[test]
@@ -1289,7 +1299,9 @@ fn test_compressed_float_infinity_write_asserts_in_debug() {
     let mut buffer = [0u8; 8];
     let mut write_stream = WriteStream::new(&mut buffer);
     let mut value = f32::INFINITY;
-    let Ok(()) = write_stream.serialize_compressed_float(&mut value, 0.0, 10.0, 0.01);
+    write_stream
+        .serialize_compressed_float(&mut value, 0.0, 10.0, 0.01)
+        .unwrap();
 }
 
 #[test]
@@ -1300,7 +1312,9 @@ fn test_compressed_float_non_finite_declaration_asserts_in_debug() {
     let mut buffer = [0u8; 8];
     let mut write_stream = WriteStream::new(&mut buffer);
     let mut value = 0.0f32;
-    let Ok(()) = write_stream.serialize_compressed_float(&mut value, -f32::MAX, f32::MAX, 0.01);
+    write_stream
+        .serialize_compressed_float(&mut value, -f32::MAX, f32::MAX, 0.01)
+        .unwrap();
 }
 
 #[test]
@@ -1311,7 +1325,9 @@ fn test_compressed_float_non_finite_quantum_count_asserts_in_debug() {
     let mut buffer = [0u8; 8];
     let mut write_stream = WriteStream::new(&mut buffer);
     let mut value = 0.0f32;
-    let Ok(()) = write_stream.serialize_compressed_float(&mut value, 0.0, f32::MAX, 1.0e-38);
+    write_stream
+        .serialize_compressed_float(&mut value, 0.0, f32::MAX, 1.0e-38)
+        .unwrap();
 }
 
 // The precomputed entry point carries the same write-side contract as
@@ -1326,8 +1342,9 @@ fn test_compressed_float_precomputed_nan_write_asserts_in_debug() {
     let mut buffer = [0u8; 8];
     let mut write_stream = WriteStream::new(&mut buffer);
     let mut value = f32::from_bits(0x7fc00000); // quiet NaN bit pattern
-    let Ok(()) =
-        write_stream.serialize_compressed_float_precomputed(&mut value, 1000, 10, 10.0, 0.0);
+    write_stream
+        .serialize_compressed_float_precomputed(&mut value, 1000, 10, 10.0, 0.0)
+        .unwrap();
 }
 
 #[test]
@@ -1339,8 +1356,9 @@ fn test_compressed_float_precomputed_inconsistent_bits_asserts_in_debug() {
     let mut buffer = [0u8; 8];
     let mut write_stream = WriteStream::new(&mut buffer);
     let mut value = 5.0f32;
-    let Ok(()) =
-        write_stream.serialize_compressed_float_precomputed(&mut value, 1000, 11, 10.0, 0.0);
+    write_stream
+        .serialize_compressed_float_precomputed(&mut value, 1000, 11, 10.0, 0.0)
+        .unwrap();
 }
 
 // the release backstop for non-conforming values: with the debug asserts compiled out, a NaN
@@ -2641,7 +2659,7 @@ fn serialize_compressed_float_frozen_reference<S: Stream>(
 
     if S::IS_READING {
         if integer_value > max_integer_value {
-            return S::fail(Error::ValueOutOfRange);
+            return stream.fail(Error::ValueOutOfRange);
         }
         let normalized_value = integer_value as f32 / max_integer_value as f32;
         *value = normalized_value * delta + min;
@@ -2704,26 +2722,30 @@ fn check_compressed_float_value_agrees(
     // measure: all three forms agree on cost
     let mut measure_frozen = MeasureStream::new();
     let mut measure_value = value;
-    let Ok(()) = serialize_compressed_float_frozen_reference(
+    serialize_compressed_float_frozen_reference(
         &mut measure_frozen,
         &mut measure_value,
         min,
         max,
         resolution,
-    );
+    )
+    .unwrap();
     let mut measure_legacy = MeasureStream::new();
     measure_value = value;
-    let Ok(()) =
-        measure_legacy.serialize_compressed_float(&mut measure_value, min, max, resolution);
+    measure_legacy
+        .serialize_compressed_float(&mut measure_value, min, max, resolution)
+        .unwrap();
     let mut measure_precomputed = MeasureStream::new();
     measure_value = value;
-    let Ok(()) = measure_precomputed.serialize_compressed_float_precomputed(
-        &mut measure_value,
-        params.max_integer_value,
-        params.bits,
-        params.delta,
-        min,
-    );
+    measure_precomputed
+        .serialize_compressed_float_precomputed(
+            &mut measure_value,
+            params.max_integer_value,
+            params.bits,
+            params.delta,
+            min,
+        )
+        .unwrap();
     differential_check!(
         checks,
         measure_frozen.bits_processed() == measure_legacy.bits_processed(),
@@ -2744,13 +2766,14 @@ fn check_compressed_float_value_agrees(
     {
         let mut stream = WriteStream::new(&mut buffer_frozen[..8]);
         let mut write_value = value;
-        let Ok(()) = serialize_compressed_float_frozen_reference(
+        serialize_compressed_float_frozen_reference(
             &mut stream,
             &mut write_value,
             min,
             max,
             resolution,
-        );
+        )
+        .unwrap();
         stream.flush();
         bits_frozen = stream.bits_processed();
     }
@@ -2758,7 +2781,9 @@ fn check_compressed_float_value_agrees(
     {
         let mut stream = WriteStream::new(&mut buffer_legacy[..8]);
         let mut write_value = value;
-        let Ok(()) = stream.serialize_compressed_float(&mut write_value, min, max, resolution);
+        stream
+            .serialize_compressed_float(&mut write_value, min, max, resolution)
+            .unwrap();
         stream.flush();
         bits_legacy = stream.bits_processed();
     }
@@ -2766,13 +2791,15 @@ fn check_compressed_float_value_agrees(
     {
         let mut stream = WriteStream::new(&mut buffer_precomputed[..8]);
         let mut write_value = value;
-        let Ok(()) = stream.serialize_compressed_float_precomputed(
-            &mut write_value,
-            params.max_integer_value,
-            params.bits,
-            params.delta,
-            min,
-        );
+        stream
+            .serialize_compressed_float_precomputed(
+                &mut write_value,
+                params.max_integer_value,
+                params.bits,
+                params.delta,
+                min,
+            )
+            .unwrap();
         stream.flush();
         bits_precomputed = stream.bits_processed();
     }
@@ -2852,7 +2879,7 @@ fn check_compressed_float_code_agrees(
     {
         let mut stream = WriteStream::new(&mut buffer[..8]);
         let mut raw = code;
-        let Ok(()) = stream.serialize_bits(&mut raw, params.bits);
+        stream.serialize_bits(&mut raw, params.bits).unwrap();
         stream.flush();
     }
 

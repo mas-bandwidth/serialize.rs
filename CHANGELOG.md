@@ -1,5 +1,40 @@
 # Changelog
 
+## 5.0.0 — 2026-10-28
+
+**U9's false on write, and the U15 exports (reference v2.1.1).** The two roadmap items the
+4.0.1 landing left for a major version: `u9-write-fail-false` and `u15-exports`. The wire is
+unchanged (format 2.0), and so are `STANDARD.md`, `IMPLEMENTING.md` and the corpus. A semver
+major, because the write and measure error type and the `Stream` trait change. crates.io only
+ever carried 2.4.0, so no published 3.x or 4.x user is broken by it.
+
+Breaking, and how to migrate:
+
+- **`WriteStream` and `MeasureStream` have `type Error = Error`** (was `Infallible`, the 2.0
+  #52 ruling). No built-in write or measure operation returns an error; only `fail`, `reject`
+  in release, and a nested object returning either do, which is U9's false: the caller's `?`
+  stops there, and nothing is recorded on the stream. Migrate `let Ok(()) =
+  packet.serialize(&mut writer);` to `packet.serialize(&mut writer)?;` (or `.unwrap()`).
+  `impl From<Infallible> for Error` is gone with it.
+- **`Stream::fail` takes `&mut self` and latches on read** (the port of the C++
+  `serialize_fail`): `S::fail(reason)` becomes `stream.fail(reason)`. On a write or measure
+  stream it returns `Err(reason)` in every build, never panics and records nothing.
+- **`Stream::refuse` is gone:** it was the latching form of `fail`, which `fail` now is.
+- **`Stream::refuse_if_failed` is hidden** (crate private), and **`Stream` is sealed**: the
+  three streams are the reference's (IMPLEMENTING.md U15).
+- **`Error::from_name` is gone** (U15): `Error::ALL.into_iter().find(|r| r.name() == name)`.
+- **`Stream::Error` gains a `From<Error>` bound**, so a nested object can return
+  `Err(reason.into())` without latching, the C++ callback returning false;
+  `serialize_object` latches it on read, as before.
+- **`reject` on a write or measure in release returns `Err(Error::Rejected)`** (was
+  `Ok(())`); in a checked build it still traps.
+
+New tests: `tests/uniform.rs` `u9_fail_on_write_returns_err_and_records_nothing`,
+`u9_a_failing_nested_object_stops_the_callers_question_mark_on_write` / `_on_measure`,
+`u9_a_failing_nested_object_still_latches_on_read`,
+`u9_reject_on_write_and_measure_returns_err_in_release`, `u6_measure_refuses_nothing`
+(rewritten), and the U15 `compile_fail` doctests in `src/lib.rs`.
+
 ## 4.0.1 — 2026-10-27
 
 **The 2.1.1 rulings (reference v2.1.1): U6, U9 and U15.** `STANDARD.md`, `IMPLEMENTING.md`,

@@ -22,7 +22,7 @@ pub trait Serialize {
 // precomputed constants, a `previous` — never packet data), IMPLEMENTING.md U16: validated on
 // every stream before any bits move. On a read stream a bad declaration is refused as
 // value_out_of_range in every build, never asserted (U7: a reader never traps), and through
-// `refuse`, so a stream that already failed keeps its first reason. On write and measure it is
+// `fail`, so a stream that already failed keeps its first reason. On write and measure it is
 // the write-misuse mechanism, a debug assertion compiled out in release exactly like the C++
 // library's serialize_assert (U9), where a violated call contract produces a malformed stream —
 // never memory unsafety.
@@ -31,7 +31,7 @@ macro_rules! declaration_check {
         let declared: bool = $cond;
         if !declared {
             if <$stream_type as Stream>::IS_READING {
-                return $stream.refuse(Error::ValueOutOfRange);
+                return $stream.fail(Error::ValueOutOfRange);
             }
             debug_assert!(declared, $($arg)+);
         }
@@ -57,64 +57,41 @@ macro_rules! declaration_check {
 /// or truncated data. Propagate errors with `?` so the first failure aborts the entire
 /// serialize function: a serialized value that controls a loop must never be used
 /// unvalidated.
-pub trait Stream {
+pub trait Stream: gate::Sealed {
     /// True if this stream writes (or measures) values.
     const IS_WRITING: bool;
 
     /// True if this stream reads values.
     const IS_READING: bool;
 
-    /// The error type of this stream's serialize methods: [`enum@Error`] for
-    /// [`crate::ReadStream`] — the network is the world, reads must be fallible — and
-    /// [`core::convert::Infallible`] for [`crate::WriteStream`] and
-    /// [`crate::MeasureStream`], whose serialize methods cannot fail. `Into<Error>` lets a
-    /// function returning [`Result`] absorb any stream's error with `map_err(Into::into)`
-    /// (or plain `?`, via `From<Infallible> for Error`, when the stream type is concrete).
-    type Error: core::fmt::Debug + Into<Error>;
+    /// The error type of this stream's serialize methods: [`enum@Error`] on every stream
+    /// since 5.0.0. On a read stream it is a refusal; on a write or measure stream it is
+    /// IMPLEMENTING.md U9's false, which only [`Stream::fail`], [`Stream::reject`] (release)
+    /// and a nested object that returns it can produce, recording nothing. It stays an
+    /// associated type so the canonical signature `-> Result<(), S::Error>` is unchanged, and
+    /// `From<Error>` lets a nested object return `Err(reason.into())` without latching, the
+    /// C++ callback returning false: [`Stream::serialize_object`] latches it on read.
+    type Error: core::fmt::Debug + Into<Error> + From<Error>;
 
-    /// Construct a data validation failure, without touching the stream.
+    /// Fail the operation: the port of the C++ `serialize_fail`.
     ///
-    /// This is the error constructor [`Stream::refuse`] is built from. Serialize functions
-    /// call `refuse` instead: failure is terminal, and only the `&mut self` form can latch
-    /// the stream so every later read fails too.
+    /// On a read stream this refuses the read and latches the stream's failure state, so
+    /// every later read on it fails as well (STANDARD.md, Reader Obligations: failure is
+    /// terminal). It is how the built-in serialize methods reject decoded values that fail
+    /// validation, and the hook for the same policy in custom serialize functions: guard
+    /// with `if S::IS_READING { ... return stream.fail(error); }`. A stream that already
+    /// failed keeps its first reason.
+    ///
+    /// On a write or measure stream there is nothing to refuse: it returns `Err(error)`,
+    /// U9's false, so the caller's `?` stops there as a C++ caller stops on false. It records
+    /// nothing (the stream has no refusal state, U6, U9), never panics in any build, and a
+    /// later write emits exactly what it would have without it.
     ///
     /// # Errors
     ///
-    /// On a read stream, always returns `Err(error)` (routed through the crate's `#[cold]`
-    /// error constructor, so the failure edge stays cold).
-    ///
-    /// On a write or measure stream there is nothing to refuse and no error to return.
-    /// IMPLEMENTING.md U9 has `fail` there return false, record nothing and never trap, in
-    /// every build; this port's write and measure error type is uninhabited (the 2.0 #52
-    /// ruling), so its result type has no false, and `fail` returns `Ok(())`, the only value
-    /// it has. It records nothing (U6) and never panics. It is the routing every refusal
-    /// takes, so like the reference it does not assert; a serialize function that returns
-    /// through it returns there, and validation that calls it belongs under an `IS_READING`
-    /// guard.
-    fn fail(error: Error) -> Result<(), Self::Error>;
-
-    /// Refuse the read: report a data validation failure and latch the stream's failure
-    /// state, so every later read on it fails as well.
-    ///
-    /// This is how the built-in serialize methods reject decoded values that fail
-    /// validation on read, and it is the hook for the same policy in custom serialize
-    /// functions: guard with `if S::IS_READING { ... return stream.refuse(error); }` and the
-    /// write and measure instantiations compile the guard away.
-    ///
-    /// Failure is terminal (STANDARD.md, Reader Obligations): nothing after a failing
-    /// operation has a defined position, so the stream — not the caller's discipline —
-    /// enforces that nothing after it is interpretable. [`crate::ReadStream`] overrides this
-    /// to set its latch; write and measure streams cannot fail, so the default body is just
-    /// [`Stream::fail`], which returns `Ok(())` there (U9).
-    ///
-    /// # Errors
-    ///
-    /// On a read stream, always returns `Err` with the stream's first reason: `error`, or the
-    /// reason it already latched.
-    #[inline(always)]
-    fn refuse(&mut self, error: Error) -> Result<(), Self::Error> {
-        Self::fail(error)
-    }
+    /// Always. On a read stream, `error` or the reason the stream already latched; on a
+    /// write or measure stream, `error`.
+    fn fail(&mut self, error: Error) -> Result<(), Self::Error>;
 
     /// Reject the read: the caller's own refusal of a value whose bytes were well formed —
     /// an enum value the program does not know, say, or two fields that contradict each
@@ -128,48 +105,25 @@ pub trait Stream {
     ///
     /// Reject is read only (IMPLEMENTING.md, U2 and U9): on a write or measure stream there
     /// is nothing to refuse, so calling it there is write misuse: it traps in a checked build
-    /// (a `debug_assert!` panic, U9), and in release returns `Ok(())`, this port's only value
-    /// for U9's false (the write and measure error type is uninhabited), recording nothing.
+    /// (a `debug_assert!` panic, U9), and in release returns `Err(Error::Rejected)`, U9's
+    /// false, recording nothing.
     ///
     /// # Errors
     ///
-    /// On a read stream, always: [`Error::Rejected`], or the reason the stream already
-    /// latched.
+    /// Always. On a read stream, [`Error::Rejected`], or the reason the stream already
+    /// latched; on a write or measure stream in release, [`Error::Rejected`].
     #[inline]
     fn reject(&mut self) -> Result<(), Self::Error> {
         debug_assert!(
             Self::IS_READING,
             "reject is read only: there is nothing to refuse on a write or measure stream"
         );
-        if Self::IS_READING {
-            let reason = if deleted(Control::RejectReason) {
-                Error::ValueOutOfRange
-            } else {
-                Error::Rejected
-            };
-            return self.refuse(reason);
-        }
-        Ok(())
-    }
-
-    /// The failure gate an operation that touches no bits still passes.
-    ///
-    /// STANDARD.md, Reader Obligations: "every read consults the failure state before it
-    /// does anything else, zero-bit reads included, so a degenerate ranged read, an `align`
-    /// on an already aligned stream, a `bytes` call of zero count and `object` all refuse on
-    /// a stream that has already failed." Every operation that reaches the bit level gets
-    /// the gate for free, because [`ReadStream`](crate::ReadStream) folds the latch into its
-    /// past-end test. A degenerate range reaches no bits at all, so it calls this instead.
-    ///
-    /// On a write or measure stream the answer is always `Ok(())` and the call compiles
-    /// away, because neither stream can fail.
-    ///
-    /// # Errors
-    ///
-    /// On a read stream that has already latched a failure, the latched error.
-    #[inline(always)]
-    fn refuse_if_failed(&mut self) -> Result<(), Self::Error> {
-        Ok(())
+        let reason = if Self::IS_READING && deleted(Control::RejectReason) {
+            Error::ValueOutOfRange
+        } else {
+            Error::Rejected
+        };
+        self.fail(reason)
     }
 
     /// Serialize a nested object: the port of the C++ `serialize_object`.
@@ -324,7 +278,7 @@ pub trait Stream {
             // This must not reach serialize_bits, whose bit count has to be at
             // least 1, so the failure gate every other read gets from the bit
             // level is taken explicitly here.
-            self.refuse_if_failed()?;
+            refuse_if_failed(self)?;
             if Self::IS_READING {
                 *value = min;
             }
@@ -343,7 +297,7 @@ pub trait Stream {
         self.serialize_bits(&mut unsigned_value, bits)?;
         if Self::IS_READING {
             if unsigned_value > range && !deleted(Control::RangedRange) {
-                return self.refuse(Error::ValueOutOfRange);
+                return self.fail(Error::ValueOutOfRange);
             }
             *value = if deleted(Control::RangedReconstruction) {
                 unsigned_value as i32
@@ -381,7 +335,7 @@ pub trait Stream {
             // This must not reach serialize_bits, whose bit count has to be at
             // least 1, so the failure gate every other read gets from the bit
             // level is taken explicitly here.
-            self.refuse_if_failed()?;
+            refuse_if_failed(self)?;
             if Self::IS_READING {
                 *value = min;
             }
@@ -411,7 +365,7 @@ pub trait Stream {
         }
         if Self::IS_READING {
             if unsigned_value > range {
-                return self.refuse(Error::ValueOutOfRange);
+                return self.fail(Error::ValueOutOfRange);
             }
             *value = unsigned_value.wrapping_add(min as u64) as i64;
             if deleted(Control::Int64ThroughDouble) {
@@ -464,7 +418,7 @@ pub trait Stream {
             // This must not reach serialize_bits, whose bit count has to be at
             // least 1, so the failure gate every other read gets from the bit
             // level is taken explicitly here.
-            self.refuse_if_failed()?;
+            refuse_if_failed(self)?;
             if Self::IS_READING {
                 *value = min;
             }
@@ -483,7 +437,7 @@ pub trait Stream {
         serialize_offset128(self, &mut offset, bits)?;
         if Self::IS_READING {
             if offset > range {
-                return self.refuse(Error::ValueOutOfRange);
+                return self.fail(Error::ValueOutOfRange);
             }
             *value = offset.wrapping_add(min as u128) as i128;
         }
@@ -647,7 +601,7 @@ pub trait Stream {
         self.serialize_bits(&mut int_value, 32)?;
         if Self::IS_READING {
             if !float_bits_are_finite(int_value) && !deleted(Control::FloatFinite) {
-                return self.refuse(Error::NonFiniteFloat);
+                return self.fail(Error::NonFiniteFloat);
             }
             *value = f32::from_bits(int_value);
         }
@@ -677,7 +631,7 @@ pub trait Stream {
         self.serialize_bits64(&mut int_value, 64)?;
         if Self::IS_READING {
             if !double_bits_are_finite(int_value) && !deleted(Control::DoubleFinite) {
-                return self.refuse(Error::NonFiniteFloat);
+                return self.fail(Error::NonFiniteFloat);
             }
             *value = f64::from_bits(int_value);
         }
@@ -855,7 +809,7 @@ pub trait Stream {
 
         if Self::IS_READING {
             if integer_value > max_integer_value {
-                return self.refuse(Error::ValueOutOfRange);
+                return self.fail(Error::ValueOutOfRange);
             }
             let normalized_value = integer_value as f32 / max_integer_value as f32;
             let decoded = normalized_value * delta + min;
@@ -866,7 +820,7 @@ pub trait Stream {
             // to the far side of the wire
             if !float_bits_are_finite(decoded.to_bits()) && !deleted(Control::CompressedFloatFinite)
             {
-                return self.refuse(Error::NonFiniteFloat);
+                return self.fail(Error::NonFiniteFloat);
             }
             *value = decoded;
         }
@@ -980,7 +934,7 @@ pub trait Stream {
             // level, so the failure gate is taken explicitly, exactly as in the ranged
             // integers above
             if !deleted(Control::FixedDegenerateTerminal) {
-                self.refuse_if_failed()?;
+                refuse_if_failed(self)?;
             }
             if Self::IS_WRITING {
                 debug_assert!(
@@ -1013,7 +967,7 @@ pub trait Stream {
             // reject raw values outside [raw_min,raw_max] smuggled into the bit headroom of
             // the offset encoding. reject, never clamp
             if offset > raw_range {
-                return self.refuse(Error::ValueOutOfRange);
+                return self.fail(Error::ValueOutOfRange);
             }
             // reconstruct in the unsigned domain, then truncate to the storage width: exact
             // two's complement for signed storage
@@ -1134,7 +1088,7 @@ pub trait Stream {
             // the domain and ordering rule comes first, so a current outside the domain is
             // value_out_of_range whatever its difference
             if !int_relative_in_domain(previous, reconstructed) {
-                return self.refuse(Error::ValueOutOfRange);
+                return self.fail(Error::ValueOutOfRange);
             }
             // the absolute tier is canonical too: a difference a bounded tier would have
             // taken has a bounded encoding, and this is a second one. The difference is
@@ -1142,12 +1096,38 @@ pub trait Stream {
             if reconstructed - i64::from(previous) <= 69914
                 && !deleted(Control::IntRelativeCanonical)
             {
-                return self.refuse(Error::NonCanonical);
+                return self.fail(Error::NonCanonical);
             }
             *current = reconstructed as i32;
         }
 
         Ok(())
+    }
+}
+
+/// The failure gate an operation that touches no bits still passes, crate private
+/// (IMPLEMENTING.md U15 hides it; it was `Stream::refuse_if_failed` before 5.0.0).
+///
+/// STANDARD.md, Reader Obligations: "every read consults the failure state before it does
+/// anything else, zero-bit reads included". Every operation that reaches the bit level gets
+/// the gate for free, because [`crate::ReadStream`] folds the latch into its past-end test.
+/// A degenerate range reaches no bits at all, so it calls this instead. On a write or
+/// measure stream the gate is always `Ok` and the call compiles away.
+#[inline(always)]
+pub(crate) fn refuse_if_failed<S: Stream + ?Sized>(stream: &mut S) -> Result<(), S::Error> {
+    stream.gate().map_err(S::Error::from)
+}
+
+/// Seals [`Stream`]: the three streams are the reference's, and the latch query the gate
+/// reads is internal (IMPLEMENTING.md U15). The module is private, so nothing outside the
+/// crate can name the trait, implement it, or call `gate`.
+pub(crate) mod gate {
+    use crate::Result;
+
+    pub trait Sealed {
+        /// The failure gate: on a read stream the latched reason through the crate's cold
+        /// error constructor, or `Ok`; always `Ok` on write and measure.
+        fn gate(&mut self) -> Result;
     }
 }
 
@@ -1162,7 +1142,7 @@ fn accept_int_relative<S: Stream + ?Sized>(
     current: &mut i32,
 ) -> Result<(), S::Error> {
     if !int_relative_in_domain(previous, reconstructed) {
-        return stream.refuse(Error::ValueOutOfRange);
+        return stream.fail(Error::ValueOutOfRange);
     }
     *current = reconstructed as i32;
     Ok(())

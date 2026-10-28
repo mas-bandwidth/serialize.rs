@@ -41,7 +41,10 @@ fn reasons_are_the_closed_list_spelled_exactly() {
         ]
     );
     for reason in Error::ALL {
-        assert_eq!(Error::from_name(reason.name()), Some(reason));
+        assert_eq!(
+            Error::ALL.into_iter().find(|r| r.name() == reason.name()),
+            Some(reason)
+        );
         assert_eq!(reason.to_string(), reason.name());
     }
     // the 1.x spellings name nothing: a bare `refused` is gone
@@ -53,7 +56,11 @@ fn reasons_are_the_closed_list_spelled_exactly() {
         "overflow",
         "",
     ] {
-        assert_eq!(Error::from_name(old), None, "{old} is not a reason");
+        assert_eq!(
+            Error::ALL.into_iter().find(|r| r.name() == old),
+            None,
+            "{old} is not a reason"
+        );
     }
 }
 
@@ -148,7 +155,9 @@ fn double_refuses_non_finite_patterns_and_leaves_the_destination() {
 fn float_write_of_nan_asserts_in_debug() {
     let mut buffer = [0u8; 8];
     let mut stream = WriteStream::new(&mut buffer);
-    let Ok(()) = stream.serialize_f32(&mut f32::from_bits(0x7FC0_0000));
+    stream
+        .serialize_f32(&mut f32::from_bits(0x7FC0_0000))
+        .unwrap();
 }
 
 #[test]
@@ -157,7 +166,9 @@ fn float_write_of_nan_asserts_in_debug() {
 fn double_write_of_infinity_asserts_in_debug() {
     let mut buffer = [0u8; 8];
     let mut stream = WriteStream::new(&mut buffer);
-    let Ok(()) = stream.serialize_f64(&mut f64::from_bits(0xFFF0_0000_0000_0000));
+    stream
+        .serialize_f64(&mut f64::from_bits(0xFFF0_0000_0000_0000))
+        .unwrap();
 }
 
 #[test]
@@ -166,7 +177,9 @@ fn double_write_of_infinity_asserts_in_debug() {
 fn float_measure_of_nan_asserts_in_debug() {
     // the measure shares the write path's contract
     let mut stream = MeasureStream::new();
-    let Ok(()) = stream.serialize_f32(&mut f32::from_bits(0x7F80_0000));
+    stream
+        .serialize_f32(&mut f32::from_bits(0x7F80_0000))
+        .unwrap();
 }
 
 // ------------------------------------------------------------------------------------------
@@ -214,7 +227,9 @@ fn compressed_float_write_with_an_infinite_top_decode_asserts_in_debug() {
     let mut buffer = [0u8; 8];
     let mut stream = WriteStream::new(&mut buffer);
     let mut value = WITNESS_MIN;
-    let Ok(()) = stream.serialize_compressed_float(&mut value, WITNESS_MIN, f32::MAX, WITNESS_RES);
+    stream
+        .serialize_compressed_float(&mut value, WITNESS_MIN, f32::MAX, WITNESS_RES)
+        .unwrap();
 }
 
 // ------------------------------------------------------------------------------------------
@@ -318,9 +333,9 @@ fn end_refuses_set_padding_and_ignores_the_field_bits() {
 fn end_accepts_the_exact_stream_a_writer_reports() {
     let mut buffer = [0u8; 16];
     let mut stream = WriteStream::new(&mut buffer);
-    let Ok(()) = stream.serialize_bits(&mut 5, 3);
+    stream.serialize_bits(&mut 5, 3).unwrap();
     let bits_before = stream.bits_processed();
-    let Ok(()) = stream.serialize_end();
+    stream.serialize_end().unwrap();
     assert_eq!(
         stream.bits_processed(),
         bits_before,
@@ -331,8 +346,8 @@ fn end_accepts_the_exact_stream_a_writer_reports() {
     assert_eq!(bytes, 1);
 
     let mut measure = MeasureStream::new();
-    let Ok(()) = measure.serialize_bits(&mut 5, 3);
-    let Ok(()) = measure.serialize_end();
+    measure.serialize_bits(&mut 5, 3).unwrap();
+    measure.serialize_end().unwrap();
     assert_eq!(measure.bits_processed(), 3, "a measure's end costs nothing");
 
     let mut read = ReadStream::new(&buffer, bytes);
@@ -393,8 +408,8 @@ fn string_real_text_round_trips_byte_for_byte() {
         let mut buffer = [0u8; 64];
         let mut stream = WriteStream::new(&mut buffer);
         let mut value = text.to_string();
-        let Ok(()) = stream.serialize_string(&mut value, 32);
-        let Ok(()) = stream.serialize_end();
+        stream.serialize_string(&mut value, 32).unwrap();
+        stream.serialize_end().unwrap();
         stream.flush();
         let bytes = stream.bytes_processed() as usize;
         assert_eq!(&buffer[1..=text.len()], text.as_bytes());
@@ -479,7 +494,7 @@ struct ReturnsRejected {
 impl Serialize for ReturnsRejected {
     fn serialize<S: Stream>(&mut self, _stream: &mut S) -> Result<(), S::Error> {
         self.called = true;
-        S::fail(Error::Rejected)
+        Err(Error::Rejected.into())
     }
 }
 
@@ -563,10 +578,10 @@ fn write_and_measure_never_refuse_a_digit() {
     // measures any value, and the read side is where the caller's validation runs
     let mut buffer = [0u8; 8];
     let mut write = WriteStream::new(&mut buffer);
-    let Ok(()) = Digit { value: 12 }.serialize(&mut write);
+    Digit { value: 12 }.serialize(&mut write).unwrap();
     write.flush();
     let mut measure = MeasureStream::new();
-    let Ok(()) = Digit { value: 12 }.serialize(&mut measure);
+    Digit { value: 12 }.serialize(&mut measure).unwrap();
     assert_eq!(measure.bits_processed(), 4);
     let written = with_slack(write.data());
     let mut read = ReadStream::new(&written, 1);
@@ -589,12 +604,12 @@ fn reject_on_a_write_stream_is_misuse() {
 #[test]
 #[cfg(not(debug_assertions))]
 fn reject_on_a_write_or_measure_stream_never_panics_in_release() {
-    // U9: in release the misuse returns Ok and the stream is unchanged
+    // U9: in release the misuse returns false (Err, 5.0.0) and the stream is unchanged
     let mut buffer = [0u8; 8];
     let mut write = WriteStream::new(&mut buffer);
-    let Ok(()) = write.reject();
+    assert_eq!(write.reject(), Err(Error::Rejected));
     assert_eq!(write.bits_processed(), 0);
     let mut measure = MeasureStream::new();
-    let Ok(()) = measure.reject();
+    assert_eq!(measure.reject(), Err(Error::Rejected));
     assert_eq!(measure.bits_processed(), 0);
 }
