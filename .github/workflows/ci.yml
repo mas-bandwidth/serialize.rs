@@ -143,10 +143,11 @@ jobs:
           # and v2.0.0 is the first release carrying format 2.0, whose golden
           # message ends with serialize_end and drops wstring, which the
           # harness's two-packet file and its ends depend on. v2.0.1 (object
-          # read terminality) and v2.1.0 (the `rejected` reason, the corpus this
-          # port vendors) change no wire byte.
+          # read terminality), v2.1.0 (the `rejected` reason) and v2.1.1 (the
+          # U6, U9 and U15 rulings, the text this port vendors) change no wire
+          # byte.
           repository: mas-bandwidth/serialize
-          ref: v2.1.0
+          ref: v2.1.1
           path: cpp-serialize
       - uses: dtolnay/rust-toolchain@stable
       # no -DNDEBUG on purpose: serialize_assert stays live, so the degenerate
