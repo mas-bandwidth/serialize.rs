@@ -1,18 +1,17 @@
 //! [`MeasureStream`]: the [`Stream`] that counts bits instead of writing them.
 
 use core::any::Any;
-use core::convert::Infallible;
 
 use crate::stream::Stream;
 use crate::write_stream::string_length;
-use crate::{Error, Result};
+use crate::{Error, Result, cold_error};
 
 /// Stream for estimating how many bits it would take to serialize something.
 ///
 /// Acts like a write stream (`IS_WRITING` is true, `IS_READING` is false), but instead of
 /// writing data it counts how many bits would be written. It shares the write path's trust
-/// model: the error type is [`Infallible`], so no serialize method on this stream can fail,
-/// and misuse traps exactly as it does on a write, a `debug_assert!` panic in a checked build,
+/// model: no built-in operation on this stream returns an error (only [`Stream::fail`],
+/// [`Stream::reject`] in release, or a nested object that returns one, U9), and misuse traps exactly as it does on a write, a `debug_assert!` panic in a checked build,
 /// room aside (IMPLEMENTING.md U6, U9), latching nothing. When the serialization includes alignment to byte
 /// boundaries the measurement is an estimate, not exact: every align counts as the worst
 /// case 7 bits, so the estimate is guaranteed to be conservative — a buffer sized from a
@@ -51,23 +50,31 @@ impl<'a> MeasureStream<'a> {
     }
 }
 
+impl crate::stream::gate::Sealed for MeasureStream<'_> {
+    #[inline(always)]
+    fn gate(&mut self) -> Result {
+        Ok(())
+    }
+}
+
 impl Stream for MeasureStream<'_> {
     const IS_WRITING: bool = true;
     const IS_READING: bool = false;
 
-    /// Measures cannot fail: the error type is uninhabited, exactly as on
-    /// [`crate::WriteStream`] — the measure path shares the write path's trust model.
-    type Error = Infallible;
+    /// The one error a write or measure produces is U9's false: [`Stream::fail`],
+    /// [`Stream::reject`] in release, or a nested object returning either. No built-in
+    /// operation returns it; write misuse traps instead (U9).
+    type Error = Error;
 
-    /// A measure refuses nothing (U6): `Ok(())` in every build, never a panic, and nothing
-    /// is recorded (U9).
+    /// Nothing to refuse: returns `Err(error)` (U9's false) in every build, never a panic,
+    /// and records nothing, so a later operation behaves exactly as it would have without it.
     #[inline]
-    fn fail(_error: Error) -> Result<(), Infallible> {
-        Ok(())
+    fn fail(&mut self, error: Error) -> Result {
+        cold_error(error)
     }
 
     #[inline]
-    fn serialize_bits(&mut self, value: &mut u32, bits: u32) -> Result<(), Infallible> {
+    fn serialize_bits(&mut self, value: &mut u32, bits: u32) -> Result {
         debug_assert!(
             bits.wrapping_sub(1) < 32,
             "bits must be in [1,32] (got {bits})"
@@ -83,24 +90,20 @@ impl Stream for MeasureStream<'_> {
     }
 
     #[inline]
-    fn serialize_bytes(&mut self, data: &mut [u8]) -> Result<(), Infallible> {
+    fn serialize_bytes(&mut self, data: &mut [u8]) -> Result {
         self.serialize_align()?;
         self.bits_written += data.len() as u64 * 8;
         Ok(())
     }
 
     #[inline]
-    fn serialize_align(&mut self) -> Result<(), Infallible> {
+    fn serialize_align(&mut self) -> Result {
         self.bits_written += u64::from(self.align_bits());
         Ok(())
     }
 
     #[inline]
-    fn serialize_string(
-        &mut self,
-        value: &mut String,
-        buffer_size: usize,
-    ) -> Result<(), Infallible> {
+    fn serialize_string(&mut self, value: &mut String, buffer_size: usize) -> Result {
         let mut length = string_length(value, buffer_size);
         self.serialize_int(&mut length, 0, buffer_size as i32 - 1)?;
         self.serialize_align()?;
@@ -111,7 +114,7 @@ impl Stream for MeasureStream<'_> {
     /// The end of the object costs nothing: the unused bits of the final byte are already
     /// inside the byte rounding every caller applies to a bit count.
     #[inline]
-    fn serialize_end(&mut self) -> Result<(), Infallible> {
+    fn serialize_end(&mut self) -> Result {
         Ok(())
     }
 

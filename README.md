@@ -89,10 +89,11 @@ packet.serialize(&mut stream)?;
 stream.serialize_end()?;     // the packet ends exactly here
 ```
 
-The stream picks the error type: `S::Error` is `Error` for `ReadStream` and `Infallible` for
-`WriteStream` and `MeasureStream`, so the write and measure instantiations of that one
-function are statically incapable of failing — `let Ok(()) = packet.serialize(&mut writer);`
-is irrefutable, and `?` compiles to nothing.
+`S::Error` is `Error` on all three streams (5.0.0). On a read it is a refusal. On a write or
+measure no built-in operation returns it; it comes back only when your own serialize function
+fails (`stream.fail(reason)`, `stream.reject()` in release, or a nested object returning
+either), which is IMPLEMENTING.md U9's false: the caller's `?` stops there, and nothing is
+recorded on the stream.
 
 See [examples/packet.rs](examples/packet.rs) for a fuller example with nested objects,
 variable length arrays and measuring.
@@ -148,11 +149,11 @@ were well formed. `ReadStream::failure()` reports the first refusal's reason; th
 refusals of a failed stream are its echoes, and a refused stream never reports none.
 
 The caller refuses with `stream.reject()`, the port of the C++ `serialize_reject`, under an
-`IS_READING` guard; a nested object whose `serialize` returns `S::fail(Error::Rejected)` is
+`IS_READING` guard; a nested object whose `serialize` returns `Err(Error::Rejected.into())` is
 latched as `rejected` by `serialize_object` the same way. Either goes through the one latch,
 so it is terminal and the first reason wins. Reject is read only: on a write or measure stream
-it is write misuse, so it traps (panics) in a checked build (U9), and returns `Ok(())` in
-release.
+it is write misuse, so it traps (panics) in a checked build (U9), and returns
+`Err(Error::Rejected)`, U9's false, in release.
 
 Three obligations from STANDARD.md's Reader Obligations hold in every build:
 
@@ -168,9 +169,8 @@ Three obligations from STANDARD.md's Reader Obligations hold in every build:
   `ReadStream::failure()` reports the first reason. Nothing after a failing operation has a
   defined position, so the stream enforces that rather than the caller's discipline. The
   latch clears only by re-initialization, which here is constructing a new stream. Custom
-  serialize functions reject a decoded value with `stream.reject()` (or `stream.refuse(error)`
-  for a reason of the format's), which latches; `Stream::fail` is the error constructor both
-  are built from and does not.
+  serialize functions reject a decoded value with `stream.reject()` (or `stream.fail(error)`
+  for a reason of the format's), which latches.
 - **`serialize_int_relative` carries the non-negative int32 domain, `0` to `i32::MAX`.** Both
   `previous` and `current` lie in it, and the sequence is strictly increasing — a caller with
   a wrapping counter unwraps it before serializing. Every tier reconstructs `current` in a
@@ -181,10 +181,11 @@ Three obligations from STANDARD.md's Reader Obligations hold in every build:
   absolute tier it is refused as `non_canonical`. `previous` is the caller's own state and
   never arrives off the wire, so a `previous` outside the domain is a debug assertion.
 
-The write path is trusted and, as of 2.0, **infallible** — the writer-trusted contract the
-whole family shares, matching the C++ library's checkless writer. `WriteStream` and
-`MeasureStream` set `S::Error = Infallible`, so no write or measure can return an error and
-no error control flow survives in the compiled write path. Invalid arguments and out of
+The write path is trusted — the writer-trusted contract the whole family shares, matching the
+C++ library's checkless writer. No built-in write or measure operation returns an error; the
+only one a write or measure produces is U9's false from the caller's own `fail`, `reject`
+(release) or failing nested object (5.0.0; from 2.0 to 4.x the write error type was
+`Infallible` and that false could not be expressed). Invalid arguments and out of
 range values are debug assertions, compiled out in release, where correctness is the
 caller's responsibility — size buffers conservatively or pre-measure with `MeasureStream`
 (its estimate is guaranteed conservative). A violated write contract in release produces a
@@ -206,10 +207,9 @@ the call, through `debug_assert!`, before any bit of the operation is written, a
 it is compiled out exactly like the C++ library's `serialize_assert`, leaving the output
 unspecified. A measure traps on every misuse a write does, room aside (U6). Write misuse never
 latches: a write or measure stream has no refusal state, so nothing is recorded and no later
-operation fails. `Stream::fail` on a write or measure stream never panics in any build and
-records nothing; U9 has it return false, and this port's write and measure error type is
-uninhabited (`Infallible`, the 2.0 #52 ruling), so its result is `Ok(())`, the only value the
-type has (`reject` in release likewise). The uniform rules U1 to U16 are each proven by
+operation fails. `Stream::fail` on a write or measure stream never panics in any build,
+records nothing, and returns `Err(reason)`, U9's false (`reject` in release likewise, with
+`rejected`). The uniform rules U1 to U16 are each proven by
 `tests/uniform.rs`. A degenerate range where `min == max` is not misuse — the format defines it as
 costing zero bits, and the ranged integer methods accept it and recover the value from the
 range alone. `serialize_f32` and `serialize_f64` carry finite values only: a reader refuses
@@ -232,10 +232,11 @@ compressed float declaration whose `max - min`, quantum count or top decode (`mi
 
 ## Differences from the C++ library
 
-- Errors instead of `return false` — on the read path: serialize functions return `Result`
-  and propagate with `?`. No macros needed. On the write and measure paths the error type is
-  uninhabited (`Infallible`), which is Rust for the C++ writer's contract: it cannot fail,
-  and the compiler knows it.
+- Errors instead of `return false`: serialize functions return `Result` and propagate with
+  `?`. No macros needed. On the write and measure paths only the caller's own `fail`,
+  `reject` (release) or failing nested object returns an error, as only they return false in
+  C++.
+- `Stream` is sealed: the three streams are the reference's (IMPLEMENTING.md U15).
 - `serialize_string` operates on `String` and refuses a NUL byte (`embedded_nul`, checked
   over the whole payload first) and invalid UTF-8 (`invalid_utf8`) on read, accepting every
   well-formed payload byte for byte. Format 2.0 removed the wide string: text travels as

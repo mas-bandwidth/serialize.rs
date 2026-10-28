@@ -1,17 +1,17 @@
 //! [`WriteStream`]: the [`Stream`] that writes bitpacked data to a buffer.
 
 use core::any::Any;
-use core::convert::Infallible;
 
 use crate::bitpacker::BitWriter;
 use crate::stream::Stream;
-use crate::{Error, Result};
+use crate::{Error, Result, cold_error};
 
 /// Stream for writing bitpacked data.
 ///
 /// A wrapper around [`BitWriter`] implementing the unified [`Stream`] interface. The write
-/// path is trusted and infallible: the error type is [`Infallible`], so no serialize method
-/// on this stream can fail, values are checked with debug assertions, and in release
+/// path is trusted: no built-in operation on this stream returns an error (only
+/// [`Stream::fail`], [`Stream::reject`] in release, or a nested object that returns one, U9),
+/// values are checked with debug assertions, and in release
 /// correctness is the caller's responsibility — size buffers conservatively or pre-measure
 /// with [`crate::MeasureStream`]. Writing past the end of the buffer panics via the slice
 /// bounds check rather than being undefined behavior as in C++.
@@ -113,7 +113,7 @@ impl<'a> WriteStream<'a> {
     /// binding first; this form takes it by value and is wire-identical to its twin.
     #[inline(always)]
     pub fn write_bits64(&mut self, mut value: u64, bits: u32) {
-        let Ok(()) = self.serialize_bits64(&mut value, bits);
+        let _ = self.serialize_bits64(&mut value, bits);
     }
 
     /// Write a 32 bit integer in `[min,max]`: the by-value twin of [`Stream::serialize_int`],
@@ -124,7 +124,7 @@ impl<'a> WriteStream<'a> {
     /// binding first; this form takes it by value and is wire-identical to its twin.
     #[inline(always)]
     pub fn write_int(&mut self, mut value: i32, min: i32, max: i32) {
-        let Ok(()) = self.serialize_int(&mut value, min, max);
+        let _ = self.serialize_int(&mut value, min, max);
     }
 
     /// Write a 64 bit integer in `[min,max]`: the by-value twin of
@@ -135,7 +135,7 @@ impl<'a> WriteStream<'a> {
     /// binding first; this form takes it by value and is wire-identical to its twin.
     #[inline(always)]
     pub fn write_int64(&mut self, mut value: i64, min: i64, max: i64) {
-        let Ok(()) = self.serialize_int64(&mut value, min, max);
+        let _ = self.serialize_int64(&mut value, min, max);
     }
 
     /// Write a boolean as 1 bit: the by-value twin of [`Stream::serialize_bool`].
@@ -201,7 +201,7 @@ impl<'a> WriteStream<'a> {
     /// binding first; this form takes it by value and is wire-identical to its twin.
     #[inline(always)]
     pub fn write_f32(&mut self, mut value: f32) {
-        let Ok(()) = self.serialize_f32(&mut value);
+        let _ = self.serialize_f32(&mut value);
     }
 
     /// Write a double as its 64 bit pattern: the by-value twin of [`Stream::serialize_f64`].
@@ -213,7 +213,14 @@ impl<'a> WriteStream<'a> {
     /// binding first; this form takes it by value and is wire-identical to its twin.
     #[inline]
     pub fn write_f64(&mut self, mut value: f64) {
-        let Ok(()) = self.serialize_f64(&mut value);
+        let _ = self.serialize_f64(&mut value);
+    }
+}
+
+impl crate::stream::gate::Sealed for WriteStream<'_> {
+    #[inline(always)]
+    fn gate(&mut self) -> Result {
+        Ok(())
     }
 }
 
@@ -221,25 +228,26 @@ impl Stream for WriteStream<'_> {
     const IS_WRITING: bool = true;
     const IS_READING: bool = false;
 
-    /// Writes cannot fail: the error type is uninhabited, so `Ok(())` is the only value of
-    /// the result type and every error branch in a serialize function monomorphized for this
-    /// stream is compiled out.
-    type Error = Infallible;
+    /// The one error a write or measure produces is U9's false: [`Stream::fail`],
+    /// [`Stream::reject`] in release, or a nested object returning either. No built-in
+    /// operation returns it; write misuse traps instead (U9).
+    type Error = Error;
 
-    /// Nothing to refuse on a write: `Ok(())` in every build, never a panic (U9).
+    /// Nothing to refuse: returns `Err(error)` (U9's false) in every build, never a panic,
+    /// and records nothing, so a later operation behaves exactly as it would have without it.
     #[inline]
-    fn fail(_error: Error) -> Result<(), Infallible> {
-        Ok(())
+    fn fail(&mut self, error: Error) -> Result {
+        cold_error(error)
     }
 
     #[inline(always)]
-    fn serialize_bits(&mut self, value: &mut u32, bits: u32) -> Result<(), Infallible> {
+    fn serialize_bits(&mut self, value: &mut u32, bits: u32) -> Result {
         self.writer.write_bits(*value, bits);
         Ok(())
     }
 
     #[inline]
-    fn serialize_bytes(&mut self, data: &mut [u8]) -> Result<(), Infallible> {
+    fn serialize_bytes(&mut self, data: &mut [u8]) -> Result {
         debug_assert_room(&self.writer, 0, data.len());
         self.serialize_align()?;
         self.writer.write_bytes(data);
@@ -247,17 +255,13 @@ impl Stream for WriteStream<'_> {
     }
 
     #[inline]
-    fn serialize_align(&mut self) -> Result<(), Infallible> {
+    fn serialize_align(&mut self) -> Result {
         self.writer.write_align();
         Ok(())
     }
 
     #[inline]
-    fn serialize_string(
-        &mut self,
-        value: &mut String,
-        buffer_size: usize,
-    ) -> Result<(), Infallible> {
+    fn serialize_string(&mut self, value: &mut String, buffer_size: usize) -> Result {
         let mut length = string_length(value, buffer_size);
         debug_assert_room(
             &self.writer,
@@ -275,7 +279,7 @@ impl Stream for WriteStream<'_> {
     /// so the bytes [`Stream::bytes_processed`] reports end exactly where a reader's end
     /// expects them.
     #[inline]
-    fn serialize_end(&mut self) -> Result<(), Infallible> {
+    fn serialize_end(&mut self) -> Result {
         Ok(())
     }
 

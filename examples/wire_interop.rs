@@ -267,13 +267,13 @@ where
 fn encode_golden(data: &mut GoldenWireData) -> Vec<u8> {
     // writes are infallible as of 2.0: Ok is the only pattern
     write_packet(|stream| {
-        let Ok(()) = golden_wire_serialize(stream, data);
+        golden_wire_serialize(stream, data).unwrap();
     })
 }
 
 fn encode_extended(data: &mut ExtendedInteropData) -> Vec<u8> {
     write_packet(|stream| {
-        let Ok(()) = extended_interop_serialize(stream, data);
+        extended_interop_serialize(stream, data).unwrap();
     })
 }
 

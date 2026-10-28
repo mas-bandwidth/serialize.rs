@@ -390,7 +390,7 @@ struct CallbackRefuses;
 impl Serialize for CallbackRefuses {
     fn serialize<S: Stream>(&mut self, _stream: &mut S) -> Result<(), S::Error> {
         if S::IS_READING {
-            return S::fail(Error::Rejected);
+            return Err(Error::Rejected.into());
         }
         Ok(())
     }
@@ -456,7 +456,7 @@ fn run_steps<S: Stream>(
             // acceptance, which the reader leg has already failed
             if S::IS_READING {
                 *failed = Some(base + index);
-                return S::fail(Error::Rejected);
+                return Err(Error::Rejected.into());
             }
         } else if let Err(error) = run_step(stream, &mut steps[index]) {
             *failed = Some(base + index);
@@ -674,7 +674,7 @@ impl Vector {
 fn parse_expect(rest: &str, where_: &str) -> Expect {
     if let Some(reason) = rest.strip_prefix("refused") {
         let reason = reason.trim();
-        let reason = Error::from_name(reason).unwrap_or_else(|| {
+        let reason = Error::ALL.into_iter().find(|r| r.name() == reason).unwrap_or_else(|| {
             panic!(
                 "{where_}: `expect refused` names no reason from STANDARD.md's closed list (got `{reason}`)"
             )
@@ -1184,7 +1184,7 @@ fn run_writer(vector: &Vector, steps: &mut [Step]) -> Result<(), String> {
     let mut scratch = vec![SLACK_FILL; capacity];
     let mut stream = WriteStream::new(&mut scratch);
     let mut failed = None;
-    let Ok(()) = run_steps(&mut stream, steps, 0, &mut failed, false);
+    run_steps(&mut stream, steps, 0, &mut failed, false).unwrap();
     stream.flush();
     let written = stream.data();
     if written != vector.bytes.as_slice() {
@@ -1222,7 +1222,7 @@ fn run_writer_input(vector: &Vector, pattern: u32) -> Result<(), String> {
 fn run_measure(floor: u64, steps: &mut [Step]) -> Result<(), String> {
     let mut stream = MeasureStream::new();
     let mut failed = None;
-    let Ok(()) = run_steps(&mut stream, steps, 0, &mut failed, false);
+    run_steps(&mut stream, steps, 0, &mut failed, false).unwrap();
     let measured = stream.bits_processed();
     if measured < floor {
         return Err(format!(

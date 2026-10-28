@@ -55,8 +55,8 @@ zero unsafe, BSD-3.
    4.0.0), and write-side misuse has one mechanism, the trap (IMPLEMENTING.md U9, the
    2.1.1 ruling): a `debug_assert!` panic at the call in a checked build, compiled out in
    release; a measure traps on everything a write does except room (U6); write misuse never
-   latches. `fail` on a write or measure stream returns `Ok(())` (U9's false: the error type
-   is uninhabited, so it is the only value) and never panics; the only hard panic left in
+   latches. `fail` on a write or measure stream returns `Err(reason)` (U9's false, 5.0.0),
+   records nothing and never panics; the only hard panic left in
    release is the one the language itself enforces — writing past the end of a buffer (a write
    that reaches a non-multiple-of-8 buffer's short final word is one), which is the slice
    bounds check. Three read
@@ -70,16 +70,19 @@ zero unsafe, BSD-3.
    `serialize_compressed_float` still requires a strictly increasing range — its quantization
    divides by the range. `tests/differential.rs::test_hostile_read` enforces the no-panic
    property — keep it passing.
-3. **Error control flow, read side; infallibility, write side.** Serialize methods return
-   `Result<(), Self::Error>` where `Stream::Error` is `Error` on ReadStream and `Infallible`
-   on WriteStream/MeasureStream (2.0, the #52 ruling). On read, callers propagate with `?`
-   so the first failure aborts the whole serialize function — the safety property that
-   replaces the C++ early-return macros and the Go port's sticky errors: a serialized value
-   that controls a loop is always validated before use. Do not add APIs that return
-   unvalidated values. On write and measure the error type is uninhabited: no write can
-   fail, and no fallibility may be added back to the write path (the canonical generic
-   signature is `-> Result<(), S::Error>`; read-side validation in custom serialize
-   functions goes through `Stream::fail` under an `IS_READING` guard).
+3. **Error control flow on every stream; U9's false on write (5.0.0).** Serialize methods
+   return `Result<(), Self::Error>` and `Stream::Error` is `Error` on all three streams. On
+   read, callers propagate with `?` so the first failure aborts the whole serialize function —
+   the safety property that replaces the C++ early-return macros and the Go port's sticky
+   errors: a serialized value that controls a loop is always validated before use. Do not add
+   APIs that return unvalidated values. On write and measure no built-in operation returns an
+   error; only the caller's `fail`, `reject` (release) or a nested object returning either
+   does, as only they return false in C++ (IMPLEMENTING.md U9), recording nothing. From 2.0
+   (the #52 ruling) to 4.x the write error type was `Infallible` and that false could not be
+   expressed; Glenn decided the 5.0.0 major on 2026-10-28 (crates.io only ever had 2.4.0).
+   `Stream` is sealed (`stream::gate::Sealed`), and `refuse`/`refuse_if_failed`/
+   `Error::from_name` are gone from the public surface (U15): `fail(&mut self, reason)` is the
+   one latching refusal.
 4. **Write buffers are multiples of 8 bytes** (the writer stores qwords; a `debug_assert!` in
    `BitWriter::new`, the U9 trap, compiled out in release, where a write that reaches the
    short final word stops at the slice bounds panic).
@@ -97,9 +100,10 @@ zero unsafe, BSD-3.
   A rule guarded by it reads `if <rule fires> && !deleted(Control::X)`
 - `src/bitpacker.rs` — `BitWriter` (64 bit scratch, LE qword stores), `BitReader` (branchless
   windows, `read_byte_slice` returns borrowed subslices for zero-copy strings)
-- `src/stream.rs` — `Stream` trait: `type Error` (Error on read, Infallible on write/measure),
-  `fail()` (the error constructor) and `refuse()` (the `&mut self` form every built-in read
-  refusal goes through, so `ReadStream` can latch), required primitives per stream (bits/bytes/align/string/end) plus default
+- `src/stream.rs` — `Stream` trait (sealed): `type Error` (`Error` on every stream),
+  `fail(&mut self, reason)` (every built-in read refusal goes through it, so `ReadStream` can
+  latch; on write/measure it returns `Err`, U9's false), the crate-private
+  `refuse_if_failed` gate, required primitives per stream (bits/bytes/align/string/end) plus default
   methods for everything derivable (int/int64/int128/bits64/bool/u8-u64/u128/
   f32/f64/compressed float/fixed point/int relative). `serialize_compressed_float_precomputed`
   is the audited home of the compressed float quantization arithmetic (schema#82):

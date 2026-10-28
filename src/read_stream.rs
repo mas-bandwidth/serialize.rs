@@ -136,6 +136,25 @@ impl<'a> ReadStream<'a> {
     }
 }
 
+impl ReadStream<'_> {
+    /// The failure gate on the read stream itself: the latched reason, or `Ok`. Cheaper than
+    /// [`Stream::fail`] on the latched path because there is nothing left to latch.
+    #[inline(always)]
+    fn refuse_if_latched(&mut self) -> Result {
+        match self.failed {
+            Some(error) => cold_error(error),
+            None => Ok(()),
+        }
+    }
+}
+
+impl crate::stream::gate::Sealed for ReadStream<'_> {
+    #[inline(always)]
+    fn gate(&mut self) -> Result {
+        self.refuse_if_latched()
+    }
+}
+
 impl Stream for ReadStream<'_> {
     const IS_WRITING: bool = false;
     const IS_READING: bool = true;
@@ -144,22 +163,10 @@ impl Stream for ReadStream<'_> {
     /// checked and range validated, exactly as in 1.x.
     type Error = Error;
 
+    /// Refuse the read and latch it: the first reason is kept, and every later read fails.
     #[inline(always)]
-    fn fail(error: Error) -> Result {
-        cold_error(error)
-    }
-
-    #[inline(always)]
-    fn refuse(&mut self, error: Error) -> Result {
+    fn fail(&mut self, error: Error) -> Result {
         self.latch(error)
-    }
-
-    #[inline(always)]
-    fn refuse_if_failed(&mut self) -> Result {
-        match self.failed {
-            Some(error) => cold_error(error),
-            None => Ok(()),
-        }
     }
 
     #[inline(always)]
@@ -168,9 +175,9 @@ impl Stream for ReadStream<'_> {
             // the control: the composition without the gates, the object called directly
             return object.serialize(self);
         }
-        self.refuse_if_failed()?;
+        self.refuse_if_latched()?;
         match object.serialize(self) {
-            Ok(()) => self.refuse_if_failed(),
+            Ok(()) => self.refuse_if_latched(),
             Err(error) => {
                 if deleted(Control::ObjectLatchRejected) && self.failed.is_none() {
                     // the control: the 2.0 composition, which latches nothing for a refusal
@@ -178,10 +185,10 @@ impl Stream for ReadStream<'_> {
                     return Err(error);
                 }
                 // an inner read already latched its reason, which stays the first; a refusal
-                // the object raised on its own (Stream::fail, Error::Rejected for the
+                // the object raised on its own (`Err(reason.into())`, Error::Rejected for the
                 // caller's own refusal) latches here, so the stream is terminal either way
                 let _ = self.latch(error);
-                self.refuse_if_failed()
+                self.refuse_if_latched()
             }
         }
     }
@@ -225,7 +232,7 @@ impl Stream for ReadStream<'_> {
         // a buffer_size outside [1,i32::MAX] is a bad declaration, refused as
         // value_out_of_range after the failure state, never asserted (U7, U16)
         if buffer_size == 0 || i32::try_from(buffer_size).is_err() {
-            return self.refuse(Error::ValueOutOfRange);
+            return self.fail(Error::ValueOutOfRange);
         }
         let mut length = 0i32;
         self.serialize_int(&mut length, 0, buffer_size as i32 - 1)?;

@@ -12,9 +12,9 @@
 //! Write one serialize function against the [`Stream`] trait and it handles write, read and
 //! measure. The stream type is a generic parameter, so `IS_WRITING`/`IS_READING` branches are
 //! resolved at compile time, exactly like the C++ library's templated serialize methods. The
-//! stream also decides the error type: reads are fallible ([`enum@Error`]), writes and
-//! measures are infallible ([`core::convert::Infallible`]), so the write instantiation of
-//! your serialize function has no error paths at all:
+//! stream's error type is [`enum@Error`] on all three: a read refuses with a reason, and a
+//! write or measure returns one only when your own serialize function fails (IMPLEMENTING.md
+//! U9's false), never from a built-in operation:
 //!
 //! ```
 //! use serialize::{Stream, WriteStream, ReadStream, Result};
@@ -39,7 +39,7 @@
 //!
 //! let mut packet = Packet { position: -20, health: 55, alive: true };
 //! let mut stream = WriteStream::new(&mut buffer);
-//! let Ok(()) = packet.serialize(&mut stream);          // writes cannot fail
+//! packet.serialize(&mut stream)?;                      // only your own fail errs here
 //! stream.flush();
 //! let bytes_written = stream.bytes_processed() as usize;
 //!
@@ -53,9 +53,11 @@
 //!
 //! # The trust model
 //!
-//! The write path is trusted and infallible: field-level writes return
-//! `Result<(), Infallible>` — an error value cannot exist, so `?` compiles away and the
-//! monomorphized write function carries no error control flow. Invalid arguments and out of
+//! The write path is trusted: no built-in write or measure operation returns an error, so
+//! after inlining `?` on a field-level write folds away. The one error a write or measure
+//! produces is U9's false (5.0.0): [`Stream::fail`], [`Stream::reject`] in release, or a
+//! nested object returning either, which stops the caller's `?` there and records nothing.
+//! Invalid arguments and out of
 //! range values are write misuse, caught by one mechanism, the trap (IMPLEMENTING.md U9): in a
 //! checked build (`debug_assertions`) a panic at the call, through `debug_assert!`, on a
 //! [`WriteStream`] and on a [`MeasureStream`] alike (U6). Write misuse never latches: neither
@@ -85,8 +87,10 @@
 //! and [`ReadStream::failure`] reports the first refusal's reason ([`enum@Error`], one of
 //! the nine in STANDARD.md's closed list). Custom serialize functions reject a
 //! decoded value with [`Stream::reject`], which latches [`Error::Rejected`] — the caller's own
-//! refusal of well formed bytes — or with [`Stream::refuse`] and a reason of the format's;
-//! [`Stream::fail`] is the error constructor both are built from and does not latch.
+//! refusal of well formed bytes — or with [`Stream::fail`] and a reason of the format's,
+//! which latches the same way. A nested object may also return `Err(reason.into())`
+//! without latching, the C++ callback returning false; [`Stream::serialize_object`] latches
+//! it on read.
 //!
 //! Caller declarations — bits out of `[1,32]` or `[1,64]`, `min > max`, a Q format or
 //! precomputed constants that cannot be right, a `buffer_size` below 1 — are validated before
@@ -135,8 +139,9 @@ pub use write_stream::WriteStream;
 /// Reads fail cleanly on malicious or truncated data, and every refusal names the rule that
 /// refused it. [`Error::name`] spells each reason exactly as STANDARD.md and the conformance
 /// corpus do, and [`ReadStream::failure`] reports the FIRST refusal's reason: the later
-/// refusals of a failed stream are its echoes. Writes and measures never error — their error
-/// type is [`core::convert::Infallible`], and write-side misuse (including a string longer
+/// refusals of a failed stream are its echoes. On a write or measure stream an `Error` is
+/// only ever U9's false, from [`Stream::fail`], [`Stream::reject`] in release or a nested
+/// object returning one, and records nothing; write-side misuse (including a string longer
 /// than its `buffer_size`) is a debug assertion instead. Every reason aborts the enclosing
 /// serialize function via the `?` operator.
 ///
@@ -204,12 +209,6 @@ impl Error {
             Error::Rejected => "rejected",
         }
     }
-
-    /// The reason a family wide name spells, or `None` for a name outside the closed list.
-    #[must_use]
-    pub fn from_name(name: &str) -> Option<Error> {
-        Error::ALL.into_iter().find(|reason| reason.name() == name)
-    }
 }
 
 /// Displays the family wide name, [`Error::name`].
@@ -255,14 +254,41 @@ pub fn serialize_copy_string(dest: &mut String, source: &str, buffer_size: usize
     dest.push_str(&source[..end]);
 }
 
-/// A write or measure stream error can never exist, so it converts to [`enum@Error`] freely:
-/// this is what lets a function returning [`Result`] use `?` on an infallible stream
-/// operation — the conversion (and the branch that would need it) compiles to nothing.
-impl From<core::convert::Infallible> for Error {
-    fn from(infallible: core::convert::Infallible) -> Self {
-        match infallible {}
-    }
-}
+// IMPLEMENTING.md U15: the exports beyond the reference list are hidden (5.0.0). Each of these
+// must fail to compile; the last block is the positive control that the names around them do.
+//
+/// ```compile_fail
+/// let _ = serialize::Error::from_name("past_end");
+/// ```
+///
+/// ```compile_fail
+/// use serialize::{Error, Stream, WriteStream};
+/// let mut buffer = [0u8; 8];
+/// let _ = WriteStream::new(&mut buffer).refuse(Error::PastEnd);
+/// ```
+///
+/// ```compile_fail
+/// use serialize::{Stream, ReadStream};
+/// let buffer = [0u8; 16];
+/// let _ = ReadStream::new(&buffer, 8).refuse_if_failed();
+/// ```
+///
+/// ```compile_fail
+/// // the trait is sealed: no stream outside the three
+/// struct Mine;
+/// impl serialize::Stream for Mine {}
+/// ```
+///
+/// ```
+/// use serialize::{Error, Stream, ReadStream, refusal_name};
+/// let buffer = [0u8; 16];
+/// let mut stream = ReadStream::new(&buffer, 8);
+/// assert_eq!(stream.fail(Error::PastEnd), Err(Error::PastEnd));
+/// assert_eq!(refusal_name(stream.failure()), "past_end");
+/// assert!(Error::ALL.iter().any(|reason| reason.name() == "rejected"));
+/// ```
+#[cfg(doctest)]
+pub struct U15HiddenExports;
 
 /// A specialized result type for serialization. `Result` alone is `Result<(), Error>`, the
 /// return type of every fallible (read stream) serialize method. Serialize functions generic

@@ -35,7 +35,7 @@ struct RefusingObject {
 impl Serialize for RefusingObject {
     fn serialize<S: Stream>(&mut self, _stream: &mut S) -> Result<(), S::Error> {
         self.called = true;
-        S::fail(Error::ValueOutOfRange)
+        Err(Error::ValueOutOfRange.into())
     }
 }
 
@@ -398,15 +398,15 @@ fn write_and_measure_objects_are_the_object_itself() {
     let mut buffer = [0_u8; 8];
     let mut writer = WriteStream::new(&mut buffer);
     let mut byte = ByteObject { value: 0xAF };
-    let Ok(()) = writer.serialize_object(&mut byte);
+    writer.serialize_object(&mut byte).unwrap();
     let mut empty = EmptyObject::default();
-    let Ok(()) = writer.serialize_object(&mut empty);
+    writer.serialize_object(&mut empty).unwrap();
     assert!(empty.called);
     writer.flush();
     assert_eq!(writer.bits_processed(), 8);
     assert_eq!(buffer[0], 0xAF);
 
     let mut measure = MeasureStream::new();
-    let Ok(()) = measure.serialize_object(&mut byte);
+    measure.serialize_object(&mut byte).unwrap();
     assert_eq!(measure.bits_processed(), 8);
 }

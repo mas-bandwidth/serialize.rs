@@ -23,7 +23,7 @@ fn with_slack(bytes: &[u8]) -> Vec<u8> {
 
 /// Write `value` in `bits` bits through the unified API.
 fn put(stream: &mut WriteStream<'_>, mut value: u32, bits: u32) {
-    let Ok(()) = stream.serialize_bits(&mut value, bits);
+    stream.serialize_bits(&mut value, bits).unwrap();
 }
 
 /// Run `f` and report whether it panicked, without printing the panic. Every caller is a
@@ -63,8 +63,8 @@ fn u1_write_buffer_multiple_of_8_is_accepted() {
 fn u2_reject_and_object_composition_latch_rejected() {
     struct Refuses;
     impl Serialize for Refuses {
-        fn serialize<S: Stream>(&mut self, _stream: &mut S) -> Result<(), S::Error> {
-            S::fail(Error::Rejected)
+        fn serialize<S: Stream>(&mut self, stream: &mut S) -> Result<(), S::Error> {
+            stream.fail(Error::Rejected)
         }
     }
     let buffer = with_slack(&[0x00]);
@@ -88,13 +88,13 @@ fn u3_text_is_written_byte_for_byte() {
     let mut buffer = [0u8; 64];
     let mut write = WriteStream::new(&mut buffer);
     let mut value = text.to_string();
-    let Ok(()) = write.serialize_string(&mut value, 64);
+    write.serialize_string(&mut value, 64).unwrap();
     write.flush();
     let bytes = write.bytes_processed() as usize;
     // the length field for buffer_size 64 is 6 bits, then align to byte 1
     assert_eq!(&buffer[1..=text.len()], text.as_bytes());
     let mut measure = MeasureStream::new();
-    let Ok(()) = measure.serialize_string(&mut value, 64);
+    measure.serialize_string(&mut value, 64).unwrap();
     assert!(measure.bits_processed() >= 6 + text.len() as u64 * 8);
     let read_buffer = with_slack(&buffer[..bytes]);
     let mut read = ReadStream::new(&read_buffer, bytes);
@@ -134,7 +134,9 @@ fn u5_int_bounds_are_the_int32_range_exactly() {
         let mut buffer = [0u8; 8];
         let mut write = WriteStream::new(&mut buffer);
         let mut written = value;
-        let Ok(()) = write.serialize_int(&mut written, i32::MIN, i32::MAX);
+        write
+            .serialize_int(&mut written, i32::MIN, i32::MAX)
+            .unwrap();
         write.flush();
         assert_eq!(write.bits_processed(), 32);
         let read_buffer = with_slack(&buffer[..4]);
@@ -148,16 +150,19 @@ fn u5_int_bounds_are_the_int32_range_exactly() {
 }
 
 // ------------------------------------------------------------------------------------------
-// U6. A measure stream refuses nothing: fail records nothing and returns Ok.
+// U6. A measure stream refuses nothing: fail returns false (Err) and records nothing.
 
 #[test]
 fn u6_measure_refuses_nothing() {
     let mut measure = MeasureStream::new();
-    let Ok(()) = MeasureStream::fail(Error::PastEnd);
-    let Ok(()) = measure.refuse(Error::ValueOutOfRange);
-    let Ok(()) = measure.refuse_if_failed();
+    assert_eq!(
+        measure.fail(Error::ValueOutOfRange),
+        Err(Error::ValueOutOfRange)
+    );
+    assert_eq!(measure.bits_processed(), 0);
+    // nothing latched: the next measure counts exactly what it would have
     let mut value = 3u32;
-    let Ok(()) = measure.serialize_bits(&mut value, 2);
+    assert_eq!(measure.serialize_bits(&mut value, 2), Ok(()));
     assert_eq!(measure.bits_processed(), 2);
 }
 
@@ -214,7 +219,7 @@ fn u6_measure_traps_what_write_traps() {
         let _ = measure.serialize_bits(&mut value, 8);
     }));
     let mut value = 0xFFu32;
-    let Ok(()) = measure.serialize_bits(&mut value, 8);
+    measure.serialize_bits(&mut value, 8).unwrap();
 }
 
 // U6: what a measure does not check is room: it has no buffer.
@@ -222,7 +227,7 @@ fn u6_measure_traps_what_write_traps() {
 fn u6_measure_has_no_room_to_check() {
     let mut measure = MeasureStream::new();
     let mut payload = vec![0u8; 4096];
-    let Ok(()) = measure.serialize_bytes(&mut payload);
+    measure.serialize_bytes(&mut payload).unwrap();
     assert_eq!(measure.bits_processed(), 7 + 4096 * 8);
 }
 
@@ -299,35 +304,124 @@ fn u8_over_wide_values_assert_on_write() {
 
 // ------------------------------------------------------------------------------------------
 // U9. One write-misuse mechanism, the trap (a `debug_assert!` panic in a checked build), never a
-// latch; `fail` on a write or measure stream
-// returns without panicking in every build (the error type is uninhabited, so its "false" is
-// `Ok(())`), and so does `reject` in release.
+// latch. `fail` on a write or measure stream returns false (`Err`, since 5.0.0), records
+// nothing and never panics, in every build; a nested object that returns false makes the
+// object operation return false, so the caller's `?` stops there; `reject` traps in a checked
+// build and returns false in release.
 
 #[test]
-fn u9_fail_on_a_write_stream_never_panics() {
+fn u9_fail_on_write_returns_err_and_records_nothing() {
     let mut buffer = [0u8; 8];
     let mut write = WriteStream::new(&mut buffer);
-    let Ok(()) = WriteStream::fail(Error::NonCanonical);
-    let Ok(()) = write.refuse(Error::PastEnd);
-    assert_eq!(write.bits_processed(), 0);
+    let mut value = 5u32;
+    write.serialize_bits(&mut value, 3).unwrap();
+    assert_eq!(write.fail(Error::NonCanonical), Err(Error::NonCanonical));
+    assert_eq!(
+        write.fail(Error::PastEnd),
+        Err(Error::PastEnd),
+        "no first reason is kept"
+    );
+    assert_eq!(write.bits_processed(), 3);
+    // a later write emits exactly what it would have without the fail
+    let mut value = 2u32;
+    write.serialize_bits(&mut value, 2).unwrap();
+    write.flush();
+    let mut control = [0u8; 8];
+    let mut clean = WriteStream::new(&mut control);
+    clean.serialize_bits(&mut 5u32, 3).unwrap();
+    clean.serialize_bits(&mut 2u32, 2).unwrap();
+    clean.flush();
+    assert_eq!(buffer, control);
+}
+
+/// An object with a field either side of a nested object that fails on every stream.
+struct Around {
+    before: u32,
+    after: u32,
+}
+
+struct FailsEverywhere;
+
+impl Serialize for FailsEverywhere {
+    fn serialize<S: Stream>(&mut self, stream: &mut S) -> Result<(), S::Error> {
+        // validation with no IS_READING guard: false on every stream
+        stream.fail(Error::ValueOutOfRange)
+    }
+}
+
+impl Serialize for Around {
+    fn serialize<S: Stream>(&mut self, stream: &mut S) -> Result<(), S::Error> {
+        stream.serialize_bits(&mut self.before, 4)?;
+        stream.serialize_object(&mut FailsEverywhere)?;
+        stream.serialize_bits(&mut self.after, 4)
+    }
 }
 
 #[test]
-fn u9_a_serialize_function_that_fails_on_write_does_not_panic() {
-    // validation that forgot its IS_READING guard: harmless on write and measure
-    struct Unguarded;
-    impl Serialize for Unguarded {
-        fn serialize<S: Stream>(&mut self, stream: &mut S) -> Result<(), S::Error> {
-            let mut value = 1u32;
-            stream.serialize_bits(&mut value, 1)?;
-            stream.refuse(Error::ValueOutOfRange)
-        }
-    }
+fn u9_a_failing_nested_object_stops_the_callers_question_mark_on_write() {
     let mut buffer = [0u8; 8];
     let mut write = WriteStream::new(&mut buffer);
-    let Ok(()) = Unguarded.serialize(&mut write);
+    let mut object = Around {
+        before: 3,
+        after: 9,
+    };
+    assert_eq!(object.serialize(&mut write), Err(Error::ValueOutOfRange));
+    assert_eq!(
+        write.bits_processed(),
+        4,
+        "the field after the object is never written"
+    );
+    // nothing recorded: the stream writes on afterwards
+    let mut value = 1u32;
+    assert_eq!(write.serialize_bits(&mut value, 1), Ok(()));
+    assert_eq!(write.bits_processed(), 5);
+}
+
+#[test]
+fn u9_a_failing_nested_object_stops_the_callers_question_mark_on_measure() {
     let mut measure = MeasureStream::new();
-    let Ok(()) = Unguarded.serialize(&mut measure);
+    let mut object = Around {
+        before: 3,
+        after: 9,
+    };
+    assert_eq!(object.serialize(&mut measure), Err(Error::ValueOutOfRange));
+    assert_eq!(
+        measure.bits_processed(),
+        4,
+        "the field after the object is never measured"
+    );
+    let mut value = 1u32;
+    assert_eq!(measure.serialize_bits(&mut value, 1), Ok(()));
+    assert_eq!(measure.bits_processed(), 5);
+}
+
+#[test]
+fn u9_a_failing_nested_object_still_latches_on_read() {
+    let buffer = with_slack(&[0x03, 0x00]);
+    let mut read = ReadStream::new(&buffer, 2);
+    let mut object = Around {
+        before: 0,
+        after: 0,
+    };
+    assert_eq!(object.serialize(&mut read), Err(Error::ValueOutOfRange));
+    assert_eq!(read.failure(), Some(Error::ValueOutOfRange));
+    let mut value = 0u32;
+    assert_eq!(
+        read.serialize_bits(&mut value, 1),
+        Err(Error::ValueOutOfRange)
+    );
+}
+
+#[test]
+#[cfg(not(debug_assertions))]
+fn u9_reject_on_write_and_measure_returns_err_in_release() {
+    let mut buffer = [0u8; 8];
+    let mut write = WriteStream::new(&mut buffer);
+    assert_eq!(write.reject(), Err(Error::Rejected));
+    assert_eq!(write.bits_processed(), 0);
+    let mut measure = MeasureStream::new();
+    assert_eq!(measure.reject(), Err(Error::Rejected));
+    assert_eq!(measure.bits_processed(), 0);
 }
 
 #[test]
@@ -381,7 +475,7 @@ fn u9_write_misuse_never_latches() {
     }));
     assert_eq!(write.bits_processed(), 0);
     let mut value = 0xA5u32;
-    let Ok(()) = write.serialize_bits(&mut value, 8);
+    write.serialize_bits(&mut value, 8).unwrap();
     write.flush();
     assert_eq!(write.data()[0], 0xA5);
 }
@@ -420,7 +514,7 @@ fn u10_a_string_that_does_not_fit_writes_no_length() {
     // the same string fits a fresh buffer exactly: the check is the whole operation, no more
     let mut fresh = [0u8; 8];
     let mut fits = WriteStream::new(&mut fresh);
-    let Ok(()) = fits.serialize_string(&mut text, 64);
+    fits.serialize_string(&mut text, 64).unwrap();
     assert_eq!(fits.bits_processed(), 64);
 }
 
@@ -444,10 +538,10 @@ fn u12_end_on_write_and_measure_is_a_no_op() {
     let mut buffer = [0u8; 8];
     let mut write = WriteStream::new(&mut buffer);
     put(&mut write, 1, 3);
-    let Ok(()) = write.serialize_end();
+    write.serialize_end().unwrap();
     assert_eq!(write.bits_processed(), 3);
     let mut measure = MeasureStream::new();
-    let Ok(()) = measure.serialize_end();
+    measure.serialize_end().unwrap();
     assert_eq!(measure.bits_processed(), 0);
 }
 
@@ -482,11 +576,11 @@ fn u14_refusal_names_are_the_family_spellings_and_none() {
     assert_eq!(refusal_name(stream.failure()), "none");
     let _ = stream.reject();
     assert_eq!(refusal_name(stream.failure()), "rejected");
-    // the public fail: the error constructor, which a read stream returns as the error
-    assert_eq!(
-        ReadStream::fail(Error::TrailingData),
-        Err(Error::TrailingData)
-    );
+    // the public fail: on a read stream it latches, and the first reason is kept
+    let mut stream = ReadStream::new(&buffer, 1);
+    assert_eq!(stream.fail(Error::TrailingData), Err(Error::TrailingData));
+    assert_eq!(stream.fail(Error::PastEnd), Err(Error::TrailingData));
+    assert_eq!(refusal_name(stream.failure()), "trailing_data");
 }
 
 // ------------------------------------------------------------------------------------------
@@ -509,7 +603,7 @@ fn u15_copy_string_truncates_to_what_the_field_carries() {
     let mut buffer = [0u8; 16];
     let mut write = WriteStream::new(&mut buffer);
     serialize_copy_string(&mut dest, "golden", 4);
-    let Ok(()) = write.serialize_string(&mut dest, 4);
+    write.serialize_string(&mut dest, 4).unwrap();
 }
 
 // U15 (2.1.1 ruling): the reference test_copy_string vectors. Bytes before the first NUL; past
@@ -537,7 +631,9 @@ fn u15_copy_string_matches_the_reference_vectors() {
         assert_eq!(dest, expected, "copy_string({source:?}, {dest_size})");
         // and serialize_string with buffer_size = dest_size accepts what it made
         let mut buffer = [0u8; 64];
-        let Ok(()) = WriteStream::new(&mut buffer).serialize_string(&mut dest, dest_size);
+        WriteStream::new(&mut buffer)
+            .serialize_string(&mut dest, dest_size)
+            .unwrap();
     }
 }
 
@@ -556,13 +652,15 @@ fn u15_precomputed_compressed_float_exists_and_matches() {
     let mut buffer = [0u8; 8];
     let mut write = WriteStream::new(&mut buffer);
     let mut value = 2.5f32;
-    let Ok(()) = write.serialize_compressed_float_precomputed(
-        &mut value,
-        params.max_integer_value,
-        params.bits,
-        params.delta,
-        0.0,
-    );
+    write
+        .serialize_compressed_float_precomputed(
+            &mut value,
+            params.max_integer_value,
+            params.bits,
+            params.delta,
+            0.0,
+        )
+        .unwrap();
     assert_eq!(write.bits_processed(), u64::from(params.bits));
 }
 
@@ -598,21 +696,27 @@ fn write_unified(stream: &mut WriteStream<'_>) {
     let mut float = f32::from_bits(0x4049_0FDA);
     let mut double = -0.0f64;
     let mut bytes = [0x30u8, 0x55, 0x7A, 0x9F, 0xC4, 0xE9, 0x0E];
-    let Ok(()) = stream.serialize_bits(&mut bits, 5);
-    let Ok(()) = stream.serialize_bits64(&mut bits64, 33);
-    let Ok(()) = stream.serialize_bool(&mut flag);
-    let Ok(()) = stream.serialize_u8(&mut byte);
-    let Ok(()) = stream.serialize_u16(&mut half);
-    let Ok(()) = stream.serialize_u32(&mut word);
-    let Ok(()) = stream.serialize_u64(&mut wide);
-    let Ok(()) = stream.serialize_int(&mut int, -100, 100);
-    let Ok(()) = stream.serialize_int(&mut degenerate, 9, 9);
-    let Ok(()) = stream.serialize_int(&mut int_full, i32::MIN, i32::MAX);
-    let Ok(()) = stream.serialize_int64(&mut int64, i64::MIN, i64::MAX);
-    let Ok(()) = stream.serialize_int64(&mut int64_degenerate, -77, -77);
-    let Ok(()) = stream.serialize_f32(&mut float);
-    let Ok(()) = stream.serialize_f64(&mut double);
-    let Ok(()) = stream.serialize_bytes(&mut bytes);
+    stream.serialize_bits(&mut bits, 5).unwrap();
+    stream.serialize_bits64(&mut bits64, 33).unwrap();
+    stream.serialize_bool(&mut flag).unwrap();
+    stream.serialize_u8(&mut byte).unwrap();
+    stream.serialize_u16(&mut half).unwrap();
+    stream.serialize_u32(&mut word).unwrap();
+    stream.serialize_u64(&mut wide).unwrap();
+    stream.serialize_int(&mut int, -100, 100).unwrap();
+    stream.serialize_int(&mut degenerate, 9, 9).unwrap();
+    stream
+        .serialize_int(&mut int_full, i32::MIN, i32::MAX)
+        .unwrap();
+    stream
+        .serialize_int64(&mut int64, i64::MIN, i64::MAX)
+        .unwrap();
+    stream
+        .serialize_int64(&mut int64_degenerate, -77, -77)
+        .unwrap();
+    stream.serialize_f32(&mut float).unwrap();
+    stream.serialize_f64(&mut double).unwrap();
+    stream.serialize_bytes(&mut bytes).unwrap();
 }
 
 /// The same fields through the split `write_*` forms.
@@ -687,49 +791,49 @@ fn u15_split_write_forms_catch_misuse_as_their_twins() {
     both(
         |s| {
             let mut v = 1u64 << 40;
-            let Ok(()) = s.serialize_bits64(&mut v, 40);
+            s.serialize_bits64(&mut v, 40).unwrap();
         },
         |s| s.write_bits64(1 << 40, 40),
     );
     both(
         |s| {
             let mut v = 0u64;
-            let Ok(()) = s.serialize_bits64(&mut v, 65);
+            s.serialize_bits64(&mut v, 65).unwrap();
         },
         |s| s.write_bits64(0, 65),
     );
     both(
         |s| {
             let mut v = 11i32;
-            let Ok(()) = s.serialize_int(&mut v, 0, 10);
+            s.serialize_int(&mut v, 0, 10).unwrap();
         },
         |s| s.write_int(11, 0, 10),
     );
     both(
         |s| {
             let mut v = 5i32;
-            let Ok(()) = s.serialize_int(&mut v, 10, 0);
+            s.serialize_int(&mut v, 10, 0).unwrap();
         },
         |s| s.write_int(5, 10, 0),
     );
     both(
         |s| {
             let mut v = -11i64;
-            let Ok(()) = s.serialize_int64(&mut v, -10, 10);
+            s.serialize_int64(&mut v, -10, 10).unwrap();
         },
         |s| s.write_int64(-11, -10, 10),
     );
     both(
         |s| {
             let mut v = f32::INFINITY;
-            let Ok(()) = s.serialize_f32(&mut v);
+            s.serialize_f32(&mut v).unwrap();
         },
         |s| s.write_f32(f32::INFINITY),
     );
     both(
         |s| {
             let mut v = f64::NAN;
-            let Ok(()) = s.serialize_f64(&mut v);
+            s.serialize_f64(&mut v).unwrap();
         },
         |s| s.write_f64(f64::NAN),
     );
@@ -737,7 +841,7 @@ fn u15_split_write_forms_catch_misuse_as_their_twins() {
     both(
         |s| {
             let mut data = [0u8; 9];
-            let Ok(()) = s.serialize_bytes(&mut data);
+            s.serialize_bytes(&mut data).unwrap();
         },
         |s| s.write_bytes(&[0u8; 9]),
     );
