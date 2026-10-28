@@ -12,7 +12,8 @@ use crate::{Error, Result};
 /// Acts like a write stream (`IS_WRITING` is true, `IS_READING` is false), but instead of
 /// writing data it counts how many bits would be written. It shares the write path's trust
 /// model: the error type is [`Infallible`], so no serialize method on this stream can fail,
-/// and misuse is a debug assertion. When the serialization includes alignment to byte
+/// and misuse traps exactly as it does on a write, a `debug_assert!` panic in a checked build,
+/// room aside (IMPLEMENTING.md U6, U9), latching nothing. When the serialization includes alignment to byte
 /// boundaries the measurement is an estimate, not exact: every align counts as the worst
 /// case 7 bits, so the estimate is guaranteed to be conservative — a buffer sized from a
 /// measurement always fits the real write.
@@ -66,10 +67,16 @@ impl Stream for MeasureStream<'_> {
     }
 
     #[inline]
-    fn serialize_bits(&mut self, _value: &mut u32, bits: u32) -> Result<(), Infallible> {
+    fn serialize_bits(&mut self, value: &mut u32, bits: u32) -> Result<(), Infallible> {
         debug_assert!(
             bits.wrapping_sub(1) < 32,
             "bits must be in [1,32] (got {bits})"
+        );
+        // U6: a measure checks what a write checks (BitWriter::write_bits), room aside
+        debug_assert!(
+            u64::from(*value) < (1u64 << bits),
+            "value {} does not fit in {bits} bits",
+            *value
         );
         self.bits_written += u64::from(bits);
         Ok(())

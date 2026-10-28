@@ -151,7 +151,8 @@ The caller refuses with `stream.reject()`, the port of the C++ `serialize_reject
 `IS_READING` guard; a nested object whose `serialize` returns `S::fail(Error::Rejected)` is
 latched as `rejected` by `serialize_object` the same way. Either goes through the one latch,
 so it is terminal and the first reason wins. Reject is read only: on a write or measure stream
-it is a debug assertion, and returns `Ok(())` in release.
+it is write misuse, so it traps (panics) in a checked build (U9), and returns `Ok(())` in
+release.
 
 Three obligations from STANDARD.md's Reader Obligations hold in every build:
 
@@ -199,9 +200,16 @@ declaration is refused as `value_out_of_range` in every build, after the failure
 stream that already refused keeps its first reason, and a `ReadStream` handed a byte count
 past its buffer starts refused the same way. On write and measure, declarations and every
 other write misuse (a write buffer not a multiple of 8 bytes, a value too wide for its field,
-an operation without room for all of it) are a debug assertion, compiled out in release
-exactly like the C++ library's `serialize_assert` (U9). `Stream::fail` on a write or measure
-stream returns `Ok(())` and never panics. The uniform rules U1 to U16 are each proven by
+an operation without room for all of it) are write misuse, and write misuse has one
+mechanism, the trap (IMPLEMENTING.md U9): in a checked build (`debug_assertions`) it panics at
+the call, through `debug_assert!`, before any bit of the operation is written, and in release
+it is compiled out exactly like the C++ library's `serialize_assert`, leaving the output
+unspecified. A measure traps on every misuse a write does, room aside (U6). Write misuse never
+latches: a write or measure stream has no refusal state, so nothing is recorded and no later
+operation fails. `Stream::fail` on a write or measure stream never panics in any build and
+records nothing; U9 has it return false, and this port's write and measure error type is
+uninhabited (`Infallible`, the 2.0 #52 ruling), so its result is `Ok(())`, the only value the
+type has (`reject` in release likewise). The uniform rules U1 to U16 are each proven by
 `tests/uniform.rs`. A degenerate range where `min == max` is not misuse — the format defines it as
 costing zero bits, and the ranged integer methods accept it and recover the value from the
 range alone. `serialize_f32` and `serialize_f64` carry finite values only: a reader refuses

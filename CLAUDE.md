@@ -37,7 +37,7 @@ zero unsafe, BSD-3.
    `test_golden_wire_format` pins STANDARD.md's 106-byte "whole message", which matches the
    C++ suite's `golden_wire_bytes` verbatim and ends with the end, and the `cpp-interop` CI
    job proves it against the real thing on every push and PR: it builds interop/golden.cpp
-   against the actual C++ library (pinned at v2.1.0, never going back past v2.0.0: the golden
+   against the actual C++ library (pinned at v2.1.1, never going back past v2.0.0: the golden
    message ends with `serialize_end` and drops `wstring` from v2.0.0 on; the build keeps
    asserts live with no -ffp-contract=off), both implementations write a file of two
    packets — the golden one and the harness's extended one (a degenerate 64 bit range,
@@ -52,10 +52,14 @@ zero unsafe, BSD-3.
    range validated and fails with an `Error`. Caller declarations (bit counts, ranges, Q
    formats, precomputed constants, `previous`, string `buffer_size`) are refused as
    `ValueOutOfRange` on read in every build, never asserted (IMPLEMENTING.md U7, U16, since
-   4.0.0), and write-side misuse is `debug_assert!`, compiled out in release (U9); `fail` on
-   a write or measure stream returns `Ok(())` and never panics; the only hard panics left are the two structural
-   write cases the language itself enforces — a write buffer that is not a multiple of 8
-   bytes, and writing past the end of a buffer, which is the slice bounds check. Three read
+   4.0.0), and write-side misuse has one mechanism, the trap (IMPLEMENTING.md U9, the
+   2.1.1 ruling): a `debug_assert!` panic at the call in a checked build, compiled out in
+   release; a measure traps on everything a write does except room (U6); write misuse never
+   latches. `fail` on a write or measure stream returns `Ok(())` (U9's false: the error type
+   is uninhabited, so it is the only value) and never panics; the only hard panic left in
+   release is the one the language itself enforces — writing past the end of a buffer (a write
+   that reaches a non-multiple-of-8 buffer's short final word is one), which is the slice
+   bounds check. Three read
    obligations bind in every build (STANDARD.md, Reader Obligations): a refused read leaves
    its scalar destination unwritten, failure is terminal (the `ReadStream` latch), and every
    refusal rule the standard states is enforced. A degenerate range (min == max) is NOT
@@ -76,7 +80,9 @@ zero unsafe, BSD-3.
    fail, and no fallibility may be added back to the write path (the canonical generic
    signature is `-> Result<(), S::Error>`; read-side validation in custom serialize
    functions goes through `Stream::fail` under an `IS_READING` guard).
-4. **Write buffers are multiples of 8 bytes** (the writer stores qwords; enforced by a panic).
+4. **Write buffers are multiples of 8 bytes** (the writer stores qwords; a `debug_assert!` in
+   `BitWriter::new`, the U9 trap, compiled out in release, where a write that reaches the
+   short final word stops at the slice bounds panic).
    The reader takes (buffer, bytes) and uses branchless 64 bit window loads when the buffer
    extends ≥ 8 bytes past the packet data, with a guarded-copy fallback when it doesn't. No
    unsafe code anywhere — the fast path is `slice.get(i..i+8)` + `u64::from_le_bytes`.

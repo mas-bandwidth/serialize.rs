@@ -1,5 +1,35 @@
 # Changelog
 
+## 4.0.1 — 2026-10-27
+
+**The 2.1.1 rulings (reference v2.1.1): U6, U9 and U15.** `STANDARD.md`, `IMPLEMENTING.md`,
+`conformance/` and `conformance-controls/` are re-vendored verbatim from mas-bandwidth/serialize
+v2.1.1, and the C++ interop job is pinned to v2.1.1. The corpus and the wire are unchanged; the
+text gains the rulings. No public signature changes.
+
+Fixed:
+
+- **A measure traps on a value too wide for its bits** (U6): `MeasureStream::serialize_bits`
+  checked only the bit count, so `serialize_bits(0x1FF, 8)` on a measure was silent in a
+  checked build where the same write panics. A measure now makes every check a write makes,
+  room aside. `tests/uniform.rs::u6_measure_traps_what_write_traps` covers every operation.
+
+Documented, the U9 ruling (one write-misuse mechanism, the trap):
+
+- Write misuse traps in a checked build (`debug_assertions`) with a `debug_assert!` panic at
+  the call, on a write and on a measure, and never latches: neither stream has a refusal
+  state. Release compiles the checks out. `fail` on a write or measure returns `Ok(())`, which
+  is U9's false in this port, because the write and measure error type has no other value
+  (#52); `reject` there traps in a checked build and returns `Ok(())` in release. New tests:
+  `u9_compressed_float_non_finite_value_traps`, `u9_reject_on_a_measure_traps`,
+  `u9_write_misuse_never_latches`.
+- `serialize_copy_string` already backed off to a whole character; it now has the reference's
+  `test_copy_string` vectors (U15), less the two ill-formed sources a `&str` cannot hold.
+- `FixedPointStorage` is documented as a U15 language necessity.
+
+Left on the roadmap: a fallible write error type for U9's false, and hiding the exports beyond
+the U15 list, each a breaking change that waits on a ruling.
+
 ## 4.0.0 — 2026-10-27
 
 **Standard 2.1: the caller's refusal (reference v2.1.0).** `STANDARD.md`, `IMPLEMENTING.md`,
