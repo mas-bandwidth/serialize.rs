@@ -384,13 +384,14 @@ fn run_differential_round_trip(seeds: u64, ctl: RoundTripControl) {
             let mut read = blank(written);
             serialize_value(&mut read_stream, &mut read)
                 .unwrap_or_else(|e| panic!("seed {seed} value {index}: read failed: {e}"));
-            let ok = if ctl == RoundTripControl::ValueMismatch {
-                !matches(written, &read)
-            } else {
-                matches(written, &read)
-            };
+            if ctl == RoundTripControl::ValueMismatch {
+                read = match read {
+                    Value::Bool(false) => Value::Bool(true),
+                    _ => Value::Bool(false),
+                };
+            }
             assert!(
-                ok,
+                matches(written, &read),
                 "seed {seed} value {index}: wrote {written:?}, read {read:?}"
             );
         }
@@ -404,19 +405,15 @@ fn run_differential_round_trip(seeds: u64, ctl: RoundTripControl) {
             serialize_value(&mut longer_stream, &mut read)
                 .unwrap_or_else(|e| panic!("seed {seed}: longer read failed before end: {e}"));
         }
-        let end_res = longer_stream.serialize_end();
+        let mut end_res = longer_stream.serialize_end();
         if ctl == RoundTripControl::Trailing {
-            assert!(
-                end_res.is_ok(),
-                "seed {seed}: expected trailing data to be accepted"
-            );
-        } else {
-            assert_eq!(
-                end_res,
-                Err(Error::TrailingData),
-                "seed {seed}: expected TrailingData one byte past the writer, got {end_res:?}"
-            );
+            end_res = Ok(());
         }
+        assert_eq!(
+            end_res,
+            Err(Error::TrailingData),
+            "seed {seed}: expected TrailingData one byte past the writer, got {end_res:?}"
+        );
     }
 }
 
@@ -436,7 +433,7 @@ fn test_differential_round_trip_negative_controls() {
         ),
         (
             RoundTripControl::Trailing,
-            "expected trailing data to be accepted",
+            "expected TrailingData one byte past the writer",
         ),
     ];
     for (ctl, expected_msg) in controls {

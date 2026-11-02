@@ -112,12 +112,19 @@ jobs:
             exit 1
           fi
           grep -q "a refused read wrote its destination" hostile_ctl.log
-          for ctl in roundtrip canary trailing; do
+          for pair in "roundtrip:wrote .*, read " "canary:tight write buffer canary corrupted" "trailing:expected TrailingData one byte past the writer"; do
+            ctl="${pair%%:*}"
+            msg="${pair#*:}"
             if SERIALIZE_FUZZ_CONTROL=$ctl cargo +nightly fuzz run round_trip --target x86_64-unknown-linux-gnu -- -max_total_time=10 > roundtrip_${ctl}.log 2>&1; then
               cat roundtrip_${ctl}.log
               echo "::error::round_trip negative control ($ctl) did not trap"
               exit 1
             fi
+            grep -q "$msg" roundtrip_${ctl}.log || {
+              cat roundtrip_${ctl}.log
+              echo "::error::round_trip negative control ($ctl) failed without expected diagnostic: $msg"
+              exit 1
+            }
           done
           rm -f fuzz/artifacts/hostile_read/* fuzz/artifacts/round_trip/* || true
       - name: Upload crash reproducers

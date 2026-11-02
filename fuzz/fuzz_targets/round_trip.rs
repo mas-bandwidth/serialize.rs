@@ -423,7 +423,10 @@ fuzz_target!(|data: &[u8]| {
         let mut read = blank(written);
         serialize_value(&mut read_stream, &mut read).expect("read of just-written data failed");
         if std::env::var("SERIALIZE_FUZZ_CONTROL").as_deref() == Ok("roundtrip") {
-            assert!(!matches(written, &read), "roundtrip negative control triggered");
+            read = match read {
+                Value::Bool(false) => Value::Bool(true),
+                _ => Value::Bool(false),
+            };
         }
         assert!(matches(written, &read), "wrote {written:?}, read {read:?}");
     }
@@ -438,9 +441,9 @@ fuzz_target!(|data: &[u8]| {
         let mut read = blank(written);
         serialize_value(&mut longer_stream, &mut read).expect("longer read failed before end");
     }
-    let end_res = longer_stream.serialize_end();
+    let mut end_res = longer_stream.serialize_end();
     if std::env::var("SERIALIZE_FUZZ_CONTROL").as_deref() == Ok("trailing") {
-        assert!(end_res.is_ok(), "trailing negative control triggered");
+        end_res = Ok(());
     }
     assert_eq!(
         end_res,

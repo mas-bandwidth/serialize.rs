@@ -36,9 +36,6 @@ fn kept<T: Copy + PartialEq + Debug>(
 ) -> Result<(), Error> {
     let mut value = sentinel;
     let result = read(&mut value);
-    if result.is_err() && std::env::var("SERIALIZE_FUZZ_CONTROL").as_deref() == Ok("sentinel") {
-        panic!("a refused read wrote its destination (negative control)");
-    }
     match result {
         Err(_) => assert_eq!(value, sentinel, "a refused read wrote its destination"),
         Ok(()) => assert!(
@@ -128,7 +125,15 @@ fn run_hostile_sentinel(packet: &[u8], bytes: usize, script: &[u8], sentinel: u8
             0 => kept(
                 s32,
                 |v| bits32 == 32 || v < (1u32 << bits32),
-                |v| stream.serialize_bits(v, bits32),
+                |v| {
+                    let res = stream.serialize_bits(v, bits32);
+                    if res.is_err()
+                        && std::env::var("SERIALIZE_FUZZ_CONTROL").as_deref() == Ok("sentinel")
+                    {
+                        *v = fill32(0x5A);
+                    }
+                    res
+                },
             ),
             1 => kept(
                 s64,
