@@ -104,6 +104,22 @@ jobs:
         run: cargo +nightly fuzz run hostile_read --target x86_64-unknown-linux-gnu -- -max_total_time=60
       - name: Fuzz round_trip
         run: cargo +nightly fuzz run round_trip --target x86_64-unknown-linux-gnu -- -max_total_time=60
+      - name: Negative controls (hostile_read and round_trip must trap when sabotaged)
+        run: |
+          if SERIALIZE_FUZZ_CONTROL=sentinel cargo +nightly fuzz run hostile_read --target x86_64-unknown-linux-gnu -- -max_total_time=10 > hostile_ctl.log 2>&1; then
+            cat hostile_ctl.log
+            echo "::error::hostile_read negative control did not trap"
+            exit 1
+          fi
+          grep -q "a refused read wrote its destination" hostile_ctl.log
+          for ctl in roundtrip canary trailing; do
+            if SERIALIZE_FUZZ_CONTROL=$ctl cargo +nightly fuzz run round_trip --target x86_64-unknown-linux-gnu -- -max_total_time=10 > roundtrip_${ctl}.log 2>&1; then
+              cat roundtrip_${ctl}.log
+              echo "::error::round_trip negative control ($ctl) did not trap"
+              exit 1
+            fi
+          done
+          rm -f fuzz/artifacts/hostile_read/* fuzz/artifacts/round_trip/* || true
       - name: Upload crash reproducers
         if: failure()
         uses: actions/upload-artifact@v7
