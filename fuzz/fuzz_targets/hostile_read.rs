@@ -98,7 +98,6 @@ fn any<T>(_: T) -> bool {
 #[allow(clippy::too_many_lines)]
 fn run_hostile_sentinel(packet: &[u8], bytes: usize, script: &[u8], sentinel: u8) {
     let mut stream = ReadStream::new(packet, bytes);
-    let mut string = String::new();
     let mut buffer = [sentinel; 32];
 
     let s8 = sentinel;
@@ -235,7 +234,7 @@ fn run_hostile_sentinel(packet: &[u8], bytes: usize, script: &[u8], sentinel: u8
                     stream.serialize_bytes(&mut buffer[..len])
                 }
                 1 => {
-                    string = String::from(if sentinel == 0x5A { "sentinel_a" } else { "sentinel_b" });
+                    let mut string = String::from(if sentinel == 0x5A { "sentinel_a" } else { "sentinel_b" });
                     let max_size = usize::from(b) % 64 + 2;
                     let r = stream.serialize_string(&mut string, max_size);
                     if r.is_ok() {
