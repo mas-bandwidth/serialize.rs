@@ -3,7 +3,7 @@
 //! checks `MeasureStream` never under-measures, plus a hostile read of arbitrary bytes through
 //! every `ReadStream` primitive that must fail cleanly, never panic.
 
-use serialize::{MeasureStream, ReadStream, Stream, WriteStream};
+use serialize::{Error, MeasureStream, ReadStream, Stream, WriteStream};
 
 /// A splitmix-style generator: deterministic, seedable, no dependencies.
 struct Rng(u64);
@@ -321,11 +321,19 @@ fn matches(written: &Value, read: &Value) -> bool {
 const ROUND_TRIP_SEEDS: u64 = if cfg!(miri) { 8 } else { 500 };
 const HOSTILE_SEEDS: u64 = if cfg!(miri) { 16 } else { 2000 };
 
-#[test]
-fn test_differential_round_trip() {
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum RoundTripControl {
+    None,
+    ValueMismatch,
+    Canary,
+    Trailing,
+}
+
+fn run_differential_round_trip(seeds: u64, ctl: RoundTripControl) {
     // write a random value sequence, then a read of the same sequence must return exactly the
-    // written values, and the measure stream must never under-measure the write
-    for seed in 0..ROUND_TRIP_SEEDS {
+    // written values, the tight write buffer canary must remain intact, the measure stream must
+    // never under-measure the write, and one extra byte must be refused as TrailingData
+    for seed in 0..seeds {
         let mut rng = Rng(seed);
         let num_values = rng.range(30) as usize + 1;
         let mut values: Vec<Value> = (0..num_values).map(|_| random_value(&mut rng)).collect();
@@ -339,6 +347,27 @@ fn test_differential_round_trip() {
         write_stream.flush();
         let bits_written = write_stream.bits_processed();
         let bytes_written = write_stream.bytes_processed() as usize;
+
+        {
+            let tight_bytes = ((bytes_written + 7) & !7).max(8);
+            let canary_bytes = 16;
+            let mut tight = vec![0xAAu8; tight_bytes + canary_bytes];
+            tight[..tight_bytes].fill(0xA5);
+            let mut tight_stream = WriteStream::new(&mut tight[..tight_bytes]);
+            for value in &mut values.clone() {
+                serialize_value(&mut tight_stream, value).unwrap();
+            }
+            tight_stream.flush();
+            assert_eq!(tight_stream.bytes_processed() as usize, bytes_written);
+            assert_eq!(&tight[..bytes_written], &buffer[..bytes_written]);
+            if ctl == RoundTripControl::Canary {
+                tight[tight_bytes] = 0;
+            }
+            assert!(
+                tight[tight_bytes..].iter().all(|&b| b == 0xAA),
+                "seed {seed}: tight write buffer canary corrupted"
+            );
+        }
 
         let mut measure_stream = MeasureStream::new();
         for value in &mut values.clone() {
@@ -355,11 +384,72 @@ fn test_differential_round_trip() {
             let mut read = blank(written);
             serialize_value(&mut read_stream, &mut read)
                 .unwrap_or_else(|e| panic!("seed {seed} value {index}: read failed: {e}"));
+            if ctl == RoundTripControl::ValueMismatch {
+                read = match read {
+                    Value::Bool(false) => Value::Bool(true),
+                    _ => Value::Bool(false),
+                };
+            }
             assert!(
                 matches(written, &read),
                 "seed {seed} value {index}: wrote {written:?}, read {read:?}"
             );
         }
+        read_stream
+            .serialize_end()
+            .unwrap_or_else(|e| panic!("seed {seed}: serialize_end failed: {e}"));
+
+        let mut longer_stream = ReadStream::new(&buffer, bytes_written + 1);
+        for written in &values {
+            let mut read = blank(written);
+            serialize_value(&mut longer_stream, &mut read)
+                .unwrap_or_else(|e| panic!("seed {seed}: longer read failed before end: {e}"));
+        }
+        let mut end_res = longer_stream.serialize_end();
+        if ctl == RoundTripControl::Trailing {
+            end_res = Ok(());
+        }
+        assert_eq!(
+            end_res,
+            Err(Error::TrailingData),
+            "seed {seed}: expected TrailingData one byte past the writer, got {end_res:?}"
+        );
+    }
+}
+
+#[test]
+fn test_differential_round_trip() {
+    run_differential_round_trip(ROUND_TRIP_SEEDS, RoundTripControl::None);
+}
+
+#[test]
+#[cfg_attr(miri, ignore)]
+fn test_differential_round_trip_negative_controls() {
+    let controls = [
+        (RoundTripControl::ValueMismatch, "wrote "),
+        (
+            RoundTripControl::Canary,
+            "tight write buffer canary corrupted",
+        ),
+        (
+            RoundTripControl::Trailing,
+            "expected TrailingData one byte past the writer",
+        ),
+    ];
+    for (ctl, expected_msg) in controls {
+        let result = std::panic::catch_unwind(|| {
+            run_differential_round_trip(16, ctl);
+        });
+        let err = result.expect_err("round trip negative control did not panic");
+        let msg = err
+            .downcast_ref::<&str>()
+            .copied()
+            .or_else(|| err.downcast_ref::<String>().map(String::as_str))
+            .unwrap_or("");
+        assert!(
+            msg.contains(expected_msg),
+            "control expected panic containing {expected_msg:?}, got {msg:?}"
+        );
     }
 }
 

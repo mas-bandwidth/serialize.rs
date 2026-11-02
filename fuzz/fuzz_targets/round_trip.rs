@@ -6,7 +6,7 @@
 #![no_main]
 
 use libfuzzer_sys::fuzz_target;
-use serialize::{MeasureStream, ReadStream, Result, Stream, WriteStream};
+use serialize::{Error, MeasureStream, ReadStream, Result, Stream, WriteStream};
 
 const MAX_OPS: usize = 64;
 const BUFFER_SIZE: usize = 16 * 1024; // worst case op is well under 256 bytes, 64 ops fit
@@ -395,14 +395,59 @@ fuzz_target!(|data: &[u8]| {
         measure_stream.bits_processed()
     );
 
+    // Tight multiple-of-8 buffer followed by a 16-byte 0xAA canary: re-run the exact
+    // write sequence and verify no byte past tight_bytes is touched.
+    {
+        let tight_bytes = ((bytes_written + 7) & !7).max(8);
+        let canary_bytes = 16;
+        let mut tight = vec![0xAAu8; tight_bytes + canary_bytes];
+        tight[..tight_bytes].fill(0xA5);
+        let mut tight_stream = WriteStream::new(&mut tight[..tight_bytes]);
+        for value in &mut values.clone() {
+            serialize_value(&mut tight_stream, value).unwrap();
+        }
+        tight_stream.flush();
+        assert_eq!(tight_stream.bytes_processed() as usize, bytes_written);
+        assert_eq!(&tight[..bytes_written], &buffer[..bytes_written]);
+        if std::env::var("SERIALIZE_FUZZ_CONTROL").as_deref() == Ok("canary") {
+            tight[tight_bytes] = 0;
+        }
+        assert!(
+            tight[tight_bytes..].iter().all(|&b| b == 0xAA),
+            "tight write buffer canary corrupted"
+        );
+    }
+
     let mut read_stream = ReadStream::new(&buffer, bytes_written);
     for written in &values {
         let mut read = blank(written);
         serialize_value(&mut read_stream, &mut read).expect("read of just-written data failed");
+        if std::env::var("SERIALIZE_FUZZ_CONTROL").as_deref() == Ok("roundtrip") {
+            read = match read {
+                Value::Bool(false) => Value::Bool(true),
+                _ => Value::Bool(false),
+            };
+        }
         assert!(matches(written, &read), "wrote {written:?}, read {read:?}");
     }
     // the stream holds exactly the bytes the writer reported, so its end accepts
     read_stream
         .serialize_end()
         .expect("the end of just-written data was refused");
+
+    // One byte more than the writer reported is trailing data, refused at the end.
+    let mut longer_stream = ReadStream::new(&buffer, bytes_written + 1);
+    for written in &values {
+        let mut read = blank(written);
+        serialize_value(&mut longer_stream, &mut read).expect("longer read failed before end");
+    }
+    let mut end_res = longer_stream.serialize_end();
+    if std::env::var("SERIALIZE_FUZZ_CONTROL").as_deref() == Ok("trailing") {
+        end_res = Ok(());
+    }
+    assert_eq!(
+        end_res,
+        Err(Error::TrailingData),
+        "expected TrailingData one byte past the writer, got {end_res:?}"
+    );
 });
