@@ -54,7 +54,7 @@ fn op(stream: &mut ReadStream, k: u64, pattern: u8, ctl: HostileControl) -> bool
     let si128 = s128 as i128;
     let sbool = pattern == 0x5A;
 
-    match k % 18 {
+    match k % 19 {
         0 => {
             let bits = (k as u32 >> 8) % 32 + 1;
             let mut v = s32;
@@ -78,15 +78,10 @@ fn op(stream: &mut ReadStream, k: u64, pattern: u8, ctl: HostileControl) -> bool
                 }
                 assert_eq!(v, si32, "a refused read wrote its destination");
             } else {
-                let max_allowed = if ctl == HostileControl::HostileRange {
-                    -10
-                } else {
-                    1000
-                };
-                assert!(
-                    (-5..=max_allowed).contains(&v),
-                    "accepted int out of range: {v}"
-                );
+                if ctl == HostileControl::HostileRange {
+                    v = 1001;
+                }
+                assert!((-5..=1000).contains(&v), "accepted int out of range: {v}");
             }
             r.is_ok()
         }
@@ -319,6 +314,34 @@ fn run_hostile_pass(
 }
 
 fn run_hostile_suite(iterations: usize, ctl: HostileControl) {
+    // Directed per-operation first-refusal seeds (including every fixed sub-arm and bool).
+    let mut refused_mask = 0u32;
+    for arm in 0..19u64 {
+        for sub in 0..4u64 {
+            let k = arm | ((sub + 1) << 8);
+            let ops = [k, 18];
+            let res_a = run_hostile_pass(&[], 0, &ops, 0x5A, ctl);
+            let res_b = run_hostile_pass(&[], 0, &ops, 0xA5, ctl);
+            assert_eq!(
+                res_a, res_b,
+                "0x5A and 0xA5 sentinel passes disagreed on directed seed ({arm}, {sub})"
+            );
+            if res_a.0.is_some() {
+                refused_mask |= 1u32 << arm;
+            }
+        }
+    }
+    let align_ops = [18, 10, 18];
+    let align_a = run_hostile_pass(&[0xFE], 1, &align_ops, 0x5A, ctl);
+    let align_b = run_hostile_pass(&[0xFE], 1, &align_ops, 0xA5, ctl);
+    assert_eq!(align_a, align_b);
+    assert_eq!(align_a.0, Some(Error::NonzeroPadding));
+    let expected_mask = (1u32 << 19) - 1;
+    assert_eq!(
+        refused_mask, expected_mask,
+        "not all read operations were exercised on first refusal: {refused_mask:#021b}"
+    );
+
     let mut rng = Rng(0x9E37_79B9_7F4A_7C15);
     for _ in 0..iterations {
         let len = (rng.next() % 48) as usize;
