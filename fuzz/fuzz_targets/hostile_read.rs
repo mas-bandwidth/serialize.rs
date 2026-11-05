@@ -9,7 +9,7 @@
 
 use core::fmt::Debug;
 use libfuzzer_sys::fuzz_target;
-use serialize::{Error, ReadStream, Stream};
+use serialize::{BitReader, Error, ReadStream, Serialize, Stream};
 
 /// Runs one scalar read from a sentinel destination: a refusal must leave the sentinel, an
 /// accept must satisfy `valid`.
@@ -32,6 +32,24 @@ fn kept<T: Copy + PartialEq + Debug>(
 
 fn any<T>(_: T) -> bool {
     true
+}
+
+// A one-field callback exercises both a returned refusal and a swallowed inner error.
+// The stream composition must retain whichever primitive refusal happened first.
+struct ProbeObject {
+    value: u32,
+    reject: bool,
+}
+
+impl Serialize for ProbeObject {
+    fn serialize<S: Stream>(&mut self, stream: &mut S) -> Result<(), S::Error> {
+        let _ = stream.serialize_bits(&mut self.value, 32);
+        if self.reject {
+            Err(Error::Rejected.into())
+        } else {
+            Ok(())
+        }
+    }
 }
 
 fuzz_target!(|data: &[u8]| {
@@ -61,7 +79,7 @@ fuzz_target!(|data: &[u8]| {
         let op = chunk[0];
         let a = *chunk.get(1).unwrap_or(&0);
         let b = *chunk.get(2).unwrap_or(&0);
-        let result = match op % 16 {
+        let result = match op % 21 {
             0 => kept(0xDEAD_BEEFu32, any, |v| {
                 stream.serialize_bits(v, u32::from(a) % 32 + 1)
             }),
@@ -122,7 +140,7 @@ fuzz_target!(|data: &[u8]| {
                 7 => stream.serialize_fixed(&mut 0u128, 112, 16, 0, 2305843009213693952),
                 _ => stream.serialize_int128(&mut 0, i128::MIN, i128::MAX),
             },
-            _ => match a % 5 {
+            15 => match a % 5 {
                 0 => {
                     let len = (b as usize) % buffer.len();
                     stream.serialize_bytes(&mut buffer[..len])
@@ -143,17 +161,113 @@ fuzz_target!(|data: &[u8]| {
                     stream.serialize_compressed_float(v, 0.0, f32::from(b) + 1.0, 0.01)
                 }),
             },
+            16 => {
+                // Precomputed constants are a separate public entry point. Include bad
+                // declarations and a finite declaration whose top decode overflows.
+                let declarations = [
+                    (1000, 10, 10.0, 0.0),
+                    (0, 1, 10.0, 0.0),
+                    (u32::MAX, 32, 10.0, 0.0),
+                    (2, 1, 10.0, 0.0),
+                    (1, 1, 0.0, 0.0),
+                    (1, 1, f32::INFINITY, 0.0),
+                    (1, 1, f32::NAN, 0.0),
+                    (1, 1, f32::MAX, f32::MAX),
+                    (1, 1, 1.0, f32::NAN),
+                    (1, 1, 16_777_220.0, -1.0),
+                    (4_294_967_040, 32, 1.0, 0.0),
+                ];
+                let (max, bits, delta, min) = declarations[usize::from(a) % declarations.len()];
+                kept(-3.0f32, f32::is_finite, |v| {
+                    stream.serialize_compressed_float_precomputed(v, max, bits, delta, min)
+                })
+            }
+            17 => {
+                // U7/U16 also bind when an application derives a declaration from an
+                // earlier field: refuse before any bits move, never trap or narrow.
+                let before = stream.bits_processed();
+                let result = match a % 10 {
+                    0 => kept(17u32, any, |v| stream.serialize_bits(v, u32::MAX)),
+                    1 => kept(17u64, any, |v| stream.serialize_bits64(v, 0)),
+                    2 => kept(17i32, any, |v| stream.serialize_int(v, 1, -1)),
+                    3 => kept(17i64, any, |v| stream.serialize_int64(v, 1, -1)),
+                    4 => kept(17i128, any, |v| stream.serialize_int128(v, 1, -1)),
+                    5 => kept(17i32, any, |v| stream.serialize_fixed(v, u32::MAX, 1, 0, 1)),
+                    6 => kept(17u8, any, |v| stream.serialize_fixed(v, 4, 4, 0, 16)),
+                    7 => stream.serialize_string(&mut string, 0),
+                    8 => stream.serialize_string(&mut string, usize::MAX),
+                    _ => kept(17i32, any, |v| stream.serialize_int_relative(-1, v)),
+                };
+                assert_eq!(result, Err(Error::ValueOutOfRange));
+                assert_eq!(stream.bits_processed(), before);
+                result
+            }
+            18 => match a % 6 {
+                0 => kept(17i32, |v| v == -5, |v| stream.serialize_int(v, -5, -5)),
+                1 => kept(
+                    17i64,
+                    |v| v == i64::MIN,
+                    |v| stream.serialize_int64(v, i64::MIN, i64::MIN),
+                ),
+                2 => kept(
+                    17i128,
+                    |v| v == i128::MIN,
+                    |v| stream.serialize_int128(v, i128::MIN, i128::MIN),
+                ),
+                3 => kept(
+                    17i128,
+                    |v| v <= 0,
+                    |v| stream.serialize_fixed(v, 1, 127, -1, 0),
+                ),
+                4 => kept(
+                    17u128,
+                    |v| v <= 1u128 << 127,
+                    |v| stream.serialize_fixed(v, 1, 127, 0, 1),
+                ),
+                _ => kept(
+                    17i128,
+                    |v| v == i128::MIN,
+                    |v| stream.serialize_fixed(v, 1, 127, -1, -1),
+                ),
+            },
+            19 => stream.serialize_object(&mut ProbeObject {
+                value: 0xA5A5_A5A5,
+                reject: a & 1 != 0,
+            }),
+            _ => {
+                // The public core is unchecked. Keep its documented preflight and compare
+                // the group path with single reads, including the >248-bit fallback.
+                let widths = [u32::from(a) % 32 + 1; 8];
+                let prefix = u32::from(b) % 8;
+                let total = widths.iter().sum::<u32>() + prefix;
+                let mut grouped = BitReader::new(packet, bytes);
+                if !grouped.would_read_past_end(total) {
+                    let mut single = grouped.clone();
+                    if prefix > 0 {
+                        assert_eq!(grouped.read_bits(prefix), single.read_bits(prefix));
+                    }
+                    let values = grouped.read_bits_group(&widths);
+                    for (value, width) in values.into_iter().zip(widths) {
+                        assert_eq!(value, single.read_bits(width));
+                    }
+                    assert_eq!(grouped.bits_read(), single.bits_read());
+                    assert_eq!(grouped.bits_remaining(), single.bits_remaining());
+                }
+                Ok(())
+            }
         };
 
         // a refusal latches: the stream reports it, and the next read refuses without
         // consuming a bit
-        if result.is_err() {
-            assert!(stream.failure().is_some(), "a refusal did not latch");
+        if let Err(error) = result {
+            assert_eq!(stream.failure(), Some(error), "a refusal did not latch");
             let before = stream.bits_processed();
-            assert!(
-                kept(true, any, |v| stream.serialize_bool(v)).is_err(),
-                "a read after a refusal was accepted"
+            assert_eq!(kept(true, any, |v| stream.serialize_bool(v)), Err(error));
+            assert_eq!(
+                kept(17i128, any, |v| stream.serialize_int128(v, 0, 0)),
+                Err(error)
             );
+            assert_eq!(stream.serialize_end(), Err(error));
             assert_eq!(
                 before,
                 stream.bits_processed(),
