@@ -178,3 +178,57 @@ fn hostile_read_sentinels_and_latch() {
         }
     }
 }
+
+#[test]
+fn audit_checked_bits_do_not_read_nonzero_slack_as_packet_data() {
+    // Every bit offset and width at a short packet boundary, with identical packet bytes
+    // followed by no slack or 40 hostile slack bytes. Only the logical packet is readable.
+    let packet: [u8; 16] = core::array::from_fn(|index| 0xA5 ^ (index as u8 * 13));
+    for bytes in 0..=packet.len() {
+        let mut padded = [0xFFu8; 56];
+        padded[..bytes].copy_from_slice(&packet[..bytes]);
+        for prefix in 0..=7u32 {
+            if u64::from(prefix) > bytes as u64 * 8 {
+                continue;
+            }
+            for width in 1..=64u32 {
+                let mut exact = ReadStream::new(&packet[..bytes], bytes);
+                let mut slack = ReadStream::new(&padded[..bytes + 40], bytes);
+                if prefix > 0 {
+                    let mut exact_prefix = 0u32;
+                    let mut slack_prefix = 0u32;
+                    exact.serialize_bits(&mut exact_prefix, prefix).unwrap();
+                    slack.serialize_bits(&mut slack_prefix, prefix).unwrap();
+                    assert_eq!(exact_prefix, slack_prefix);
+                }
+                let mut exact_value = 0xDEAD_BEEF_DEAD_BEEFu64;
+                let mut slack_value = exact_value;
+                let exact_result = exact.serialize_bits64(&mut exact_value, width);
+                let slack_result = slack.serialize_bits64(&mut slack_value, width);
+                assert_eq!(exact_result, slack_result);
+                assert_eq!(exact_value, slack_value);
+                assert_eq!(exact.bits_processed(), slack.bits_processed());
+                if u64::from(prefix + width) <= bytes as u64 * 8 {
+                    assert_eq!(exact_result, Ok(()));
+                    let mut expected = 0u64;
+                    for bit in 0..width {
+                        let index = (prefix + bit) as usize;
+                        expected |= u64::from((packet[index / 8] >> (index % 8)) & 1) << bit;
+                    }
+                    assert_eq!(exact_value, expected);
+                } else {
+                    assert_eq!(exact_result, Err(serialize::Error::PastEnd));
+                    assert_eq!(exact_value, 0xDEAD_BEEF_DEAD_BEEF);
+                    let position = slack.bits_processed();
+                    let mut zero_bit_value = -7i128;
+                    assert_eq!(
+                        slack.serialize_int128(&mut zero_bit_value, 0, 0),
+                        Err(serialize::Error::PastEnd)
+                    );
+                    assert_eq!(zero_bit_value, -7);
+                    assert_eq!(slack.bits_processed(), position);
+                }
+            }
+        }
+    }
+}
