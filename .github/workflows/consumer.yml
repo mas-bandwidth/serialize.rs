@@ -30,10 +30,10 @@ name: consumer
 
 on:
   push:
-    branches: [main]
+    branches: [ main, 'sprint/**' ]
     tags: ['v*']
+  # every pull request, whatever its base: sprint landings target sprint/<stream> branches, not main
   pull_request:
-    branches: [main]
   schedule:
     # nightly, because crates.io can move without a push to this repository:
     # a release published by hand shows up here the following morning
