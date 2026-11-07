@@ -30,7 +30,7 @@ name: consumer
 
 on:
   push:
-    branches: [ main, 'sprint/**' ]
+    branches: [ main, 'sprint/*' ]
     tags: ['v*']
   # every pull request, whatever its base: sprint landings target sprint/<stream> branches, not main
   pull_request:
