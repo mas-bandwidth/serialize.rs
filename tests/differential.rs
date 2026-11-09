@@ -405,11 +405,12 @@ fn test_hostile_read() {
                 Value::String(value) => stream.serialize_string(value, 64),
                 other => serialize_value(&mut stream, other),
             };
-
-            // the end is not in random_value (it carries no value), so drive it here against
-            // the hostile bytes too
-            let _ = stream.serialize_end();
         }
+
+        // the end is not in random_value (it carries no value), so drive it here against the
+        // hostile bytes too, once after the ops: ending every iteration latched trailing data
+        // and restarted the stream at bit zero, so no op ever ran part way into the packet
+        let _ = stream.serialize_end();
     }
     assert!(
         at_offset * 4 >= operations,
