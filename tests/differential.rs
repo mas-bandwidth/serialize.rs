@@ -367,6 +367,8 @@ fn test_differential_round_trip() {
 fn test_hostile_read() {
     // arbitrary bytes driven through every ReadStream primitive must fail cleanly with an
     // error, never panic. mirrors the hostile pass of the C++ fuzz harness.
+    let mut operations = 0u64;
+    let mut at_offset = 0u64;
     for seed in 0..HOSTILE_SEEDS {
         let mut rng = Rng(!seed);
 
@@ -387,6 +389,15 @@ fn test_hostile_read() {
             // requirement is no panic and no unvalidated value escaping
             let mut op = random_value(&mut rng);
             let op = &mut op;
+
+            // count the operations that start part way into live packet data, so the loop
+            // provably drives the primitives at non-zero bit offsets and not only at the start
+            let start = stream.bits_processed();
+            operations += 1;
+            if start > 0 && start < len as u64 * 8 {
+                at_offset += 1;
+            }
+
             let _ = match op {
                 Value::IntRelative { previous, current } => {
                     stream.serialize_int_relative(*previous, current)
@@ -394,10 +405,15 @@ fn test_hostile_read() {
                 Value::String(value) => stream.serialize_string(value, 64),
                 other => serialize_value(&mut stream, other),
             };
-
-            // the end is not in random_value (it carries no value), so drive it here against
-            // the hostile bytes too
-            let _ = stream.serialize_end();
         }
+
+        // the end is not in random_value (it carries no value), so drive it here against the
+        // hostile bytes too, once after the ops: ending every iteration latched trailing data
+        // and restarted the stream at bit zero, so no op ever ran part way into the packet
+        let _ = stream.serialize_end();
     }
+    assert!(
+        at_offset * 4 >= operations,
+        "only {at_offset} of {operations} hostile operations started at a non-zero bit offset"
+    );
 }
