@@ -114,6 +114,9 @@
 //! stays on the branchless fast path (the same trick the Go port plays with slice capacity).
 //! A buffer with no slack works too — loads near the end fall back to a guarded copy.
 
+#[cfg(all(target_arch = "x86", not(target_feature = "sse2")))]
+compile_error!("serialize requires SSE2 on x86 for deterministic IEEE 754 float32 rounding");
+
 mod bitpacker;
 mod control;
 mod measure_stream;
