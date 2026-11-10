@@ -19,7 +19,7 @@
  (
   (item "issue-78" :group "github-issues" :area "serialize.rs"
    :title "Keep ordinary change CI under two minutes; schedule extended fuzz runs"
-   :text "The image-only README logo change in PR77 ran the entire fuzz smoke job (60s per target), exceeding the per-change two-minute ceiling while no Rust source changed. Keep useful source-change gates, but move the multi-target extended fuzz work to scheduled/explicitly invoked CI and use a small bounded smoke or paths-aware gate for ordinary changes."
+   :text "The image-only README logo change in PR77 ran the entire fuzz smoke job (60s per target), exceeding the per-change two-minute ceiling while no Rust source changed. Extended fuzzing now runs on a nightly schedule in `.github/workflows/nightly-fuzz.yml`; ordinary changes still run the two 60s smoke targets in `.github/workflows/ci.yml`, so the remaining work is to make that gate paths-aware or otherwise keep ordinary change CI under two minutes."
    :date "2026-10-14"
    :origin "mas-bandwidth/serialize.rs issue #78, opened 2026-09-13 by gafferongames; moved here 2026-10-14"
    :kept (:github-issue "78" :labels ""))

@@ -88,12 +88,12 @@ fn main() -> Result {
     };
 
     // measure how many bytes the packet needs (conservative: aligns count as 7 bits).
-    // measures cannot fail — the error type is uninhabited, so Ok is the only pattern
+    // built-in measure operations do not fail, so Ok is the only pattern here
     let mut measure = MeasureStream::new();
     packet.serialize(&mut measure).unwrap();
     println!("measured packet size: {} bytes", measure.bytes_processed());
 
-    // write the packet. writes cannot fail either: the writer is trusted
+    // write the packet. built-in writes do not fail either: the writer is trusted
     let mut buffer = [0u8; 256]; // multiple of 8 bytes, comfortably above the measure
     let mut writer = WriteStream::new(&mut buffer);
     packet.serialize(&mut writer).unwrap();

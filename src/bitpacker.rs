@@ -82,6 +82,11 @@ impl<'a> BitWriter<'a> {
     /// surfaces as the language's own slice bounds panic on the word flush.
     #[inline(always)]
     pub fn write_bits(&mut self, value: u32, bits: u32) {
+        debug_assert_eq!(
+            u64::from(self.scratch_bits),
+            self.bits_written % 64,
+            "write after flush"
+        );
         debug_assert!(
             bits.wrapping_sub(1) < 32,
             "bits must be in [1,32] (got {bits})"
@@ -226,7 +231,7 @@ impl<'a> BitWriter<'a> {
     #[must_use]
     #[inline]
     pub fn bits_available(&self) -> u64 {
-        self.num_bits - self.bits_written
+        self.num_bits.saturating_sub(self.bits_written)
     }
 
     /// The number of bytes flushed to memory. This is effectively the size of the packet you
@@ -551,6 +556,6 @@ impl<'a> BitReader<'a> {
     #[must_use]
     #[inline]
     pub fn bits_remaining(&self) -> u64 {
-        self.num_bits - self.bits_read
+        self.num_bits.saturating_sub(self.bits_read)
     }
 }
