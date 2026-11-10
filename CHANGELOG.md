@@ -225,13 +225,11 @@ whole 112-byte golden message, whose bytes the document now prints in full, and 
 the terminal failure vector whose successor is a degenerate fixed point field. The runner
 already dispatched every step spelling the corpus format lists, so it is unchanged.
 
-The version is a minor rather than a patch because `Stream::refuse_if_failed`, added below
-in 2.3.2 and never published, is new public API: a defaulted trait method an outside
-implementor of `Stream` now inherits.
+The version is a minor rather than a patch because `Stream::refuse_if_failed`, added in this
+release and never published before it, is new public API: a defaulted trait method an
+outside implementor of `Stream` now inherits.
 
 The live interop job pins the C++ reference at v1.16.2.
-
-## 2.3.2 — 2026-09-04
 
 **The vendored conformance corpus covers every operation, and the runner drives all of it.**
 `conformance/` carries 349 vectors in 18 files, one per covered operation plus `sequence`,
@@ -266,8 +264,6 @@ zero count and an `align` on an already aligned stream were already covered and 
 No wire change, and no behavior change on a stream that has not failed.
 
 `STANDARD.md` is synced to the upstream revision carrying the corpus expansion.
-
-## 2.3.1 — 2026-09-04
 
 **The conformance runner discovers `conformance/` instead of naming the files in it.**
 `tests/conformance.rs` held a fixed two-entry list, so a vector file vendored from upstream
@@ -327,6 +323,48 @@ the value and consume the stated bits, refused vectors must be refused with the 
 unwritten. Nothing regenerates an expectation from this implementation.
 
 `STANDARD.md` is synced to the upstream revision carrying all of the above.
+
+## 2.2.2 — 2026-08-25
+
+**The crate publishes as `serialize-official`.** The bare `serialize` name is reserved on
+crates.io, so the package takes the publishable name while the library target stays
+`serialize`: code is still `use serialize::*`. The version, the tag and the manifest agree,
+the fuzz crate reaches the renamed package through the alias that keeps its dependency key,
+and `cargo-semver-checks` compares across the rename by library target rather than by
+package name.
+
+## 2.2.1 — 2026-08-25
+
+**The normative integer clamp is proved across the language boundary, and `STANDARD.md`
+re-syncs.** The C++ wire-compat reference moves from v1.11.0 to v1.14.0, the first release
+carrying the clamp, and the two clamp witnesses ride the extended interop packet: the
+`[2^23, 2^24)` band where an unclamped writer emits a code its own reader rejects or one
+bit wider than the field now crosses the boundary in both directions. `STANDARD.md` is
+recopied verbatim with upstream's corrected contraction-suppression guidance and the
+writer-fusion vector band; no normative arithmetic changes. The manifest carries 2.2.1.
+
+## 2.2.0 — 2026-08-22
+
+**The precomputed compressed float entry point, the writer's integer clamp, and a string
+buffer floor of 1.** The compressed float arithmetic gains one audited home and a path for
+generated code: `serialize_compressed_float_params` derives the wire constants from a
+declaration, `CompressedFloatParams` carries them, and
+`Stream::serialize_compressed_float_precomputed` consumes them. `serialize_compressed_float`
+is now the composition of the two, unchanged in name, signature and bytes; a frozen
+reference and a three-way differential hold all three to identical measured bits, wire
+bytes, acceptance and decoded bit patterns, and two fractional declaration shapes pin the
+derivation's `ceil` rounding rule.
+
+The writer clamps the quantized integer to `max_integer_value` after the floor
+(`STANDARD.md`, schema#109): once the step count reaches `2^23` the float32 ulp at the top
+of the range is 1, so the rounded sum could exceed the field, and an unclamped writer
+emitted a top-of-range code its own reader rejected or a code one bit wider than the field.
+No byte changes outside `[2^23, 2^24)`.
+
+The string `buffer_size` floor drops from 2 to 1, matching the family: a size-1 buffer
+holds the empty string, and zero is still refused. The C++ interop pin moves to v1.11.0,
+the first reference carrying the precomputed entry point, so each side's precomputed path
+is held against the other side's derived path.
 
 ## 2.1.2 — 2026-08-19
 
