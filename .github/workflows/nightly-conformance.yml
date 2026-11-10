@@ -34,9 +34,50 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
+  # A nightly that never starts reports nothing: a run queued for a runner label nobody
+  # carries just waits. This job runs on a hosted runner, so it starts even when the fleet
+  # does not, and goes red when the conformance job on main has not succeeded within the
+  # window. It looks at the job, not the run, so a red run of this check never hides a
+  # green conformance job from the next night.
+  freshness:
+    name: last green conformance on main is recent
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      actions: read
+    env:
+      GH_TOKEN: ${{ github.token }}
+      REPO: ${{ github.repository }}
+      JOB_NAME: port vs current C/C++ data
+      MAX_AGE_HOURS: "48"
+    steps:
+      - name: Fail when no conformance job on main succeeded within the window
+        run: |
+          now=$(date -u +%s)
+          cutoff=$(( now - MAX_AGE_HOURS * 3600 ))
+          since=$(date -u -d "@$(( cutoff - 86400 ))" +%Y-%m-%dT%H:%M:%SZ)
+          runs=$(gh api "repos/$REPO/actions/workflows/nightly-conformance.yml/runs?branch=main&created=>=$since&per_page=50" --jq '.workflow_runs[].id')
+          latest=""
+          for run in $runs; do
+            done_at=$(gh api "repos/$REPO/actions/runs/$run/jobs?per_page=100" --jq ".jobs[] | select(.name == \"$JOB_NAME\" and .conclusion == \"success\") | .completed_at")
+            for t in $done_at; do
+              if [ -z "$latest" ] || [[ "$t" > "$latest" ]]; then latest="$t"; fi
+            done
+          done
+          if [ -z "$latest" ]; then
+            echo "::error::no '$JOB_NAME' job on main has succeeded in the last $MAX_AGE_HOURS hours; check that a runner with this workflow's runs-on labels is online"
+            exit 1
+          fi
+          age=$(( (now - $(date -u -d "$latest" +%s)) / 3600 ))
+          if [ "$(date -u -d "$latest" +%s)" -lt "$cutoff" ]; then
+            echo "::error::the last '$JOB_NAME' success on main was $latest, ${age}h ago, older than $MAX_AGE_HOURS hours; check that a runner with this workflow's runs-on labels is online"
+            exit 1
+          fi
+          echo "last '$JOB_NAME' success on main: $latest (${age}h ago, window ${MAX_AGE_HOURS}h)"
+
   conformance:
     name: port vs current C/C++ data
-    runs-on: [self-hosted, Linux, X64, nightly]
+    runs-on: [self-hosted, Linux, X64, fleet]
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1   # v7
