@@ -265,7 +265,7 @@ where
 }
 
 fn encode_golden(data: &mut GoldenWireData) -> Vec<u8> {
-    // writes are infallible as of 2.0: Ok is the only pattern
+    // built-in writes do not fail: Ok is the only pattern
     write_packet(|stream| {
         golden_wire_serialize(stream, data).unwrap();
     })

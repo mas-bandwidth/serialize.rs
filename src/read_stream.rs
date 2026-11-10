@@ -52,7 +52,7 @@ impl core::fmt::Debug for ReadStream<'_> {
 impl<'a> ReadStream<'a> {
     /// Creates a read stream that reads `bytes` bytes of packet data from `buffer`.
     ///
-    /// `buffer` is the full allocation view: pass a slice extending at least 8 bytes past the
+    /// `buffer` is the full allocation view: pass a slice extending at least 7 bytes past the
     /// packet data to keep every read on the branchless fast path. See [`BitReader::new`].
     ///
     /// `bytes` must not exceed the buffer length. A larger count is caller misuse on read,

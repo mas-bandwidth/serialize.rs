@@ -394,7 +394,7 @@ fn an_empty_object_at_the_exact_end_is_accepted() {
 
 #[test]
 fn write_and_measure_objects_are_the_object_itself() {
-    // on the infallible streams serialize_object is exactly object.serialize(stream)
+    // on the write and measure streams serialize_object is exactly object.serialize(stream)
     let mut buffer = [0_u8; 8];
     let mut writer = WriteStream::new(&mut buffer);
     let mut byte = ByteObject { value: 0xAF };

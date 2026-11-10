@@ -13,8 +13,8 @@ pub trait Serialize {
     /// # Errors
     ///
     /// Whatever the serialize implementation propagates — see the [`Stream`] methods it
-    /// calls. On write and measure streams `S::Error` is uninhabited, so the returned
-    /// `Result` is statically `Ok`.
+    /// calls. On write and measure streams `S::Error` is [`enum@Error`] too: only `fail`,
+    /// `reject` (release) or a nested object returning either produces one (U9's false).
     fn serialize<S: Stream>(&mut self, stream: &mut S) -> Result<(), S::Error>;
 }
 
@@ -49,9 +49,9 @@ macro_rules! declaration_check {
 ///
 /// The stream also decides fallibility, through [`Stream::Error`]: write the canonical
 /// signature `fn serialize<S: Stream>(&mut self, stream: &mut S) -> Result<(), S::Error>`
-/// and the read instantiation is fully checked while the write and measure instantiations
-/// are statically infallible — their error type is uninhabited, so `?` and every error
-/// branch compile to nothing.
+/// and the read instantiation is fully checked, while the write and measure instantiations
+/// fail only when the caller's own `fail`, `reject` (release) or a nested object returns an
+/// error (U9's false); no built-in operation does.
 ///
 /// On read, every method validates before storing and returns an [`enum@Error`] on malicious
 /// or truncated data. Propagate errors with `?` so the first failure aborts the entire

@@ -5,10 +5,11 @@ WHAT: this repo is serialize.rs, the Rust port of mas-bandwidth/serialize — th
 bitpacking library. NOT that upstream itself, NOT the sibling ports (serialize.c,
 serialize.cs, serialize.go), NOT serialize.modern (the experimental C++23 one).
 
-NAME: the crate is `serialize` and as of 2026-08-14 that name is STILL FREE on crates.io
-— unpublished, unclaimed. Unlike netcode (where `netcode` was taken in 2017 by an
-unrelated project, forcing the `netcode-official` crate name), there is no name trap here
-yet. Publishing sooner rather than later is what keeps it that way.
+NAME: the package publishes as `serialize-official` on crates.io (the bare `serialize`
+name is reserved); the library and import name is `serialize`, matching the C++ namespace
+and the Go port's package name. Unlike netcode (where `netcode` was taken in 2017 by an
+unrelated project, forcing the `netcode-official` crate name), the import name keeps its
+natural spelling.
 
 PUBLISHING (crates.io) — the token is NOT on this bench
 The crates.io token lives at /Users/glenn/.cargo/credentials.toml on GLENN'S personal
@@ -18,7 +19,7 @@ mint a new one — it is the wrong machine account. Either Glenn publishes from 
 account, or he moves the token into the mas keychain with the prompting form
 (`security add-generic-password -U -a rowan -s crates-io-token -w`, no value after -w).
 
-STATE as verified 2026-08-15 (post infallible-writes-v2): Cargo.toml is at 2.0.0, `cargo
+STATE as verified 2026-11-10 (post 5.0.0): Cargo.toml is at 5.0.0, `cargo
 package` packages and compiles clean, and the crate has still never been published — v1.0.0 through v1.6.0 are git tags and
 GitHub releases only, nothing on crates.io. The repo itself is already public. This is a
 publish-NEW, so a token needs the `publish-new` scope — the other two Rust ports are
@@ -27,9 +28,10 @@ publish-UPDATE.
 
 # serialize.rs
 
-Rust port of the C++ serialize library (github.com/mas-bandwidth/serialize). Crate name
-`serialize` (matches the C++ namespace and the Go port's package name). Zero dependencies,
-zero unsafe, BSD-3.
+Rust port of the C++ serialize library (github.com/mas-bandwidth/serialize). Package name
+`serialize-official` on crates.io (the bare `serialize` name is reserved); the library and
+import name is `serialize` (matches the C++ namespace and the Go port's package name). Zero
+dependencies, zero unsafe, BSD-3.
 
 ## Invariants — never break these
 
@@ -37,7 +39,7 @@ zero unsafe, BSD-3.
    `test_golden_wire_format` pins STANDARD.md's 106-byte "whole message", which matches the
    C++ suite's `golden_wire_bytes` verbatim and ends with the end, and the `cpp-interop` CI
    job proves it against the real thing on every push and PR: it builds interop/golden.cpp
-   against the actual C++ library (pinned at v2.1.1, never going back past v2.0.0: the golden
+   against the actual C++ library (pinned at v2.1.3, never going back past v2.0.0: the golden
    message ends with `serialize_end` and drops `wstring` from v2.0.0 on; the build keeps
    asserts live with no -ffp-contract=off), both implementations write a file of two
    packets — the golden one and the harness's extended one (a degenerate 64 bit range,
@@ -87,7 +89,7 @@ zero unsafe, BSD-3.
    `BitWriter::new`, the U9 trap, compiled out in release, where a write that reaches the
    short final word stops at the slice bounds panic).
    The reader takes (buffer, bytes) and uses branchless 64 bit window loads when the buffer
-   extends ≥ 8 bytes past the packet data, with a guarded-copy fallback when it doesn't. No
+   extends ≥ 7 bytes past the packet data, with a guarded-copy fallback when it doesn't. No
    unsafe code anywhere — the fast path is `slice.get(i..i+8)` + `u64::from_le_bytes`.
 
 ## Layout
@@ -208,7 +210,8 @@ Accepted: `serialize_f32`/`serialize_f64` naming (type-name consistency with
 `serialize_u8..u64`; `serialize_compressed_float` keeps its name — it's an algorithm, not a
 type mapping); `Debug` on all public types (counters only, never buffer contents); `Clone` on
 `BitReader`/`ReadStream`/`MeasureStream` (position snapshot for speculative reads);
-`first_chunk` instead of `try_into().unwrap()` in the window load.
+`get(..)` plus `try_into()` in the window load, whose single `get` emits one compare with
+the load on the fall-through path (the two-step `get`/`first_chunk` form was longer).
 
 Rejected, with reasons — do not propose again:
 - **serde-style split read/write traits or `-> Result<Self>` construction.** The unified
@@ -254,8 +257,8 @@ breaks on PRs.
 
 The repo is public (that flip is done). The one step still waiting on Glenn is `cargo publish`
 — crates.io token via `cargo login`, and see the HOT block for why it cannot happen from the
-mas account. The `serialize` crate name was still unclaimed on 2026-08-14. docs.rs builds
-automatically on publish.
+mas account. The package publishes as `serialize-official`; docs.rs builds automatically on
+publish.
 
 ## Portability notes
 
