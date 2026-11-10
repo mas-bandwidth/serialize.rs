@@ -356,6 +356,32 @@ pub const fn bits_required128(min: u128, max: u128) -> u32 {
     }
 }
 
+// The roadmap is generated from docs/roadmap.sexp, so both must describe the current CI.
+#[cfg(test)]
+mod roadmap_documentation {
+    #[test]
+    fn extended_fuzzing_is_described_as_scheduled() {
+        let surfaces = [
+            ("ROADMAP.md", include_str!("../ROADMAP.md")),
+            ("docs/roadmap.sexp", include_str!("../docs/roadmap.sexp")),
+        ];
+        for (name, text) in surfaces {
+            assert!(
+                text.contains(".github/workflows/nightly-fuzz.yml"),
+                "{name} does not name the scheduled fuzz workflow"
+            );
+            assert!(
+                text.contains("two 60s smoke targets"),
+                "{name} does not describe the per-change smoke targets"
+            );
+            assert!(
+                !text.contains("Keep useful source-change gates"),
+                "{name} still describes extended fuzzing as unscheduled work"
+            );
+        }
+    }
+}
+
 /// Convert a signed integer to an unsigned integer with zig-zag encoding.
 ///
 /// 0,-1,+1,-2,+2... becomes 0,1,2,3,4...
