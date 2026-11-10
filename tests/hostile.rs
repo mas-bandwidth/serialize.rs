@@ -17,6 +17,7 @@ impl Rng {
 }
 
 #[allow(clippy::too_many_lines)] // one arm per operation: splitting it would scatter the sentinel table
+#[allow(clippy::cast_possible_truncation)] // k is arbitrary bytes narrowed into each field width
 fn op(stream: &mut ReadStream, k: u64) -> bool {
     match k % 14 {
         0 => {
@@ -142,6 +143,7 @@ fn op(stream: &mut ReadStream, k: u64) -> bool {
 }
 
 #[test]
+#[allow(clippy::cast_possible_truncation)] // draws narrow into the local buffer's length and bytes
 fn hostile_read_sentinels_and_latch() {
     let iterations = if cfg!(miri) { 200 } else { 100_000 };
     let mut rng = Rng(0x9E37_79B9_7F4A_7C15);

@@ -116,6 +116,9 @@ impl Stream for MeasureStream<'_> {
     }
 
     #[inline]
+    // buffer_size is the declared i32-width length limit of the wire; the cast is the
+    // declaration's own narrowing, the same one the C++ signature takes
+    #[allow(clippy::cast_possible_truncation, clippy::cast_possible_wrap)]
     fn serialize_string(&mut self, value: &mut String, buffer_size: usize) -> Result {
         let mut length = string_length(value, buffer_size);
         self.serialize_int(&mut length, 0, buffer_size as i32 - 1)?;

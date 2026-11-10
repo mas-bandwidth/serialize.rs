@@ -93,6 +93,7 @@ fn u2_reject_and_object_composition_latch_rejected() {
 // the caller's bytes exactly, and the measure counts exactly those bytes.
 
 #[test]
+#[allow(clippy::cast_possible_truncation)] // the processed byte count indexes a local buffer
 fn u3_text_is_written_byte_for_byte() {
     let text = "naïve 日本 \u{1F600} \u{10FFFF}";
     let mut buffer = [0u8; 64];

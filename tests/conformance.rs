@@ -290,6 +290,8 @@ impl Step {
 
     /// Seed every destination before a read, so an assertion that it still holds the seed is a
     /// real observation that the refused read wrote nothing.
+    // the sentinel is a signed number stored in the pattern's unsigned 128 bit slot
+    #[allow(clippy::cast_sign_loss)]
     fn seed(&mut self) {
         self.pattern = if matches!(
             self.kind,
@@ -474,6 +476,13 @@ fn run_steps<S: Stream>(
 /// widened back, and `seeded` records the narrowed seed so the refusal check compares like
 /// with like whatever the operation's width.
 #[allow(clippy::too_many_lines)]
+// the corpus states every value as a number and this runner narrows it to the operation's
+// own width, then widens it back into the pattern slot
+#[allow(
+    clippy::cast_possible_truncation,
+    clippy::cast_possible_wrap,
+    clippy::cast_sign_loss
+)]
 fn run_step<S: Stream>(stream: &mut S, step: &mut Step) -> Result<(), S::Error> {
     match step.kind {
         Kind::Bits(bits) => {
@@ -599,6 +608,14 @@ macro_rules! fixed_arm {
     }};
 }
 
+// the macro below narrows the pattern to the storage width and widens it back, the same
+// bit-pattern conversion run_step performs
+#[allow(
+    clippy::cast_lossless,
+    clippy::cast_possible_truncation,
+    clippy::cast_possible_wrap,
+    clippy::cast_sign_loss
+)]
 fn run_fixed<S: Stream>(
     stream: &mut S,
     step: &mut Step,
@@ -816,6 +833,12 @@ fn operation_takes_param(operation: &str, name: &str) -> bool {
 }
 
 /// A step written as words, the spelling `sequence.txt` and `object.txt` document.
+// the words are a vector's numbers; each arm narrows one to the operation's own width
+#[allow(
+    clippy::cast_possible_truncation,
+    clippy::cast_possible_wrap,
+    clippy::cast_sign_loss
+)]
 fn step_from_words(text: &str) -> Result<Kind, String> {
     let words: Vec<&str> = text.split_whitespace().collect();
     let number = |index: usize| -> Result<u128, String> {
@@ -856,6 +879,8 @@ fn step_from_words(text: &str) -> Result<Kind, String> {
 /// A `fixed` declaration, checked against the storage widths this runner carries. A vector
 /// naming a declaration with no runner FAILS rather than passes, the same contract the corpus
 /// states for an operation with no runner.
+// the widths were checked against the storage set just above, so they fit u32
+#[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
 fn fixed_kind(
     integer_bits: i128,
     fraction_bits: i128,
@@ -885,6 +910,12 @@ fn fixed_kind(
 /// Build a vector's step list. A single operation vector becomes a one or two step sequence:
 /// the operations whose interesting behavior exists only at a non-zero bit index take a
 /// `preceding_bits` parameter, which becomes a leading `bits` step.
+// parameters are read as numbers and narrowed to the width each operation declares
+#[allow(
+    clippy::cast_possible_truncation,
+    clippy::cast_possible_wrap,
+    clippy::cast_sign_loss
+)]
 fn build_steps(vector: &Vector) -> Result<Vec<Step>, String> {
     for (name, _) in &vector.params {
         if !operation_takes_param(&vector.operation, name) {

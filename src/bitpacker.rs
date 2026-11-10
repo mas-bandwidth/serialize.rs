@@ -208,6 +208,9 @@ impl<'a> BitWriter<'a> {
     /// The data written so far, as a byte slice. Call [`BitWriter::flush_bits`] first.
     #[must_use]
     #[inline]
+    // bytes_written is rounded from bits_written, which never exceeds the buffer length, so
+    // the narrowing to usize is exact on every target
+    #[allow(clippy::cast_possible_truncation)]
     pub fn data(&self) -> &[u8] {
         &self.data[..self.bytes_written() as usize]
     }
@@ -316,6 +319,9 @@ impl<'a> BitReader<'a> {
     /// level [`crate::ReadStream`] checks all packet data and never calls this function
     /// with a bad width or a read past the end of the buffer.
     #[inline]
+    // both narrowings are masked to the requested width (at most 32 bits) before they leave
+    // this function, so the truncating cast is the bit extraction itself
+    #[allow(clippy::cast_possible_truncation)]
     pub fn read_bits(&mut self, bits: u32) -> u32 {
         debug_assert!(
             bits.wrapping_sub(1) < 32,
@@ -353,6 +359,8 @@ impl<'a> BitReader<'a> {
     // the only release panic path is the slice-to-array conversion below, statically
     // infallible: `get` returned a slice of exactly 40 bytes
     #[allow(clippy::missing_panics_doc)]
+    // as in read_bits: the narrowed value is masked to the requested width first
+    #[allow(clippy::cast_possible_truncation)]
     pub fn read_bits_group<const N: usize>(&mut self, widths: &[u32; N]) -> [u32; N] {
         // hoisted debug validation: one branchless reduction over the widths, then a single
         // test. (bits - 1 >= 32 exactly when bits is 0 or bits > 32)

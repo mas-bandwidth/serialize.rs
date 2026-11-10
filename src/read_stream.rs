@@ -241,6 +241,13 @@ impl Stream for ReadStream<'_> {
     }
 
     #[inline]
+    // the cast is safe past the check above, and the decoded length is in [0,buffer_size-1];
+    // both are the declaration's i32-width conversions, as in the C++ signature
+    #[allow(
+        clippy::cast_possible_truncation,
+        clippy::cast_possible_wrap,
+        clippy::cast_sign_loss
+    )]
     fn serialize_string(&mut self, value: &mut String, buffer_size: usize) -> Result {
         // a buffer_size outside [1,i32::MAX] is a bad declaration, refused as
         // value_out_of_range after the failure state, never asserted (U7, U16)

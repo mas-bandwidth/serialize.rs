@@ -61,6 +61,15 @@ const FIXED112_MAX_UNITS: i64 = 1152921504606846976;
 // one match arm per op kind, mirroring the C++ fuzz harness's op table; splitting it would
 // separate the ops from the distribution that drives them
 #[allow(clippy::too_many_lines)]
+// each arm narrows the random stream into the op's wire width, or forms a two's complement
+// value from it, exactly as the C++ harness does
+#[allow(
+    clippy::cast_lossless,
+    clippy::cast_possible_truncation,
+    clippy::cast_possible_wrap,
+    clippy::cast_precision_loss,
+    clippy::cast_sign_loss
+)]
 fn random_value(rng: &mut Rng) -> Value {
     match rng.range(21) {
         0 => {
@@ -329,6 +338,8 @@ const ROUND_TRIP_SEEDS: u64 = if cfg!(miri) { 8 } else { 500 };
 const HOSTILE_SEEDS: u64 = if cfg!(miri) { 16 } else { 2000 };
 
 #[test]
+// the buffer is 4096 bytes, so the processed byte count fits the slice index
+#[allow(clippy::cast_possible_truncation)]
 fn test_differential_round_trip() {
     // write a random value sequence, then a read of the same sequence must return exactly the
     // written values, and the measure stream must never under-measure the write
@@ -380,6 +391,8 @@ fn compressed_float_uses_quantized_width() {
 }
 
 #[test]
+// the hostile length is drawn from a 64 wide range and indexes a local buffer
+#[allow(clippy::cast_possible_truncation)]
 fn test_hostile_read() {
     // arbitrary bytes driven through every ReadStream primitive must fail cleanly with an
     // error, never panic. mirrors the hostile pass of the C++ fuzz harness.

@@ -342,7 +342,7 @@ fn end_accepts_the_exact_stream_a_writer_reports() {
         "a writer's end emits nothing"
     );
     stream.flush();
-    let bytes = stream.bytes_processed() as usize;
+    let bytes = usize::try_from(stream.bytes_processed()).expect("byte count fits usize");
     assert_eq!(bytes, 1);
 
     let mut measure = MeasureStream::new();
@@ -367,7 +367,7 @@ fn end_accepts_the_exact_stream_a_writer_reports() {
 
 /// A string wire image over `buffer_size` 16: the length in 4 bits, the align, the payload.
 fn string_wire(payload: &[u8]) -> (Vec<u8>, usize) {
-    let mut bytes = vec![payload.len() as u8];
+    let mut bytes = vec![u8::try_from(payload.len()).expect("payload fits one length byte")];
     bytes.extend_from_slice(payload);
     let length = bytes.len();
     (with_slack(&bytes), length)
@@ -411,7 +411,7 @@ fn string_real_text_round_trips_byte_for_byte() {
         stream.serialize_string(&mut value, 32).unwrap();
         stream.serialize_end().unwrap();
         stream.flush();
-        let bytes = stream.bytes_processed() as usize;
+        let bytes = usize::try_from(stream.bytes_processed()).expect("byte count fits usize");
         assert_eq!(&buffer[1..=text.len()], text.as_bytes());
 
         let mut read = ReadStream::new(&buffer, bytes);

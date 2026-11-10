@@ -364,7 +364,8 @@ pub const fn bits_required128(min: u128, max: u128) -> u32 {
 pub const fn signed_to_unsigned(n: i32) -> u32 {
     // shift in the unsigned domain: left shift of a negative signed value is undefined
     // behavior in the C++ this ports, and the unsigned form is exact in both languages
-    ((n as u32) << 1) ^ 0u32.wrapping_sub((n as u32) >> 31)
+    let n = u32::from_ne_bytes(n.to_ne_bytes());
+    (n << 1) ^ 0u32.wrapping_sub(n >> 31)
 }
 
 /// Convert an unsigned integer to a signed integer with zig-zag encoding.
@@ -372,7 +373,7 @@ pub const fn signed_to_unsigned(n: i32) -> u32 {
 /// 0,1,2,3,4... becomes 0,-1,+1,-2,+2...
 #[must_use]
 pub const fn unsigned_to_signed(n: u32) -> i32 {
-    ((n >> 1) ^ 0u32.wrapping_sub(n & 1)) as i32
+    i32::from_ne_bytes(((n >> 1) ^ 0u32.wrapping_sub(n & 1)).to_ne_bytes())
 }
 
 // IMPLEMENTING.md U8: release output after a write-contract violation is unspecified.

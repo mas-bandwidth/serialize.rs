@@ -259,7 +259,7 @@ where
     let mut stream = WriteStream::new(&mut buffer);
     serialize(&mut stream);
     stream.flush();
-    let bytes = stream.bytes_processed() as usize;
+    let bytes = usize::try_from(stream.bytes_processed()).expect("byte count fits usize");
     buffer.truncate(bytes);
     buffer
 }
