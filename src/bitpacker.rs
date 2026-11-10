@@ -41,6 +41,14 @@ impl<'a> BitWriter<'a> {
     /// the undefined behavior C++ would make of it.
     #[must_use]
     #[inline]
+    // width and sign conversions are the codec's declared field widths
+    #[allow(
+        clippy::cast_lossless,
+        clippy::cast_possible_truncation,
+        clippy::cast_possible_wrap,
+        clippy::cast_precision_loss,
+        clippy::cast_sign_loss
+    )]
     pub fn new(data: &'a mut [u8]) -> Self {
         debug_assert!(
             data.len() % 8 == 0,
@@ -103,6 +111,14 @@ impl<'a> BitWriter<'a> {
     /// Write an alignment to the bit stream, padding zeros so the bit index becomes a multiple
     /// of 8. If the current bit index is already a multiple of 8, nothing is written.
     #[inline]
+    // width and sign conversions are the codec's declared field widths
+    #[allow(
+        clippy::cast_lossless,
+        clippy::cast_possible_truncation,
+        clippy::cast_possible_wrap,
+        clippy::cast_precision_loss,
+        clippy::cast_sign_loss
+    )]
     pub fn write_align(&mut self) {
         let remainder_bits = (self.bits_written % 8) as u32;
         if remainder_bits != 0 {
@@ -117,6 +133,14 @@ impl<'a> BitWriter<'a> {
     /// word boundary it copies into the buffer without bitpacking. The stream must be byte
     /// aligned when this is called (write an align first — the streams do this for you).
     #[inline]
+    // width and sign conversions are the codec's declared field widths
+    #[allow(
+        clippy::cast_lossless,
+        clippy::cast_possible_truncation,
+        clippy::cast_possible_wrap,
+        clippy::cast_precision_loss,
+        clippy::cast_sign_loss
+    )]
     pub fn write_bytes(&mut self, data: &[u8]) {
         let bytes = data.len();
         debug_assert_eq!(self.align_bits(), 0);
@@ -179,6 +203,14 @@ impl<'a> BitWriter<'a> {
     /// Result in `[0,7]`.
     #[must_use]
     #[inline]
+    // width and sign conversions are the codec's declared field widths
+    #[allow(
+        clippy::cast_lossless,
+        clippy::cast_possible_truncation,
+        clippy::cast_possible_wrap,
+        clippy::cast_precision_loss,
+        clippy::cast_sign_loss
+    )]
     pub fn align_bits(&self) -> u32 {
         ((8 - (self.bits_written % 8)) % 8) as u32
     }
@@ -210,7 +242,13 @@ impl<'a> BitWriter<'a> {
     #[inline]
     // bytes_written is rounded from bits_written, which never exceeds the buffer length, so
     // the narrowing to usize is exact on every target
-    #[allow(clippy::cast_possible_truncation)]
+    #[allow(
+        clippy::cast_lossless,
+        clippy::cast_possible_truncation,
+        clippy::cast_possible_wrap,
+        clippy::cast_precision_loss,
+        clippy::cast_sign_loss
+    )]
     pub fn data(&self) -> &[u8] {
         &self.data[..self.bytes_written() as usize]
     }
@@ -263,6 +301,14 @@ impl<'a> BitReader<'a> {
     /// panic — never memory unsafety.
     #[must_use]
     #[inline]
+    // width and sign conversions are the codec's declared field widths
+    #[allow(
+        clippy::cast_lossless,
+        clippy::cast_possible_truncation,
+        clippy::cast_possible_wrap,
+        clippy::cast_precision_loss,
+        clippy::cast_sign_loss
+    )]
     pub fn new(buffer: &'a [u8], bytes: usize) -> Self {
         debug_assert!(
             bytes <= buffer.len(),
@@ -321,7 +367,13 @@ impl<'a> BitReader<'a> {
     #[inline]
     // both narrowings are masked to the requested width (at most 32 bits) before they leave
     // this function, so the truncating cast is the bit extraction itself
-    #[allow(clippy::cast_possible_truncation)]
+    #[allow(
+        clippy::cast_lossless,
+        clippy::cast_possible_truncation,
+        clippy::cast_possible_wrap,
+        clippy::cast_precision_loss,
+        clippy::cast_sign_loss
+    )]
     pub fn read_bits(&mut self, bits: u32) -> u32 {
         debug_assert!(
             bits.wrapping_sub(1) < 32,
@@ -360,7 +412,13 @@ impl<'a> BitReader<'a> {
     // infallible: `get` returned a slice of exactly 40 bytes
     #[allow(clippy::missing_panics_doc)]
     // as in read_bits: the narrowed value is masked to the requested width first
-    #[allow(clippy::cast_possible_truncation)]
+    #[allow(
+        clippy::cast_lossless,
+        clippy::cast_possible_truncation,
+        clippy::cast_possible_wrap,
+        clippy::cast_precision_loss,
+        clippy::cast_sign_loss
+    )]
     pub fn read_bits_group<const N: usize>(&mut self, widths: &[u32; N]) -> [u32; N] {
         // hoisted debug validation: one branchless reduction over the widths, then a single
         // test. (bits - 1 >= 32 exactly when bits is 0 or bits > 32)
@@ -413,6 +471,14 @@ impl<'a> BitReader<'a> {
     /// false if the padding is nonzero, which should abort the packet read.
     #[must_use]
     #[inline]
+    // width and sign conversions are the codec's declared field widths
+    #[allow(
+        clippy::cast_lossless,
+        clippy::cast_possible_truncation,
+        clippy::cast_possible_wrap,
+        clippy::cast_precision_loss,
+        clippy::cast_sign_loss
+    )]
     pub fn read_align(&mut self) -> bool {
         let remainder_bits = (self.bits_read % 8) as u32;
         if remainder_bits != 0 {
@@ -440,6 +506,14 @@ impl<'a> BitReader<'a> {
     /// Panics (via the slice bounds check) if the read passes the end of the buffer; the
     /// higher level [`crate::ReadStream`] bounds checks before calling.
     #[inline]
+    // width and sign conversions are the codec's declared field widths
+    #[allow(
+        clippy::cast_lossless,
+        clippy::cast_possible_truncation,
+        clippy::cast_possible_wrap,
+        clippy::cast_precision_loss,
+        clippy::cast_sign_loss
+    )]
     pub fn read_byte_slice(&mut self, bytes: usize) -> &'a [u8] {
         debug_assert_eq!(self.align_bits(), 0);
         debug_assert!(self.bits_read + bytes as u64 * 8 <= self.num_bits);
@@ -454,6 +528,14 @@ impl<'a> BitReader<'a> {
     /// Result in `[0,7]`.
     #[must_use]
     #[inline]
+    // width and sign conversions are the codec's declared field widths
+    #[allow(
+        clippy::cast_lossless,
+        clippy::cast_possible_truncation,
+        clippy::cast_possible_wrap,
+        clippy::cast_precision_loss,
+        clippy::cast_sign_loss
+    )]
     pub fn align_bits(&self) -> u32 {
         ((8 - self.bits_read % 8) % 8) as u32
     }

@@ -426,6 +426,14 @@ fn string_real_text_round_trips_byte_for_byte() {
 // a claimed length is checked against the stream before anything is allocated
 
 #[test]
+// width and sign conversions are the codec's declared field widths
+#[allow(
+    clippy::cast_lossless,
+    clippy::cast_possible_truncation,
+    clippy::cast_possible_wrap,
+    clippy::cast_precision_loss,
+    clippy::cast_sign_loss
+)]
 fn string_claiming_a_huge_length_is_past_end_before_any_allocation() {
     // buffer_size i32::MAX: a 31 bit length field claiming 2^31 - 2 bytes, in a 4 byte
     // stream. The claim is checked against the bytes the stream holds after the align and

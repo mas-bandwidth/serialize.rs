@@ -268,7 +268,13 @@ pub trait Stream: gate::Sealed {
     #[inline(always)]
     // two's complement domain conversion: the range and the offset are computed unsigned so a
     // range wider than 2^31 cannot overflow, then reconstructed as a bit pattern
-    #[allow(clippy::cast_possible_wrap, clippy::cast_sign_loss)]
+    #[allow(
+        clippy::cast_lossless,
+        clippy::cast_possible_truncation,
+        clippy::cast_possible_wrap,
+        clippy::cast_precision_loss,
+        clippy::cast_sign_loss
+    )]
     fn serialize_int(&mut self, value: &mut i32, min: i32, max: i32) -> Result<(), Self::Error> {
         declaration_check!(
             Self,
@@ -329,6 +335,7 @@ pub trait Stream: gate::Sealed {
     // two's complement domain conversion, as serialize_int; the double branch is the
     // double-backed reader control, which deliberately rounds through f64
     #[allow(
+        clippy::cast_lossless,
         clippy::cast_possible_truncation,
         clippy::cast_possible_wrap,
         clippy::cast_precision_loss,
@@ -413,7 +420,13 @@ pub trait Stream: gate::Sealed {
     /// [`Error::ValueOutOfRange`] if the decoded value is outside `[min,max]`. Writes and
     /// measures cannot error: a value outside `[min,max]` is a debug assertion.
     // two's complement domain conversion, as serialize_int
-    #[allow(clippy::cast_possible_wrap, clippy::cast_sign_loss)]
+    #[allow(
+        clippy::cast_lossless,
+        clippy::cast_possible_truncation,
+        clippy::cast_possible_wrap,
+        clippy::cast_precision_loss,
+        clippy::cast_sign_loss
+    )]
     fn serialize_int128(
         &mut self,
         value: &mut i128,
@@ -471,7 +484,13 @@ pub trait Stream: gate::Sealed {
     /// measures cannot error.
     #[inline(always)]
     // the halves are masked before narrowing: lo is the low dword, hi the high remainder
-    #[allow(clippy::cast_possible_truncation)]
+    #[allow(
+        clippy::cast_lossless,
+        clippy::cast_possible_truncation,
+        clippy::cast_possible_wrap,
+        clippy::cast_precision_loss,
+        clippy::cast_sign_loss
+    )]
     fn serialize_bits64(&mut self, value: &mut u64, bits: u32) -> Result<(), Self::Error> {
         declaration_check!(
             Self,
@@ -525,7 +544,13 @@ pub trait Stream: gate::Sealed {
     /// On read, [`Error::PastEnd`] if the read would pass the end of the buffer.
     #[inline]
     // 8 bits ride the wire, so the decoded value is in range by construction
-    #[allow(clippy::cast_possible_truncation)]
+    #[allow(
+        clippy::cast_lossless,
+        clippy::cast_possible_truncation,
+        clippy::cast_possible_wrap,
+        clippy::cast_precision_loss,
+        clippy::cast_sign_loss
+    )]
     fn serialize_u8(&mut self, value: &mut u8) -> Result<(), Self::Error> {
         let mut unsigned_value = u32::from(*value);
         self.serialize_bits(&mut unsigned_value, 8)?;
@@ -542,7 +567,13 @@ pub trait Stream: gate::Sealed {
     /// On read, [`Error::PastEnd`] if the read would pass the end of the buffer.
     #[inline]
     // 16 bits ride the wire, so the decoded value is in range by construction
-    #[allow(clippy::cast_possible_truncation)]
+    #[allow(
+        clippy::cast_lossless,
+        clippy::cast_possible_truncation,
+        clippy::cast_possible_wrap,
+        clippy::cast_precision_loss,
+        clippy::cast_sign_loss
+    )]
     fn serialize_u16(&mut self, value: &mut u16) -> Result<(), Self::Error> {
         let mut unsigned_value = u32::from(*value);
         self.serialize_bits(&mut unsigned_value, 16)?;
@@ -585,7 +616,13 @@ pub trait Stream: gate::Sealed {
     /// On read, [`Error::PastEnd`] if the read would pass the end of the buffer. Writes and
     /// measures cannot error.
     // the halves are masked out of the full width, lo then hi
-    #[allow(clippy::cast_possible_truncation)]
+    #[allow(
+        clippy::cast_lossless,
+        clippy::cast_possible_truncation,
+        clippy::cast_possible_wrap,
+        clippy::cast_precision_loss,
+        clippy::cast_sign_loss
+    )]
     fn serialize_u128(&mut self, value: &mut u128) -> Result<(), Self::Error> {
         let mut lo = *value as u64;
         let mut hi = (*value >> 64) as u64;
@@ -759,7 +796,9 @@ pub trait Stream: gate::Sealed {
     // the wire arithmetic is pinned to f32 (STANDARD.md), so the quantization and decode use
     // float casts by design; the write-side value is clamped into the declared range first
     #[allow(
+        clippy::cast_lossless,
         clippy::cast_possible_truncation,
+        clippy::cast_possible_wrap,
         clippy::cast_precision_loss,
         clippy::cast_sign_loss
     )]
@@ -902,7 +941,13 @@ pub trait Stream: gate::Sealed {
     /// a value outside the raw bounds is a debug assertion.
     // the raw bounds are formed in the unsigned 128 bit domain: negative whole units wrap
     // two's complement, and the capacity checks above keep the result in range
-    #[allow(clippy::cast_possible_wrap, clippy::cast_sign_loss)]
+    #[allow(
+        clippy::cast_lossless,
+        clippy::cast_possible_truncation,
+        clippy::cast_possible_wrap,
+        clippy::cast_precision_loss,
+        clippy::cast_sign_loss
+    )]
     fn serialize_fixed<T: FixedPointStorage>(
         &mut self,
         value: &mut T,
@@ -1044,8 +1089,10 @@ pub trait Stream: gate::Sealed {
     // the domain is [0,i32::MAX], so the difference and the raw tier are exact 32 bit
     // patterns, and a read only reconstructs a destination after the domain check
     #[allow(
+        clippy::cast_lossless,
         clippy::cast_possible_truncation,
         clippy::cast_possible_wrap,
+        clippy::cast_precision_loss,
         clippy::cast_sign_loss
     )]
     fn serialize_int_relative(
@@ -1175,7 +1222,13 @@ pub(crate) mod gate {
 /// the destination only once it is inside the domain `[0,i32::MAX]` and strictly greater than
 /// `previous`. A refused read leaves `current` exactly as the caller left it.
 // the domain check just above proves `reconstructed` fits i32 before it is written
-#[allow(clippy::cast_possible_truncation)]
+#[allow(
+    clippy::cast_lossless,
+    clippy::cast_possible_truncation,
+    clippy::cast_possible_wrap,
+    clippy::cast_precision_loss,
+    clippy::cast_sign_loss
+)]
 fn accept_int_relative<S: Stream + ?Sized>(
     stream: &mut S,
     previous: i32,
@@ -1192,6 +1245,14 @@ fn accept_int_relative<S: Stream + ?Sized>(
 /// The `int_relative` domain and ordering rule: `reconstructed` lies in `[0,i32::MAX]` and is
 /// strictly greater than `previous`.
 #[inline]
+// width and sign conversions are the codec's declared field widths
+#[allow(
+    clippy::cast_lossless,
+    clippy::cast_possible_truncation,
+    clippy::cast_possible_wrap,
+    clippy::cast_precision_loss,
+    clippy::cast_sign_loss
+)]
 fn int_relative_in_domain(previous: i32, reconstructed: i64) -> bool {
     const DOMAIN: core::ops::RangeInclusive<i64> = 0..=(i32::MAX as i64);
     DOMAIN.contains(&reconstructed) && reconstructed > i64::from(previous)
@@ -1247,7 +1308,13 @@ pub struct CompressedFloatParams {
 #[must_use]
 // the quantum count is clamped to [1,4294967040] just above, so the ceil and narrowing to
 // u32 are exact for every declaration
-#[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+#[allow(
+    clippy::cast_lossless,
+    clippy::cast_possible_truncation,
+    clippy::cast_possible_wrap,
+    clippy::cast_precision_loss,
+    clippy::cast_sign_loss
+)]
 pub fn serialize_compressed_float_params(
     min: f32,
     max: f32,
@@ -1341,13 +1408,25 @@ macro_rules! impl_fixed_point_storage {
                 // cast takes the low bits of the raw value, the storage width's own
                 // two's complement rendering.
                 #[inline]
-                #[allow(clippy::cast_lossless, clippy::cast_sign_loss)]
+                #[allow(
+                    clippy::cast_lossless,
+                    clippy::cast_possible_truncation,
+                    clippy::cast_possible_wrap,
+                    clippy::cast_precision_loss,
+                    clippy::cast_sign_loss
+                )]
                 fn to_unsigned(self) -> u128 {
                     self as u128
                 }
 
                 #[inline]
-                #[allow(clippy::cast_possible_truncation, clippy::cast_possible_wrap)]
+                #[allow(
+                    clippy::cast_lossless,
+                    clippy::cast_possible_truncation,
+                    clippy::cast_possible_wrap,
+                    clippy::cast_precision_loss,
+                    clippy::cast_sign_loss
+                )]
                 fn from_unsigned(raw: u128) -> Self {
                     raw as $t
                 }
@@ -1364,7 +1443,13 @@ impl_fixed_point_storage!(i8, u8, i16, u16, i32, u32, i64, u64, i128, u128);
 /// bottom with the final group carrying the remainder, up to four groups (STANDARD.md's
 /// splitting rule, shared with `serialize_bits`).
 // each 32 bit group is taken by shifting and narrowing; the shifts leave at most one dword
-#[allow(clippy::cast_possible_truncation)]
+#[allow(
+    clippy::cast_lossless,
+    clippy::cast_possible_truncation,
+    clippy::cast_possible_wrap,
+    clippy::cast_precision_loss,
+    clippy::cast_sign_loss
+)]
 fn serialize_offset128<S: Stream + ?Sized>(
     stream: &mut S,
     offset: &mut u128,

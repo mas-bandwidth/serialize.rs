@@ -276,7 +276,13 @@ impl Stream for WriteStream<'_> {
     #[inline]
     // buffer_size is the declared i32-width length limit of the wire; these casts are the
     // declaration's own narrowing, the same one the C++ signature takes
-    #[allow(clippy::cast_possible_truncation, clippy::cast_possible_wrap)]
+    #[allow(
+        clippy::cast_lossless,
+        clippy::cast_possible_truncation,
+        clippy::cast_possible_wrap,
+        clippy::cast_precision_loss,
+        clippy::cast_sign_loss
+    )]
     fn serialize_string(&mut self, value: &mut String, buffer_size: usize) -> Result {
         let mut length = string_length(value, buffer_size);
         debug_assert_room(
@@ -325,6 +331,14 @@ impl Stream for WriteStream<'_> {
 /// written ahead of a payload that does not fit. A debug assertion, like every write misuse
 /// (U9); in release the payload copy still stops at the slice bounds check.
 #[inline]
+// width and sign conversions are the codec's declared field widths
+#[allow(
+    clippy::cast_lossless,
+    clippy::cast_possible_truncation,
+    clippy::cast_possible_wrap,
+    clippy::cast_precision_loss,
+    clippy::cast_sign_loss
+)]
 fn debug_assert_room(writer: &BitWriter<'_>, field_bits: u32, payload: usize) {
     if cfg!(debug_assertions) {
         let after_field = writer.bits_written() + u64::from(field_bits);
@@ -347,7 +361,13 @@ fn debug_assert_room(writer: &BitWriter<'_>, field_bits: u32, payload: usize) {
 /// unsafety).
 // the length is below buffer_size, which the debug assertion bounds by i32::MAX; the cast is
 // the same i32-width length the C++ signature uses
-#[allow(clippy::cast_possible_truncation, clippy::cast_possible_wrap)]
+#[allow(
+    clippy::cast_lossless,
+    clippy::cast_possible_truncation,
+    clippy::cast_possible_wrap,
+    clippy::cast_precision_loss,
+    clippy::cast_sign_loss
+)]
 pub(crate) fn string_length(value: &str, buffer_size: usize) -> i32 {
     let length = value.len();
     debug_assert!(

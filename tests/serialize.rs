@@ -13,7 +13,13 @@ use serialize::{
 
 #[test]
 #[allow(clippy::many_single_char_names)] // a..g mirror the C++ test verbatim
-#[allow(clippy::cast_possible_truncation)] // the C++ test compares bit counts as indices
+#[allow(
+    clippy::cast_lossless,
+    clippy::cast_possible_truncation,
+    clippy::cast_possible_wrap,
+    clippy::cast_precision_loss,
+    clippy::cast_sign_loss
+)]
 fn test_bitpacker() {
     const BUFFER_SIZE: usize = 256;
 
@@ -91,7 +97,13 @@ fn test_bits_required() {
 }
 
 #[test]
-#[allow(clippy::cast_sign_loss)] // the range bounds are signed and encoded unsigned
+#[allow(
+    clippy::cast_lossless,
+    clippy::cast_possible_truncation,
+    clippy::cast_possible_wrap,
+    clippy::cast_precision_loss,
+    clippy::cast_sign_loss
+)]
 fn test_bits_required64() {
     assert_eq!(bits_required64(0, 0), 0);
     assert_eq!(bits_required64(0, 1), 1);
@@ -108,7 +120,13 @@ fn test_bits_required64() {
 }
 
 #[test]
-#[allow(clippy::cast_sign_loss)] // the range bounds are signed and encoded unsigned
+#[allow(
+    clippy::cast_lossless,
+    clippy::cast_possible_truncation,
+    clippy::cast_possible_wrap,
+    clippy::cast_precision_loss,
+    clippy::cast_sign_loss
+)]
 fn test_bits_required128() {
     assert_eq!(bits_required128(0, 0), 0);
     assert_eq!(bits_required128(0, 1), 1);
@@ -220,8 +238,10 @@ impl TestObject {
     // the test object's counts and indices narrow to the field widths it mirrors from the
     // C++ suite
     #[allow(
+        clippy::cast_lossless,
         clippy::cast_possible_truncation,
         clippy::cast_possible_wrap,
+        clippy::cast_precision_loss,
         clippy::cast_sign_loss
     )]
     fn init() -> Self {
@@ -261,8 +281,10 @@ impl Serialize for TestObject {
     // the item count is the i32 field the C++ suite declares, and the loop takes it as a
     // length only after serialize_int has bounded it
     #[allow(
+        clippy::cast_lossless,
         clippy::cast_possible_truncation,
         clippy::cast_possible_wrap,
+        clippy::cast_precision_loss,
         clippy::cast_sign_loss
     )]
     fn serialize<S: Stream>(&mut self, stream: &mut S) -> Result<(), S::Error> {
@@ -325,7 +347,13 @@ impl Serialize for TestObject {
 }
 
 #[test]
-#[allow(clippy::cast_possible_truncation)] // the buffer is 1024 bytes, indices fit
+#[allow(
+    clippy::cast_lossless,
+    clippy::cast_possible_truncation,
+    clippy::cast_possible_wrap,
+    clippy::cast_precision_loss,
+    clippy::cast_sign_loss
+)]
 fn test_serialize() {
     const BUFFER_SIZE: usize = 1024;
 
@@ -444,7 +472,13 @@ fn read_function<'a>(read_stream: &mut ReadStream<'a>, context: &'a TestContext)
 }
 
 #[test]
-#[allow(clippy::cast_possible_truncation)] // the buffer is a fixed local array
+#[allow(
+    clippy::cast_lossless,
+    clippy::cast_possible_truncation,
+    clippy::cast_possible_wrap,
+    clippy::cast_precision_loss,
+    clippy::cast_sign_loss
+)]
 fn test_read_write() {
     const BUFFER_SIZE: usize = 10 * 1024;
 
@@ -637,6 +671,14 @@ fn test_serialize_int64_full_range() {
 }
 
 #[test]
+// width and sign conversions are the codec's declared field widths
+#[allow(
+    clippy::cast_lossless,
+    clippy::cast_possible_truncation,
+    clippy::cast_possible_wrap,
+    clippy::cast_precision_loss,
+    clippy::cast_sign_loss
+)]
 fn test_serialize_int64_validation() {
     // a malicious packet can smuggle an out of range value into the bit headroom of the two
     // dword path. reads must reject it.
@@ -694,7 +736,13 @@ fn test_serialize_bytes_validation() {
 }
 
 #[test]
-#[allow(clippy::cast_possible_truncation)] // the processed byte count indexes a local buffer
+#[allow(
+    clippy::cast_lossless,
+    clippy::cast_possible_truncation,
+    clippy::cast_possible_wrap,
+    clippy::cast_precision_loss,
+    clippy::cast_sign_loss
+)]
 fn test_write_bytes_wire_identical() {
     // WriteStream::write_bytes is the write-path twin of serialize_bytes over a shared
     // slice: byte-identical wire, including the alignment step, from an unaligned start.
@@ -735,7 +783,13 @@ fn test_write_bytes_wire_identical() {
 }
 
 #[test]
-#[allow(clippy::cast_possible_truncation)] // the processed byte count indexes a local buffer
+#[allow(
+    clippy::cast_lossless,
+    clippy::cast_possible_truncation,
+    clippy::cast_possible_wrap,
+    clippy::cast_precision_loss,
+    clippy::cast_sign_loss
+)]
 fn test_write_by_value_wire_identical() {
     // The by-value write methods are the write-path twins of the unified serialize_*
     // family: byte-identical wire, field for field, including unaligned starts, a 64 bit
@@ -1221,6 +1275,14 @@ fn test_write_string_with_nul_asserts_in_debug() {
 }
 
 #[test]
+// width and sign conversions are the codec's declared field widths
+#[allow(
+    clippy::cast_lossless,
+    clippy::cast_possible_truncation,
+    clippy::cast_possible_wrap,
+    clippy::cast_precision_loss,
+    clippy::cast_sign_loss
+)]
 fn test_string_read_refusals() {
     // STANDARD.md "Readers must refuse malformed string payloads" (the #8 ruling, adopted
     // 2026-08-15). Invalid UTF-8 was already refused by this reader; the interior NUL is
@@ -1230,7 +1292,13 @@ fn test_string_read_refusals() {
     // Doctored through the primitives: length, then the payload via serialize_bytes
     // (which aligns, exactly as serialize_string does).
     // the wire length is an i32 field and the buffer is 32 bytes
-    #[allow(clippy::cast_possible_truncation, clippy::cast_possible_wrap)]
+    #[allow(
+        clippy::cast_lossless,
+        clippy::cast_possible_truncation,
+        clippy::cast_possible_wrap,
+        clippy::cast_precision_loss,
+        clippy::cast_sign_loss
+    )]
     fn doctor_narrow_stream(payload: &[u8], buffer: &mut [u8; 32]) -> usize {
         let mut stream = WriteStream::new(buffer);
         let mut length = payload.len() as i32;
@@ -1413,7 +1481,13 @@ fn test_compressed_float_nan_clamps_in_release() {
 // math runs in i128 (every legal configuration's raw values fit) and converts through the
 // storage type, so one helper covers the whole storage matrix the way the C++ templates do.
 
-#[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+#[allow(
+    clippy::cast_lossless,
+    clippy::cast_possible_truncation,
+    clippy::cast_possible_wrap,
+    clippy::cast_precision_loss,
+    clippy::cast_sign_loss
+)]
 fn check_fixed_round_trip<T>(
     raw_value: i128,
     integer_bits: u32,
@@ -1518,7 +1592,13 @@ fn check_fixed_cases<T>(
 }
 
 // the raw range is formed in the unsigned domain, as in the codec
-#[allow(clippy::cast_sign_loss)]
+#[allow(
+    clippy::cast_lossless,
+    clippy::cast_possible_truncation,
+    clippy::cast_possible_wrap,
+    clippy::cast_precision_loss,
+    clippy::cast_sign_loss
+)]
 fn check_fixed_rejects_out_of_range<T>(
     integer_bits: u32,
     fraction_bits: u32,
@@ -1579,7 +1659,13 @@ fn check_fixed_rejects_out_of_range<T>(
 #[allow(clippy::too_many_lines)]
 // one case shape: splitting it would separate the refusal checks from the round trip they guard
 // the raw bounds are signed and shift in the unsigned domain, and byte counts index locals
-#[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+#[allow(
+    clippy::cast_lossless,
+    clippy::cast_possible_truncation,
+    clippy::cast_possible_wrap,
+    clippy::cast_precision_loss,
+    clippy::cast_sign_loss
+)]
 fn check_fixed_matrix_case<T>(integer_bits: u32, fraction_bits: u32, min_units: i64, max_units: i64)
 where
     T: FixedPointStorage + PartialEq + core::fmt::Debug,
@@ -2214,7 +2300,13 @@ fn test_serialize_fixed_wide() {
 }
 
 #[test]
-#[allow(clippy::cast_possible_truncation)] // the processed byte count indexes a local buffer
+#[allow(
+    clippy::cast_lossless,
+    clippy::cast_possible_truncation,
+    clippy::cast_possible_wrap,
+    clippy::cast_precision_loss,
+    clippy::cast_sign_loss
+)]
 fn test_serialize_uint128() {
     // round trips across the value patterns: zero, max, each half alone, alternating bits,
     // distinct halves
@@ -2318,7 +2410,13 @@ fn test_serialize_uint128() {
 #[test]
 // the seven numbered sections mirror the C++ test verbatim so the suites stay diffable
 #[allow(clippy::too_many_lines)]
-#[allow(clippy::cast_possible_truncation)] // the processed byte count indexes a local buffer
+#[allow(
+    clippy::cast_lossless,
+    clippy::cast_possible_truncation,
+    clippy::cast_possible_wrap,
+    clippy::cast_precision_loss,
+    clippy::cast_sign_loss
+)]
 fn test_serialize_int128() {
     // 1. WIRE IDENTITY WITH serialize_int64 wherever the range fits 64 bits. this is what
     //    lets a schema widen a field without a wire change, so it is pinned by byte compare
@@ -2559,7 +2657,13 @@ fn compressed_float_precomputed_conformance_serialize<S: Stream>(
 }
 
 #[test]
-#[allow(clippy::cast_possible_truncation)] // the processed byte count indexes a local buffer
+#[allow(
+    clippy::cast_lossless,
+    clippy::cast_possible_truncation,
+    clippy::cast_possible_wrap,
+    clippy::cast_precision_loss,
+    clippy::cast_sign_loss
+)]
 fn test_compressed_float_precomputed_conformance() {
     const PINNED_BYTES: [u8; 6] = [0x10, 0xA7, 0x06, 0x80, 0x82, 0x06];
 
@@ -2630,7 +2734,9 @@ fn test_compressed_float_precomputed_conformance() {
 
 // the pre-split body is pinned verbatim, including its float32 quantization casts
 #[allow(
+    clippy::cast_lossless,
     clippy::cast_possible_truncation,
+    clippy::cast_possible_wrap,
     clippy::cast_precision_loss,
     clippy::cast_sign_loss
 )]
@@ -3041,7 +3147,13 @@ fn next_lcg(lcg: &mut u64) -> u64 {
 // one test per the C++ suite's structure: the corpus and the
 // sweeps that drive it belong together, exactly as in serialize.h
 // the sweep compares float32 quantization steps, so the float casts are the values under test
-#[allow(clippy::cast_possible_truncation, clippy::cast_precision_loss)]
+#[allow(
+    clippy::cast_lossless,
+    clippy::cast_possible_truncation,
+    clippy::cast_possible_wrap,
+    clippy::cast_precision_loss,
+    clippy::cast_sign_loss
+)]
 fn test_compressed_float_precomputed_differential() {
     let mut checks: u64 = 0;
     let mut lcg: u64 = 0xC0FFEE1234567890; // fixed seed: failures reproduce
@@ -3428,7 +3540,13 @@ const GOLDEN_WIRE_BYTES: [u8; 106] = [
 ];
 
 #[test]
-#[allow(clippy::cast_possible_truncation)] // the golden packet length indexes a local buffer
+#[allow(
+    clippy::cast_lossless,
+    clippy::cast_possible_truncation,
+    clippy::cast_possible_wrap,
+    clippy::cast_precision_loss,
+    clippy::cast_sign_loss
+)]
 fn test_golden_wire_format() {
     // write side: serializing the golden values must produce exactly the golden bytes
     {
@@ -3485,7 +3603,13 @@ fn test_golden_wire_format() {
 }
 
 #[test]
-#[allow(clippy::cast_possible_truncation)] // byte counts and indices index local buffers
+#[allow(
+    clippy::cast_lossless,
+    clippy::cast_possible_truncation,
+    clippy::cast_possible_wrap,
+    clippy::cast_precision_loss,
+    clippy::cast_sign_loss
+)]
 fn test_unaligned_writer() {
     // the bit writer stores each word with copy_from_slice, so the write buffer needs no
     // particular alignment. exercise every offset within a word, covering the write_bits,
@@ -3531,7 +3655,13 @@ fn test_unaligned_writer() {
 
 #[test]
 #[ignore = "allocates 320 MB; run with --include-ignored"]
-#[allow(clippy::cast_possible_truncation)] // byte counts and indices index the large buffer
+#[allow(
+    clippy::cast_lossless,
+    clippy::cast_possible_truncation,
+    clippy::cast_possible_wrap,
+    clippy::cast_precision_loss,
+    clippy::cast_sign_loss
+)]
 fn test_large_buffer() {
     // bit counts are 64 bit, so buffers larger than the C++ library's old 256 MB limit work.
     // write a bulk block that carries the stream past the 2^31 bit boundary (256 MB), then
@@ -3589,7 +3719,13 @@ fn test_large_buffer() {
 
 #[test]
 // the group test forms raw patterns and compares them against the reference group packing
-#[allow(clippy::cast_lossless, clippy::cast_possible_truncation)]
+#[allow(
+    clippy::cast_lossless,
+    clippy::cast_possible_truncation,
+    clippy::cast_possible_wrap,
+    clippy::cast_precision_loss,
+    clippy::cast_sign_loss
+)]
 fn test_read_bits_group() {
     // group reads must be bit-for-bit identical to sequential read_bits calls, at every
     // bit alignment, with and without buffer slack, including the oversized-group and

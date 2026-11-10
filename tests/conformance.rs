@@ -291,7 +291,13 @@ impl Step {
     /// Seed every destination before a read, so an assertion that it still holds the seed is a
     /// real observation that the refused read wrote nothing.
     // the sentinel is a signed number stored in the pattern's unsigned 128 bit slot
-    #[allow(clippy::cast_sign_loss)]
+    #[allow(
+        clippy::cast_lossless,
+        clippy::cast_possible_truncation,
+        clippy::cast_possible_wrap,
+        clippy::cast_precision_loss,
+        clippy::cast_sign_loss
+    )]
     fn seed(&mut self) {
         self.pattern = if matches!(
             self.kind,
@@ -479,8 +485,10 @@ fn run_steps<S: Stream>(
 // the corpus states every value as a number and this runner narrows it to the operation's
 // own width, then widens it back into the pattern slot
 #[allow(
+    clippy::cast_lossless,
     clippy::cast_possible_truncation,
     clippy::cast_possible_wrap,
+    clippy::cast_precision_loss,
     clippy::cast_sign_loss
 )]
 fn run_step<S: Stream>(stream: &mut S, step: &mut Step) -> Result<(), S::Error> {
@@ -835,8 +843,10 @@ fn operation_takes_param(operation: &str, name: &str) -> bool {
 /// A step written as words, the spelling `sequence.txt` and `object.txt` document.
 // the words are a vector's numbers; each arm narrows one to the operation's own width
 #[allow(
+    clippy::cast_lossless,
     clippy::cast_possible_truncation,
     clippy::cast_possible_wrap,
+    clippy::cast_precision_loss,
     clippy::cast_sign_loss
 )]
 fn step_from_words(text: &str) -> Result<Kind, String> {
@@ -880,7 +890,13 @@ fn step_from_words(text: &str) -> Result<Kind, String> {
 /// naming a declaration with no runner FAILS rather than passes, the same contract the corpus
 /// states for an operation with no runner.
 // the widths were checked against the storage set just above, so they fit u32
-#[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+#[allow(
+    clippy::cast_lossless,
+    clippy::cast_possible_truncation,
+    clippy::cast_possible_wrap,
+    clippy::cast_precision_loss,
+    clippy::cast_sign_loss
+)]
 fn fixed_kind(
     integer_bits: i128,
     fraction_bits: i128,
@@ -912,8 +928,10 @@ fn fixed_kind(
 /// `preceding_bits` parameter, which becomes a leading `bits` step.
 // parameters are read as numbers and narrowed to the width each operation declares
 #[allow(
+    clippy::cast_lossless,
     clippy::cast_possible_truncation,
     clippy::cast_possible_wrap,
+    clippy::cast_precision_loss,
     clippy::cast_sign_loss
 )]
 fn build_steps(vector: &Vector) -> Result<Vec<Step>, String> {
