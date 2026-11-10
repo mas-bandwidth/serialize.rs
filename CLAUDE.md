@@ -12,7 +12,7 @@ unrelated project, forcing the `netcode-official` crate name), the import name k
 natural spelling.
 
 
-STATE as verified 2026-11-10 (post 5.0.0): Cargo.toml is at 5.0.0 and `cargo package`
+STATE as verified 2026-11-10: Cargo.toml is at 5.0.1 and `cargo package`
 packages and compiles clean. crates.io has `serialize-official` 2.2.2, 2.3.0 and 2.4.0
 (2.4.0 the newest, 2026-09-04); 3.0.0 through 5.0.0 are git tags and GitHub releases only.
 The repo itself is already public. The next publish is a publish-UPDATE.
@@ -30,7 +30,7 @@ dependencies, zero unsafe, BSD-3.
    `test_golden_wire_format` pins STANDARD.md's 106-byte "whole message", which matches the
    C++ suite's `golden_wire_bytes` verbatim and ends with the end, and the `cpp-interop` CI
    job proves it against the real thing on every push and PR: it builds interop/golden.cpp
-   against the actual C++ library (pinned at v2.1.3, never going back past v2.0.0: the golden
+   against the actual C++ library (pinned at v2.1.4, never going back past v2.0.0: the golden
    message ends with `serialize_end` and drops `wstring` from v2.0.0 on; the build keeps
    asserts live with no -ffp-contract=off), both implementations write a file of two
    packets — the golden one and the harness's extended one (a degenerate 64 bit range,
@@ -187,7 +187,7 @@ dependencies, zero unsafe, BSD-3.
   `#![forbid(unsafe_code)]` attribute in lib.rs, and the lint table is the one place to look.
   nightly-fuzz.yml runs 30 min per fuzz target daily with a cumulative cached corpus (free now
   that the repo is public).
-  nightly-conformance.yml runs nightly on a fleet runner: it builds the C++ reference at
+  nightly-conformance.yml runs nightly: it builds the C++ reference at
   mas-bandwidth/serialize main HEAD, certifies the upstream corpus with its ctest conformance
   targets, runs tests/conformance.rs against that corpus via `SERIALIZE_CONFORMANCE_ROOT` (plain
   and under `--cfg serialize_controls`), and fails on any drift of the vendored copies. A

@@ -274,22 +274,17 @@ impl Stream for WriteStream<'_> {
     }
 
     #[inline]
-    // buffer_size is the declared i32-width length limit of the wire; these casts are the
-    // declaration's own narrowing, the same one the C++ signature takes
-    #[allow(
-        clippy::cast_lossless,
-        clippy::cast_possible_truncation,
-        clippy::cast_possible_wrap,
-        clippy::cast_precision_loss,
-        clippy::cast_sign_loss
-    )]
     fn serialize_string(&mut self, value: &mut String, buffer_size: usize) -> Result {
         let mut length = string_length(value, buffer_size);
+        // buffer_size outside [1,i32::MAX] is write misuse, asserted in string_length
+        #[allow(clippy::cast_possible_truncation)]
         debug_assert_room(
             &self.writer,
             crate::bits_required(0, (buffer_size as u32).saturating_sub(1)),
             value.len(),
         );
+        // as above: asserted into [1,i32::MAX] in string_length
+        #[allow(clippy::cast_possible_truncation, clippy::cast_possible_wrap)]
         self.serialize_int(&mut length, 0, buffer_size as i32 - 1)?;
         self.serialize_align()?;
         self.writer.write_bytes(value.as_bytes());
@@ -331,14 +326,6 @@ impl Stream for WriteStream<'_> {
 /// written ahead of a payload that does not fit. A debug assertion, like every write misuse
 /// (U9); in release the payload copy still stops at the slice bounds check.
 #[inline]
-// width and sign conversions are the codec's declared field widths
-#[allow(
-    clippy::cast_lossless,
-    clippy::cast_possible_truncation,
-    clippy::cast_possible_wrap,
-    clippy::cast_precision_loss,
-    clippy::cast_sign_loss
-)]
 fn debug_assert_room(writer: &BitWriter<'_>, field_bits: u32, payload: usize) {
     if cfg!(debug_assertions) {
         let after_field = writer.bits_written() + u64::from(field_bits);
@@ -359,15 +346,8 @@ fn debug_assert_room(writer: &BitWriter<'_>, field_bits: u32, payload: usize) {
 /// assertion, compiled out in release, where the wire output is unspecified: a checked
 /// reader may decode it as arbitrary in-range values rather than rejecting it (never memory
 /// unsafety).
-// the length is below buffer_size, which the debug assertion bounds by i32::MAX; the cast is
-// the same i32-width length the C++ signature uses
-#[allow(
-    clippy::cast_lossless,
-    clippy::cast_possible_truncation,
-    clippy::cast_possible_wrap,
-    clippy::cast_precision_loss,
-    clippy::cast_sign_loss
-)]
+// the length is below buffer_size, which is asserted into [1,i32::MAX]
+#[allow(clippy::cast_possible_truncation, clippy::cast_possible_wrap)]
 pub(crate) fn string_length(value: &str, buffer_size: usize) -> i32 {
     let length = value.len();
     debug_assert!(
