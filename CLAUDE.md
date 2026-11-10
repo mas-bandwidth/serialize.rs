@@ -72,7 +72,7 @@ zero unsafe, BSD-3.
    error; only the caller's `fail`, `reject` (release) or a nested object returning either
    does, as only they return false in C++ (IMPLEMENTING.md U9), recording nothing. From 2.0
    (the #52 ruling) to 4.x the write error type was `Infallible` and that false could not be
-   expressed; Glenn decided the 5.0.0 major on 2026-10-28 (crates.io only ever had 2.4.0).
+   expressed; the 5.0.0 major was decided on 2026-10-28 (crates.io only ever had 2.4.0).
    `Stream` is sealed (`stream::gate::Sealed`), and `refuse`/`refuse_if_failed`/
    `Error::from_name` are gone from the public surface (U15): `fail(&mut self, reason)` is the
    one latching refusal.
@@ -233,7 +233,7 @@ Rejected, with reasons — do not propose again:
 ## Releases
 
 v1.0.0 released 2026-07-12 (opened at 1.0.0 deliberately — the wire format is a decade old,
-like the Go port). 3.0.0 (2026-10-22) carries serialize format 2.0 (Glenn, 2026-10-22: "We
+like the Go port). 3.0.0 (2026-10-22) carries serialize format 2.0 (2026-10-22: "We
 change the protocol it's v2.0.0"): the one sanctioned wire change, made in lockstep with the
 C++ reference's v2.0.0 and the whole family; CHANGELOG.md has the migration notes. Release process: bump
 `version` in Cargo.toml, refresh both lockfiles (`cargo update -p serialize-official` at the
@@ -243,9 +243,7 @@ on that commit. New exported API = minor bump; a wire format change happens only
 family-wide format version decided upstream (as 2.0 was), never in this port alone. The cargo-semver-checks CI job flags accidental API
 breaks on PRs.
 
-The repo is public (that flip is done). The one step still waiting on Glenn is `cargo publish`
-— crates.io token via `cargo login`, and see the HOT block for why it cannot happen from the
-mas account. The `serialize` crate name was still unclaimed on 2026-08-14. docs.rs builds
+The repo is public (that flip is done). `cargo publish` is still waiting. The `serialize` crate name was still unclaimed on 2026-08-14. docs.rs builds
 automatically on publish.
 
 ## Portability notes

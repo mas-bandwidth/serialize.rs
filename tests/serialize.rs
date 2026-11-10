@@ -3659,3 +3659,32 @@ fn test_read_bits_group_validates_wide_widths() {
     let mut reader = BitReader::new(&buffer, 16);
     let _ = reader.read_bits_group(&[8, 33]);
 }
+
+#[test]
+fn repository_notes_omit_credential_material() {
+    let root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let notes = [
+        "CLAUDE.md",
+        "src/stream.rs",
+        "tests/serialize.rs",
+        "ROADMAP.md",
+        "docs/roadmap.sexp",
+        "CHANGELOG.md",
+    ];
+    let home_markers = [
+        format!("/{}/", ["Us", "ers"].concat()),
+        format!("/{}/", ["ho", "me"].concat()),
+        ["~", "/"].concat(),
+    ];
+    let keychain_cmd = ["add-", "generic-", "password"].concat();
+    for rel in notes {
+        let text = std::fs::read_to_string(root.join(rel)).expect("note file");
+        for marker in &home_markers {
+            assert!(!text.contains(marker), "{rel} still has a credential path");
+        }
+        assert!(
+            !text.contains(&keychain_cmd),
+            "{rel} still has a keychain service note"
+        );
+    }
+}
