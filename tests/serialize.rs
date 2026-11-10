@@ -1040,7 +1040,7 @@ fn test_compressed_float_validation() {
 
 #[test]
 fn test_compressed_float_top_of_range_clamp() {
-    // STANDARD.md's normative integer clamp (2026-08-23, schema#109; ruling: Glenn, live),
+    // STANDARD.md's normative integer clamp (2026-08-23, schema#109),
     // ported from the C++ suite's test_compressed_float_top_of_range_clamp (serialize
     // PR #88). In [2^23, 2^24) the float32 ulp is 1, so scaled + 0.5 lands on a tie and
     // round-to-even can push the code past max_integer_value. Before the clamp, witness A
@@ -1275,7 +1275,7 @@ fn test_string_read_refusals() {
     }
 }
 
-// The fork #6 ruling (Glenn, 2026-08-15): "it's non-conforming. also, attempting to send NaN
+// Fork #6 ruling (2026-08-15): "it's non-conforming. also, attempting to send NaN
 // or INF or anything else through compressed float is non-conforming and should assert out
 // on write too." Value validity is asserted at intake, declaration validity at the param
 // computation site; all compile out in release.

@@ -385,7 +385,7 @@ contract): a unit count that does not fit `buffer_size - 1` is a debug assertion
 
 **Semver major: the write path is now infallible.** Ruled in serialize issue #52 (the
 2026-08-15 estate register): the C and Rust write residual against C++ *was* the per-field
-fallibility contract, and Glenn ruled the family writer-trusted — C matches C++ with no
+fallibility contract, and the 2026-08-15 ruling made the family writer-trusted — C matches C++ with no
 checks on write except assert, and for Rust the delegated decision landed as infallible
 writes in safe Rust.
 

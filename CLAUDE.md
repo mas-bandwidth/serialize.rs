@@ -10,13 +10,6 @@ NAME: the crate is `serialize` and as of 2026-08-14 that name is STILL FREE on c
 unrelated project, forcing the `netcode-official` crate name), there is no name trap here
 yet. Publishing sooner rather than later is what keeps it that way.
 
-PUBLISHING (crates.io) — the token is NOT on this bench
-The crates.io token lives at /Users/glenn/.cargo/credentials.toml on GLENN'S personal
-macOS account: mode 0600, owned by glenn, unreadable from the mas account. `cargo publish`
-here fails with "no token found". That is NOT a missing credential and NOT a reason to
-mint a new one — it is the wrong machine account. Either Glenn publishes from his own
-account, or he moves the token into the mas keychain with the prompting form
-(`security add-generic-password -U -a rowan -s crates-io-token -w`, no value after -w).
 
 STATE as verified 2026-08-15 (post infallible-writes-v2): Cargo.toml is at 2.0.0, `cargo
 package` packages and compiles clean, and the crate has still never been published — v1.0.0 through v1.6.0 are git tags and
@@ -185,8 +178,6 @@ zero unsafe, BSD-3.
   the C++ library, schema bench, Apple M2). The thin fallible wrappers carry
   `#[inline(always)]` because the hint alone loses to that same cold-callsite
   classification in long serialize functions.
-- Local toolchains on Glenn's Mac: homebrew rustup at `/opt/homebrew/opt/rustup/bin` (not on
-  default PATH), with `1.85` (MSRV) and `nightly` (+miri) installed; cargo-fuzz in ~/.cargo/bin
 - CI (.github/workflows/ci.yml): 3-OS test matrix (debug + release + example), lint
   (pedantic clippy / fmt / rustdoc / zero-dependency guard), MSRV 1.85 check, Miri, 60s fuzz
   smoke per target (uploads crash reproducers on failure), C++ wire interop, cross matrix

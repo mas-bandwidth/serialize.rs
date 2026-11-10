@@ -7,12 +7,12 @@
 ; unfinished pull requests were moved into it.
 (roadmap "v1"
  :title "serialize.rs roadmap"
- :text "Planned work for serialize.rs. The items below were open GitHub issues and pull requests, moved here on 2026-10-14 when roadmaps became the standard for future work (Glenn, 2026-10-14). Each item names its issue or pull request; the branches of moved pull requests are kept to resume from. Landed work is in git."
+ :text "Planned work for serialize.rs. The items below were open GitHub issues and pull requests, moved here on 2026-10-14 when roadmaps became the standard for future work (2026-10-14). Each item names its issue or pull request; the branches of moved pull requests are kept to resume from. Landed work is in git."
 
  :groups
  (
   (group "github-issues" :title "Moved from GitHub issues on 2026-10-14"
-   :text "Open GitHub issues of mas-bandwidth/serialize.rs, recorded here on 2026-10-14 when roadmaps became the standard for future work (Glenn, 2026-10-14). Each item names its issue; the issue is closed with a pointer here.")
+   :text "Open GitHub issues of mas-bandwidth/serialize.rs, recorded here on 2026-10-14 when roadmaps became the standard for future work (2026-10-14). Each item names its issue; the issue is closed with a pointer here.")
  )
 
  :items

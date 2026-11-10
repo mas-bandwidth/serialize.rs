@@ -1216,7 +1216,7 @@ pub fn serialize_compressed_float_params(
 
     let delta = max - min;
 
-    // declaration validity (the fork #6 ruling, Glenn, 2026-08-15: "it's non-conforming.
+    // declaration validity (the fork #6 ruling, 2026-08-15: "it's non-conforming.
     // also, attempting to send NaN or INF or anything else through compressed float is
     // non-conforming and should assert out on write too."): a declaration whose delta or
     // quantum count is not finite asserts at the param computation site, in every stream
