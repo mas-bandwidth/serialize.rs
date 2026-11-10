@@ -12,7 +12,7 @@ unrelated project, forcing the `netcode-official` crate name), the import name k
 natural spelling.
 
 
-STATE as verified 2026-11-10 (post 5.0.0): Cargo.toml is at 5.0.0 and `cargo package`
+STATE as verified 2026-11-10 (post 5.0.0): Cargo.toml is at 5.0.1 and `cargo package`
 packages and compiles clean. crates.io has `serialize-official` 2.2.2, 2.3.0 and 2.4.0
 (2.4.0 the newest, 2026-09-04); 3.0.0 through 5.0.0 are git tags and GitHub releases only.
 The repo itself is already public. The next publish is a publish-UPDATE.

@@ -1,5 +1,24 @@
 # Changelog
 
+## 5.0.1 — unreleased
+
+**Reference v2.1.4.** The wire is unchanged (format 2.0), and so are `STANDARD.md` and the
+corpus. `IMPLEMENTING.md` is re-vendored at v2.1.4, and the C++ wire compatibility job pins
+v2.1.4.
+
+- **A write after a flush that stored a partial word traps** (IMPLEMENTING.md U11):
+  `BitWriter::write_bits` debug-asserts, and every write path (`write_bytes`, `write_align`,
+  the streams) goes through it. Compiled out in release, where the output is unspecified.
+- **`BitWriter::bits_available` and `BitReader::bits_remaining` saturate at zero** rather than
+  wrapping once a release build has gone past the end.
+- U7's zero-length `bytes` still aligns (the `bytes-zero-count-*` vectors); a Rust slice has
+  no null destination. U16's destination width needs nothing here: every read form stores
+  into a type the operation fixes.
+- Documentation: the reader's fast path needs 7 bytes of slack past the packet data (was
+  stated as 8); a violated write contract in release leaves the wire output unspecified;
+  `ReadStream` is `!Send`.
+- The packaged crate's tests build: no test reads a file the package excludes.
+
 ## 5.0.0 — 2026-10-28
 
 **U9's false on write, and the U15 exports (reference v2.1.1).** The two roadmap items the
