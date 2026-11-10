@@ -15,6 +15,10 @@ use crate::{Error, Result, cold_error};
 /// correctness is the caller's responsibility — size buffers conservatively or pre-measure
 /// with [`crate::MeasureStream`]. Writing past the end of the buffer panics via the slice
 /// bounds check rather than being undefined behavior as in C++.
+///
+/// [`WriteStream`] is `!Send`: its optional context is an `Option<&'a dyn Any>`, and `dyn Any`
+/// is not `Sync`, so a stream cannot be moved to another thread or held across an `.await`
+/// point in a `Send` future, even when no context is set.
 pub struct WriteStream<'a> {
     writer: BitWriter<'a>,
     context: Option<&'a dyn Any>,
@@ -46,6 +50,10 @@ impl<'a> WriteStream<'a> {
 
     /// Set a context on the stream, retrievable inside serialize functions with
     /// [`Stream::context`].
+    ///
+    /// [`WriteStream`] is `!Send` because the context is an `Option<&'a dyn Any>`: `dyn Any` is
+    /// not `Sync`, so the stream cannot move across threads or be held across an `.await` in a
+    /// `Send` future, even when no context is set.
     #[inline]
     pub fn set_context(&mut self, context: &'a dyn Any) {
         self.context = Some(context);
