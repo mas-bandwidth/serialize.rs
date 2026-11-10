@@ -123,6 +123,11 @@ impl<'a> BitWriter<'a> {
     /// aligned when this is called (write an align first — the streams do this for you).
     #[inline]
     pub fn write_bytes(&mut self, data: &[u8]) {
+        debug_assert_eq!(
+            u64::from(self.scratch_bits),
+            self.bits_written % 64,
+            "write after flush"
+        );
         let bytes = data.len();
         debug_assert_eq!(self.align_bits(), 0);
         debug_assert!(self.bits_written + bytes as u64 * 8 <= self.num_bits);
