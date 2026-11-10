@@ -218,14 +218,6 @@ impl Stream for ReadStream<'_> {
     }
 
     #[inline]
-    // width and sign conversions are the codec's declared field widths
-    #[allow(
-        clippy::cast_lossless,
-        clippy::cast_possible_truncation,
-        clippy::cast_possible_wrap,
-        clippy::cast_precision_loss,
-        clippy::cast_sign_loss
-    )]
     fn serialize_bytes(&mut self, data: &mut [u8]) -> Result {
         self.serialize_align()?;
         // compare in bytes rather than bits, consistent with the 64 bit bookkeeping
@@ -249,13 +241,11 @@ impl Stream for ReadStream<'_> {
     }
 
     #[inline]
-    // the cast is safe past the check above, and the decoded length is in [0,buffer_size-1];
-    // both are the declaration's i32-width conversions, as in the C++ signature
+    // buffer_size is checked into [1,i32::MAX] first, and the decoded length is in
+    // [0,buffer_size-1], so both casts are exact
     #[allow(
-        clippy::cast_lossless,
         clippy::cast_possible_truncation,
         clippy::cast_possible_wrap,
-        clippy::cast_precision_loss,
         clippy::cast_sign_loss
     )]
     fn serialize_string(&mut self, value: &mut String, buffer_size: usize) -> Result {
@@ -308,14 +298,6 @@ impl Stream for ReadStream<'_> {
     /// [`Error::NonzeroPadding`] when any is set. An accepted end has consumed the whole
     /// stream.
     #[inline]
-    // width and sign conversions are the codec's declared field widths
-    #[allow(
-        clippy::cast_lossless,
-        clippy::cast_possible_truncation,
-        clippy::cast_possible_wrap,
-        clippy::cast_precision_loss,
-        clippy::cast_sign_loss
-    )]
     fn serialize_end(&mut self) -> Result {
         if let Some(error) = self.failed {
             return cold_error(error);
