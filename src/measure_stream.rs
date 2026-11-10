@@ -16,6 +16,10 @@ use crate::{Error, Result, cold_error};
 /// boundaries the measurement is an estimate, not exact: every align counts as the worst
 /// case 7 bits, so the estimate is guaranteed to be conservative — a buffer sized from a
 /// measurement always fits the real write.
+///
+/// [`MeasureStream`] is `!Send`: its optional context is an `Option<&'a dyn Any>`, and `dyn Any`
+/// is not `Sync`, so a stream cannot be moved to another thread or held across an `.await`
+/// point in a `Send` future, even when no context is set.
 #[derive(Default, Clone)]
 pub struct MeasureStream<'a> {
     bits_written: u64,
@@ -44,6 +48,15 @@ impl<'a> MeasureStream<'a> {
 
     /// Set a context on the stream, retrievable inside serialize functions with
     /// [`Stream::context`].
+    ///
+    /// [`MeasureStream`] is `!Send` because the context is an `Option<&'a dyn Any>`: `dyn Any`
+    /// is not `Sync`, so the stream cannot move across threads or be held across an `.await` in
+    /// a `Send` future, even when no context is set.
+    ///
+    /// ```compile_fail
+    /// fn assert_send<T: Send>() {}
+    /// assert_send::<serialize::MeasureStream<'static>>();
+    /// ```
     #[inline]
     pub fn set_context(&mut self, context: &'a dyn Any) {
         self.context = Some(context);
