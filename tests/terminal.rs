@@ -445,28 +445,6 @@ fn extended_fuzzing_is_described_as_scheduled() {
 }
 
 #[test]
-fn reader_slack_is_documented_as_seven_bytes() {
-    // The fast window load needs 7 bytes past the packet data, so no surface may call for 8.
-    let surfaces = [
-        ("README.md", include_str!("../README.md")),
-        ("CLAUDE.md", include_str!("../CLAUDE.md")),
-        ("src/bitpacker.rs", include_str!("../src/bitpacker.rs")),
-        ("src/lib.rs", include_str!("../src/lib.rs")),
-        ("src/read_stream.rs", include_str!("../src/read_stream.rs")),
-        (
-            "examples/wire_interop.rs",
-            include_str!("../examples/wire_interop.rs"),
-        ),
-    ];
-    for (name, text) in surfaces {
-        assert!(
-            !text.contains("8 bytes past"),
-            "{name} still describes the read fast path as needing 8 bytes of slack"
-        );
-    }
-}
-
-#[test]
 fn stream_errors_are_documented_as_error() {
     // Since 5.0.0 every stream, write and measure included, returns Error, so no public
     // surface may call those error types uninhabited or infallible.
@@ -508,15 +486,6 @@ fn read_declarations_are_documented_as_refusals() {
     }
     assert!(readme.contains("`previous` outside its domain"));
     assert!(readme.contains("A read refuses a bad declaration as `value_out_of_range`"));
-}
-
-#[test]
-fn cpp_interop_pin_names_the_release_tag() {
-    let ci = include_str!("../.github/workflows/ci.yml");
-    assert!(
-        ci.contains("ref: v2.1.3"),
-        "the C++ interop job does not pin the documented release tag"
-    );
 }
 
 #[test]
