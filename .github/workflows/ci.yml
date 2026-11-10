@@ -24,6 +24,8 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - name: Test (debug)
         run: cargo test --all-targets
+      - name: Doctests (debug)
+        run: cargo test --doc
       - name: Test (release, including the 320 MB large buffer test)
         run: cargo test --release -- --include-ignored
       - name: Example
@@ -184,6 +186,9 @@ jobs:
           tool: cross
       - name: Test under qemu
         run: cross test --release --target ${{ matrix.target }}
+      - name: Test under qemu (debug, i686)
+        if: matrix.target == 'i686-unknown-linux-gnu'
+        run: cross test --target i686-unknown-linux-gnu
 
   wasm:
     name: wasm build

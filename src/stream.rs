@@ -24,8 +24,8 @@ pub trait Serialize {
 // value_out_of_range in every build, never asserted (U7: a reader never traps), and through
 // `fail`, so a stream that already failed keeps its first reason. On write and measure it is
 // the write-misuse mechanism, a debug assertion compiled out in release exactly like the C++
-// library's serialize_assert (U9), where a violated call contract produces a malformed stream —
-// never memory unsafety.
+// library's serialize_assert (U9), leaving the wire output unspecified — a checked reader may
+// decode arbitrary in-range values rather than rejecting it — though never memory unsafety.
 macro_rules! declaration_check {
     ($stream_type:ty, $stream:expr, $cond:expr, $($arg:tt)+) => {
         let declared: bool = $cond;
@@ -201,7 +201,8 @@ pub trait Stream: gate::Sealed {
     /// [`Error::PastEnd`] for a truncated payload, then [`Error::EmbeddedNul`] or
     /// [`Error::InvalidUtf8`]. Writes and measures cannot error: a string that does not fit
     /// in `buffer_size - 1` bytes, or that holds a NUL, is a write-contract violation — a
-    /// debug assertion, and in release a malformed stream that checked readers reject.
+    /// debug assertion, and in release the wire output is unspecified: a checked reader may
+    /// decode it as arbitrary in-range values rather than rejecting it.
     fn serialize_string(
         &mut self,
         value: &mut String,

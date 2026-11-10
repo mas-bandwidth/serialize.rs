@@ -44,7 +44,7 @@ than tracking `main`:
 
 ```toml
 [dependencies]
-serialize-official = { git = "https://github.com/mas-bandwidth/serialize.rs", tag = "v3.0.0" }
+serialize-official = { git = "https://github.com/mas-bandwidth/serialize.rs", tag = "v5.0.0" }
 ```
 
 Two CI jobs hold the registry and this repository to each other, so no version number written
@@ -189,10 +189,11 @@ only one a write or measure produces is U9's false from the caller's own `fail`,
 `Infallible` and that false could not be expressed). Invalid arguments and out of
 range values are debug assertions, compiled out in release, where correctness is the
 caller's responsibility — size buffers conservatively or pre-measure with `MeasureStream`
-(its estimate is guaranteed conservative). A violated write contract in release produces a
-malformed stream that checked readers reject; it is never memory unsafety, and writing past
-the end of a buffer still panics via the slice bounds check rather than being undefined
-behavior. Readers keep every packet data check: fully fallible, in every build.
+(its estimate is guaranteed conservative). A violated write contract in release leaves the
+wire output unspecified: a checked reader may decode it as arbitrary in-range values rather
+than rejecting it, and it is never memory unsafety; writing past the end of a buffer still
+panics via the slice bounds check rather than being undefined behavior. Readers keep every
+packet data check: fully fallible, in every build.
 
 Caller declarations (bits out of [1,32]/[1,64], `min > max`, a fixed point Q format that does
 not fit, precomputed compressed float constants that cannot be right, an `int_relative`

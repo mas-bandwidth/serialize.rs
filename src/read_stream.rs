@@ -29,6 +29,10 @@ use crate::{Error, Result, cold_error};
 ///
 /// Cloning a read stream snapshots its position and its failure state: clone before a
 /// speculative read, and drop the clone (or keep reading from it) depending on what you find.
+///
+/// [`ReadStream`] is `!Send`: its optional context is an `Option<&'a dyn Any>`, and `dyn Any`
+/// is not `Sync`, so a stream cannot be moved to another thread or held across an `.await`
+/// point in a `Send` future, even when no context is set.
 #[derive(Clone)]
 pub struct ReadStream<'a> {
     reader: BitReader<'a>,
@@ -130,6 +134,15 @@ impl<'a> ReadStream<'a> {
 
     /// Set a context on the stream, retrievable inside serialize functions with
     /// [`Stream::context`].
+    ///
+    /// [`ReadStream`] is `!Send` because the context is an `Option<&'a dyn Any>`: `dyn Any` is
+    /// not `Sync`, so the stream cannot move across threads or be held across an `.await` in a
+    /// `Send` future, even when no context is set.
+    ///
+    /// ```compile_fail
+    /// fn assert_send<T: Send>() {}
+    /// assert_send::<serialize::ReadStream<'static>>();
+    /// ```
     #[inline]
     pub fn set_context(&mut self, context: &'a dyn Any) {
         self.context = Some(context);

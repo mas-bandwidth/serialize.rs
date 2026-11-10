@@ -74,6 +74,30 @@ fn test_bitpacker() {
 }
 
 #[test]
+#[cfg(debug_assertions)]
+#[should_panic(expected = "write after flush")]
+fn test_write_bits_after_flush_panics() {
+    let mut buffer = [0u8; 16];
+    let mut writer = BitWriter::new(&mut buffer);
+
+    writer.write_bits(0xAB, 8);
+    writer.flush_bits();
+    writer.write_bits(0xCD, 8);
+}
+
+#[test]
+#[cfg(debug_assertions)]
+#[should_panic(expected = "write after flush")]
+fn test_write_bytes_after_flush_panics() {
+    let mut buffer = [0u8; 16];
+    let mut writer = BitWriter::new(&mut buffer);
+
+    writer.write_bits(0xAB, 8);
+    writer.flush_bits();
+    writer.write_bytes(&[0xCD, 0xEF]);
+}
+
+#[test]
 fn test_bits_required() {
     assert_eq!(bits_required(0, 0), 0);
     assert_eq!(bits_required(0, 1), 1);
@@ -3658,4 +3682,31 @@ fn test_read_bits_group_validates_wide_widths() {
     let buffer = [0u8; 16];
     let mut reader = BitReader::new(&buffer, 16);
     let _ = reader.read_bits_group(&[8, 33]);
+}
+
+#[test]
+fn test_bitpacker_remaining_counts_saturate() {
+    // the counts report zero once the buffer is exhausted, in every build
+    let mut write_buffer = [0u8; 8];
+    let mut writer = BitWriter::new(&mut write_buffer);
+    writer.write_bits(0, 32);
+    writer.write_bits(0, 32);
+    assert_eq!(writer.bits_available(), 0);
+
+    let read_buffer = [0u8; 8];
+    let mut reader = BitReader::new(&read_buffer, 8);
+    assert_eq!(reader.read_bits(32), 0);
+    assert_eq!(reader.read_bits(32), 0);
+    assert_eq!(reader.bits_remaining(), 0);
+
+    // a checked build traps a write or read past the end, so going further is only
+    // expressible in release, where the counts must still report zero rather than wrap
+    #[cfg(not(debug_assertions))]
+    {
+        writer.write_bits(0, 32);
+        assert_eq!(writer.bits_available(), 0);
+
+        assert_eq!(reader.read_bits(32), 0);
+        assert_eq!(reader.bits_remaining(), 0);
+    }
 }
