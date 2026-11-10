@@ -293,8 +293,8 @@ pub struct U15HiddenExports;
 
 /// A specialized result type for serialization. `Result` alone is `Result<(), Error>`, the
 /// return type of every fallible (read stream) serialize method. Serialize functions generic
-/// over the stream name the stream's own error instead — `Result<(), S::Error>` — so their
-/// write and measure instantiations are statically infallible.
+/// over the stream name the stream's own error instead — `Result<(), S::Error>` — which is
+/// [`Error`] on all three streams.
 pub type Result<T = (), E = Error> = core::result::Result<T, E>;
 
 // Every data-dependent failure funnels through this constructor so LLVM sees the error

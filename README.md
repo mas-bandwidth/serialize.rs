@@ -179,7 +179,8 @@ Three obligations from STANDARD.md's Reader Obligations hold in every build:
   is `2^31` or above, not a negative sequence number. The absolute tier is canonical too: a
   `current` no more than 69914 above `previous` has a bounded encoding, so carried in the
   absolute tier it is refused as `non_canonical`. `previous` is the caller's own state and
-  never arrives off the wire, so a `previous` outside the domain is a debug assertion.
+  never arrives off the wire: a read refuses one outside the domain as `value_out_of_range`
+  in every build, while on write and measure it is a debug assertion.
 
 The write path is trusted — the writer-trusted contract the whole family shares, matching the
 C++ library's checkless writer. No built-in write or measure operation returns an error; the
@@ -246,10 +247,11 @@ compressed float declaration whose `max - min`, quantum count or top decode (`mi
   serialize functions can carry whatever state they need.
 - 128 bit values use Rust's native `i128`/`u128` on every platform; there is no equivalent
   of the C++ library's emulated 128 bit pair, and none is needed. The wire is identical.
-- `serialize_fixed` takes its Q format and bounds as runtime arguments checked by debug
-  assertions (the storage type is generic over `FixedPointStorage`, so
-  `stream.serialize_fixed(&mut value, 48, 16, min, max)` mirrors the C++ call shape); the
-  C++ library checks the same constraints at compile time with `static_assert`s. The wire is identical, and the C++
+- `serialize_fixed` takes its Q format and bounds as runtime arguments (the storage type is
+  generic over `FixedPointStorage`, so `stream.serialize_fixed(&mut value, 48, 16, min, max)`
+  mirrors the C++ call shape). A read refuses a bad declaration as `value_out_of_range` in
+  every build; on write and measure it is a debug assertion. The C++ library checks the same
+  constraints at compile time with `static_assert`s. The wire is identical, and the C++
   contract notes about 128 bit division do not apply: the codec never divides in either
   implementation.
 - Buffer sizes and bit counts are `u64` internally, matching the C++ library's 64 bit
