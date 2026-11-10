@@ -410,3 +410,26 @@ fn write_and_measure_objects_are_the_object_itself() {
     measure.serialize_object(&mut byte).unwrap();
     assert_eq!(measure.bits_processed(), 8);
 }
+
+#[test]
+fn extended_fuzzing_is_described_as_scheduled() {
+    // The roadmap is generated from docs/roadmap.sexp, so both must describe the current CI.
+    let surfaces = [
+        ("ROADMAP.md", include_str!("../ROADMAP.md")),
+        ("docs/roadmap.sexp", include_str!("../docs/roadmap.sexp")),
+    ];
+    for (name, text) in surfaces {
+        assert!(
+            text.contains(".github/workflows/nightly-fuzz.yml"),
+            "{name} does not name the scheduled fuzz workflow"
+        );
+        assert!(
+            text.contains("two 60s smoke targets"),
+            "{name} does not describe the per-change smoke targets"
+        );
+        assert!(
+            !text.contains("Keep useful source-change gates"),
+            "{name} still describes extended fuzzing as unscheduled work"
+        );
+    }
+}
