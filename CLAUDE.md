@@ -5,8 +5,8 @@ WHAT: this repo is serialize.rs, the Rust port of mas-bandwidth/serialize — th
 bitpacking library. NOT that upstream itself, NOT the sibling ports (serialize.c,
 serialize.cs, serialize.go), NOT serialize.modern (the experimental C++23 one).
 
-NAME: the package publishes as `serialize-official` on crates.io (the bare `serialize`
-name is reserved); the library and import name is `serialize`, matching the C++ namespace
+NAME: the package publishes as `serialize-official` on crates.io; the library and import
+name is `serialize`, matching the C++ namespace
 and the Go port's package name. Unlike netcode (where `netcode` was taken in 2017 by an
 unrelated project, forcing the `netcode-official` crate name), the import name keeps its
 natural spelling.
@@ -19,18 +19,16 @@ mint a new one — it is the wrong machine account. Either Glenn publishes from 
 account, or he moves the token into the mas keychain with the prompting form
 (`security add-generic-password -U -a rowan -s crates-io-token -w`, no value after -w).
 
-STATE as verified 2026-11-10 (post 5.0.0): Cargo.toml is at 5.0.0, `cargo
-package` packages and compiles clean, and the crate has still never been published — v1.0.0 through v1.6.0 are git tags and
-GitHub releases only, nothing on crates.io. The repo itself is already public. This is a
-publish-NEW, so a token needs the `publish-new` scope — the other two Rust ports are
-publish-UPDATE.
+STATE as verified 2026-11-10 (post 5.0.0): Cargo.toml is at 5.0.0 and `cargo package`
+packages and compiles clean. crates.io has `serialize-official` 2.2.2, 2.3.0 and 2.4.0
+(2.4.0 the newest, 2026-09-04); 3.0.0 through 5.0.0 are git tags and GitHub releases only.
+The repo itself is already public. The next publish is a publish-UPDATE.
 <!-- HOT:END -->
 
 # serialize.rs
 
 Rust port of the C++ serialize library (github.com/mas-bandwidth/serialize). Package name
-`serialize-official` on crates.io (the bare `serialize` name is reserved); the library and
-import name is `serialize` (matches the C++ namespace and the Go port's package name). Zero
+`serialize-official` on crates.io; the library and import name is `serialize` (matches the C++ namespace and the Go port's package name). Zero
 dependencies, zero unsafe, BSD-3.
 
 ## Invariants — never break these
