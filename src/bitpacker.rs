@@ -74,6 +74,11 @@ impl<'a> BitWriter<'a> {
     /// surfaces as the language's own slice bounds panic on the word flush.
     #[inline(always)]
     pub fn write_bits(&mut self, value: u32, bits: u32) {
+        debug_assert_eq!(
+            u64::from(self.scratch_bits),
+            self.bits_written % 64,
+            "write after flush"
+        );
         debug_assert!(
             bits.wrapping_sub(1) < 32,
             "bits must be in [1,32] (got {bits})"

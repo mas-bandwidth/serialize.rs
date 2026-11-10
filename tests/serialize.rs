@@ -74,6 +74,30 @@ fn test_bitpacker() {
 }
 
 #[test]
+#[cfg(debug_assertions)]
+#[should_panic(expected = "write after flush")]
+fn test_write_bits_after_flush_panics() {
+    let mut buffer = [0u8; 16];
+    let mut writer = BitWriter::new(&mut buffer);
+
+    writer.write_bits(0xAB, 8);
+    writer.flush_bits();
+    writer.write_bits(0xCD, 8);
+}
+
+#[test]
+#[cfg(debug_assertions)]
+#[should_panic(expected = "write after flush")]
+fn test_write_bytes_after_flush_panics() {
+    let mut buffer = [0u8; 16];
+    let mut writer = BitWriter::new(&mut buffer);
+
+    writer.write_bits(0xAB, 8);
+    writer.flush_bits();
+    writer.write_bytes(&[0xCD, 0xEF]);
+}
+
+#[test]
 fn test_bits_required() {
     assert_eq!(bits_required(0, 0), 0);
     assert_eq!(bits_required(0, 1), 1);
