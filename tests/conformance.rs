@@ -224,6 +224,7 @@ enum Kind {
         fraction_bits: u32,
         min: i64,
         max: i64,
+        unsigned: bool,
     },
     /// `object <n>` wraps the next `n` steps in a nested object.
     Object(usize),
@@ -551,7 +552,16 @@ fn run_step<S: Stream>(stream: &mut S, step: &mut Step) -> Result<(), S::Error> 
             fraction_bits,
             min,
             max,
-        } => run_fixed(stream, step, integer_bits, fraction_bits, min, max),
+            unsigned,
+        } => run_fixed(
+            stream,
+            step,
+            integer_bits,
+            fraction_bits,
+            min,
+            max,
+            unsigned,
+        ),
         Kind::Object(_) => {
             unreachable!(
                 "nesting is driven by run_steps, which owns the step range an object wraps"
@@ -575,16 +585,16 @@ fn run_step<S: Stream>(stream: &mut S, step: &mut Step) -> Result<(), S::Error> 
 ///
 /// STANDARD.md makes the four parameters constants of the call site, and the storage type is
 /// what carries the width: Rust takes the parameters at runtime, so the declaration table this
-/// runner needs is the set of storage widths, one signed integer type each. A vector whose
+/// runner needs is the set of storage widths, signed and unsigned. A vector whose
 /// `integer_bits + fraction_bits` is not one of them has no runner and fails, which is checked
 /// where the step is built.
 macro_rules! fixed_arm {
     ($stream:expr, $step:expr, $storage:ty, $integer_bits:expr, $fraction_bits:expr, $min:expr, $max:expr) => {{
         let mut value = $step.pattern as $storage;
-        $step.seeded = i128::from(value) as u128;
+        $step.seeded = value as u128;
         let outcome =
             $stream.serialize_fixed(&mut value, $integer_bits, $fraction_bits, $min, $max);
-        $step.pattern = i128::from(value) as u128;
+        $step.pattern = value as u128;
         outcome
     }};
 }
@@ -596,13 +606,19 @@ fn run_fixed<S: Stream>(
     fraction_bits: u32,
     min: i64,
     max: i64,
+    unsigned: bool,
 ) -> Result<(), S::Error> {
-    match integer_bits + fraction_bits {
-        8 => fixed_arm!(stream, step, i8, integer_bits, fraction_bits, min, max),
-        16 => fixed_arm!(stream, step, i16, integer_bits, fraction_bits, min, max),
-        32 => fixed_arm!(stream, step, i32, integer_bits, fraction_bits, min, max),
-        64 => fixed_arm!(stream, step, i64, integer_bits, fraction_bits, min, max),
-        128 => fixed_arm!(stream, step, i128, integer_bits, fraction_bits, min, max),
+    match (integer_bits + fraction_bits, unsigned) {
+        (8, false) => fixed_arm!(stream, step, i8, integer_bits, fraction_bits, min, max),
+        (16, false) => fixed_arm!(stream, step, i16, integer_bits, fraction_bits, min, max),
+        (32, false) => fixed_arm!(stream, step, i32, integer_bits, fraction_bits, min, max),
+        (64, false) => fixed_arm!(stream, step, i64, integer_bits, fraction_bits, min, max),
+        (128, false) => fixed_arm!(stream, step, i128, integer_bits, fraction_bits, min, max),
+        (8, true) => fixed_arm!(stream, step, u8, integer_bits, fraction_bits, min, max),
+        (16, true) => fixed_arm!(stream, step, u16, integer_bits, fraction_bits, min, max),
+        (32, true) => fixed_arm!(stream, step, u32, integer_bits, fraction_bits, min, max),
+        (64, true) => fixed_arm!(stream, step, u64, integer_bits, fraction_bits, min, max),
+        (128, true) => fixed_arm!(stream, step, u128, integer_bits, fraction_bits, min, max),
         _ => unreachable!("the storage width is checked where the step is built"),
     }
 }
@@ -862,6 +878,7 @@ fn fixed_kind(
         fraction_bits: fraction_bits as u32,
         min,
         max,
+        unsigned: false,
     })
 }
 
@@ -1234,7 +1251,10 @@ fn run_measure(floor: u64, steps: &mut [Step]) -> Result<(), String> {
 
 /// Run one vector through every leg it states.
 fn run_vector(vector: &Vector) -> Result<(), String> {
-    let mut steps = build_steps(vector)?;
+    run_vector_with_steps(vector, build_steps(vector)?)
+}
+
+fn run_vector_with_steps(vector: &Vector, mut steps: Vec<Step>) -> Result<(), String> {
     if let Some(pattern) = vector.writer_input {
         run_writer_input(vector, pattern)?;
     }
@@ -1251,6 +1271,37 @@ fn run_vector(vector: &Vector) -> Result<(), String> {
         run_measure(floor, &mut steps)?;
     }
     Ok(())
+}
+
+#[test]
+fn unsigned_fixed_conformance_vectors() {
+    let mut checked = 0;
+    for (_, vector) in corpus_vectors() {
+        if vector.operation != "fixed" {
+            continue;
+        }
+        let mut steps = build_steps(&vector).expect("fixed vector has a supported declaration");
+        let mut unsigned = false;
+        for step in &mut steps {
+            if let Kind::Fixed {
+                min,
+                unsigned: storage,
+                ..
+            } = &mut step.kind
+            {
+                if *min >= 0 {
+                    *storage = true;
+                    unsigned = true;
+                }
+            }
+        }
+        if unsigned {
+            run_vector_with_steps(&vector, steps)
+                .unwrap_or_else(|reason| panic!("{}: {reason}", vector.name));
+            checked += 1;
+        }
+    }
+    assert!(checked > 0, "the corpus has no unsigned fixed vectors");
 }
 
 /// Every vector in the corpus, parsed, with the file it came from. Vector names are unique

@@ -34,6 +34,7 @@ enum Value {
     Int64 { value: i64, min: i64, max: i64 },
     Bool(bool),
     Float(f32),
+    CompressedFloat(f32),
     Double(f64),
     Bytes(Vec<u8>),
     Align,
@@ -61,7 +62,7 @@ const FIXED112_MAX_UNITS: i64 = 1152921504606846976;
 // separate the ops from the distribution that drives them
 #[allow(clippy::too_many_lines)]
 fn random_value(rng: &mut Rng) -> Value {
-    match rng.range(20) {
+    match rng.range(21) {
         0 => {
             let bits = rng.range(32) as u32 + 1;
             let value = (rng.next() as u32) & (((1u64 << bits) - 1) as u32);
@@ -193,6 +194,7 @@ fn random_value(rng: &mut Rng) -> Value {
             let raw = rng.next128() % (raw_range + 1);
             Value::Fixed128Unsigned { raw }
         }
+        20 => Value::CompressedFloat(rng.range(257) as f32 / 256.0),
         _ => {
             let raw_min = i128::from(FIXED112_MIN_UNITS) << 16;
             let raw_range = ((FIXED112_MAX_UNITS - FIXED112_MIN_UNITS) as u128) << 16;
@@ -213,6 +215,9 @@ fn serialize_value<S: Stream>(
         Value::Int64 { value, min, max } => stream.serialize_int64(value, *min, *max),
         Value::Bool(value) => stream.serialize_bool(value),
         Value::Float(value) => stream.serialize_f32(value),
+        Value::CompressedFloat(value) => {
+            stream.serialize_compressed_float(value, 0.0, 1.0, 1.0 / 256.0)
+        }
         Value::Double(value) => stream.serialize_f64(value),
         Value::Bytes(data) => stream.serialize_bytes(data),
         Value::Align => stream.serialize_align(),
@@ -260,6 +265,7 @@ fn blank(value: &Value) -> Value {
         },
         Value::Bool(_) => Value::Bool(false),
         Value::Float(_) => Value::Float(0.0),
+        Value::CompressedFloat(_) => Value::CompressedFloat(0.0),
         Value::Double(_) => Value::Double(0.0),
         Value::Bytes(data) => Value::Bytes(vec![0; data.len()]),
         Value::Align => Value::Align,
@@ -311,6 +317,7 @@ fn finite_double_bits(bits: u64) -> u64 {
 fn matches(written: &Value, read: &Value) -> bool {
     match (written, read) {
         (Value::Float(a), Value::Float(b)) => a.to_bits() == b.to_bits(),
+        (Value::CompressedFloat(a), Value::CompressedFloat(b)) => a.to_bits() == b.to_bits(),
         (Value::Double(a), Value::Double(b)) => a.to_bits() == b.to_bits(),
         _ => written == read,
     }
@@ -361,6 +368,15 @@ fn test_differential_round_trip() {
             );
         }
     }
+}
+
+#[test]
+fn compressed_float_uses_quantized_width() {
+    let mut buffer = [0u8; 8];
+    let mut value = Value::CompressedFloat(0.5);
+    let mut stream = WriteStream::new(&mut buffer);
+    serialize_value(&mut stream, &mut value).unwrap();
+    assert_eq!(stream.bits_processed(), 9);
 }
 
 #[test]
