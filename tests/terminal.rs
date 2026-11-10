@@ -508,3 +508,24 @@ fn cpp_interop_pin_names_the_release_tag() {
         "the C++ interop job does not pin the documented release tag"
     );
 }
+
+#[test]
+fn roadmap_header_names_the_external_generator() {
+    // ROADMAP.md is generated outside this repository. Its header must not send a reader to
+    // a make target or tool path this tree does not carry.
+    let roadmap = include_str!("../ROADMAP.md");
+    for missing in ["make roadmap", "tools/roadmap"] {
+        assert!(
+            !roadmap.contains(missing),
+            "ROADMAP.md names {missing:?}, which this repository does not have"
+        );
+    }
+    assert!(
+        roadmap.contains("docs/roadmap.sexp"),
+        "ROADMAP.md does not point at the data it is generated from"
+    );
+    assert!(
+        include_str!("../docs/roadmap.sexp").contains("tools/roadmap"),
+        "docs/roadmap.sexp does not name the external generator"
+    );
+}
