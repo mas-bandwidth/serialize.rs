@@ -433,3 +433,25 @@ fn extended_fuzzing_is_described_as_scheduled() {
         );
     }
 }
+
+#[test]
+fn reader_slack_is_documented_as_seven_bytes() {
+    // The fast window load needs 7 bytes past the packet data, so no surface may call for 8.
+    let surfaces = [
+        ("README.md", include_str!("../README.md")),
+        ("CLAUDE.md", include_str!("../CLAUDE.md")),
+        ("src/bitpacker.rs", include_str!("../src/bitpacker.rs")),
+        ("src/lib.rs", include_str!("../src/lib.rs")),
+        ("src/read_stream.rs", include_str!("../src/read_stream.rs")),
+        (
+            "examples/wire_interop.rs",
+            include_str!("../examples/wire_interop.rs"),
+        ),
+    ];
+    for (name, text) in surfaces {
+        assert!(
+            !text.contains("8 bytes past"),
+            "{name} still describes the read fast path as needing 8 bytes of slack"
+        );
+    }
+}

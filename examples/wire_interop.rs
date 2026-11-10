@@ -303,8 +303,8 @@ fn read_file(path: &str) -> std::result::Result<(), String> {
     }
     let (golden, extended_bytes) = input.split_at(GOLDEN_WIRE_BYTES.len());
 
-    // each packet gets its own buffer extending 8 bytes past the data, per the read
-    // allocation contract, and exactly its own bytes as the stream length: the end of each
+    // each packet gets its own buffer with 8 bytes of slack, comfortably above the 7 the
+    // read fast path needs, and exactly its own bytes as the stream length: the end of each
     // refuses anything else
     let with_slack = |packet: &[u8]| {
         let mut buffer = packet.to_vec();
