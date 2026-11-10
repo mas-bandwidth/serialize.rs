@@ -54,6 +54,11 @@ impl<'a> WriteStream<'a> {
     /// [`WriteStream`] is `!Send` because the context is an `Option<&'a dyn Any>`: `dyn Any` is
     /// not `Sync`, so the stream cannot move across threads or be held across an `.await` in a
     /// `Send` future, even when no context is set.
+    ///
+    /// ```compile_fail
+    /// fn assert_send<T: Send>() {}
+    /// assert_send::<serialize::WriteStream<'static>>();
+    /// ```
     #[inline]
     pub fn set_context(&mut self, context: &'a dyn Any) {
         self.context = Some(context);
