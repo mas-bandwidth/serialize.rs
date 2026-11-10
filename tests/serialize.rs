@@ -105,6 +105,42 @@ fn test_write_bytes_after_flush_panics() {
 }
 
 #[test]
+#[cfg(debug_assertions)]
+#[should_panic(expected = "write after flush")]
+fn test_write_zero_bytes_after_flush_panics() {
+    let mut buffer = [0u8; 16];
+    let mut writer = BitWriter::new(&mut buffer);
+
+    writer.write_bits(0xAB, 8);
+    writer.flush_bits();
+    writer.write_bytes(&[]);
+}
+
+#[test]
+#[cfg(debug_assertions)]
+#[should_panic(expected = "write after flush")]
+fn test_serialize_zero_bytes_after_flush_panics() {
+    let mut buffer = [0u8; 16];
+    let mut stream = WriteStream::new(&mut buffer);
+
+    stream.serialize_u8(&mut 0xAB).unwrap();
+    stream.flush();
+    stream.serialize_bytes(&mut []).unwrap();
+}
+
+#[test]
+#[cfg(debug_assertions)]
+#[should_panic(expected = "write after flush")]
+fn test_serialize_empty_string_after_flush_panics() {
+    let mut buffer = [0u8; 16];
+    let mut stream = WriteStream::new(&mut buffer);
+
+    stream.serialize_u8(&mut 0xAB).unwrap();
+    stream.flush();
+    stream.serialize_string(&mut String::new(), 1).unwrap();
+}
+
+#[test]
 fn test_bits_required() {
     assert_eq!(bits_required(0, 0), 0);
     assert_eq!(bits_required(0, 1), 1);
