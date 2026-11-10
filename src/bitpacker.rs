@@ -194,7 +194,7 @@ impl<'a> BitWriter<'a> {
     #[must_use]
     #[inline]
     pub fn bits_available(&self) -> u64 {
-        self.num_bits - self.bits_written
+        self.num_bits.saturating_sub(self.bits_written)
     }
 
     /// The number of bytes flushed to memory. This is effectively the size of the packet you
@@ -461,6 +461,6 @@ impl<'a> BitReader<'a> {
     #[must_use]
     #[inline]
     pub fn bits_remaining(&self) -> u64 {
-        self.num_bits - self.bits_read
+        self.num_bits.saturating_sub(self.bits_read)
     }
 }
