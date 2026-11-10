@@ -241,13 +241,6 @@ impl Stream for ReadStream<'_> {
     }
 
     #[inline]
-    // buffer_size is checked into [1,i32::MAX] first, and the decoded length is in
-    // [0,buffer_size-1], so both casts are exact
-    #[allow(
-        clippy::cast_possible_truncation,
-        clippy::cast_possible_wrap,
-        clippy::cast_sign_loss
-    )]
     fn serialize_string(&mut self, value: &mut String, buffer_size: usize) -> Result {
         // a buffer_size outside [1,i32::MAX] is a bad declaration, refused as
         // value_out_of_range after the failure state, never asserted (U7, U16)
@@ -255,8 +248,12 @@ impl Stream for ReadStream<'_> {
             return self.fail(Error::ValueOutOfRange);
         }
         let mut length = 0i32;
+        // buffer_size is in [1,i32::MAX]: checked just above
+        #[allow(clippy::cast_possible_truncation, clippy::cast_possible_wrap)]
         self.serialize_int(&mut length, 0, buffer_size as i32 - 1)?;
         self.serialize_align()?;
+        // the decoded length is in [0,buffer_size-1]
+        #[allow(clippy::cast_sign_loss)]
         let length = length as usize;
         if length as u64 > self.reader.bits_remaining() / 8 {
             return self.latch(Error::PastEnd);

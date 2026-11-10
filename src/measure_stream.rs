@@ -116,10 +116,10 @@ impl Stream for MeasureStream<'_> {
     }
 
     #[inline]
-    // buffer_size outside [1,i32::MAX] is write misuse, asserted in string_length
-    #[allow(clippy::cast_possible_truncation, clippy::cast_possible_wrap)]
     fn serialize_string(&mut self, value: &mut String, buffer_size: usize) -> Result {
         let mut length = string_length(value, buffer_size);
+        // buffer_size outside [1,i32::MAX] is write misuse, asserted in string_length
+        #[allow(clippy::cast_possible_truncation, clippy::cast_possible_wrap)]
         self.serialize_int(&mut length, 0, buffer_size as i32 - 1)?;
         self.serialize_align()?;
         self.bits_written += value.len() as u64 * 8;

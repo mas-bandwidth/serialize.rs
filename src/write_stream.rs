@@ -274,15 +274,17 @@ impl Stream for WriteStream<'_> {
     }
 
     #[inline]
-    // buffer_size outside [1,i32::MAX] is write misuse, asserted in string_length
-    #[allow(clippy::cast_possible_truncation, clippy::cast_possible_wrap)]
     fn serialize_string(&mut self, value: &mut String, buffer_size: usize) -> Result {
         let mut length = string_length(value, buffer_size);
+        // buffer_size outside [1,i32::MAX] is write misuse, asserted in string_length
+        #[allow(clippy::cast_possible_truncation)]
         debug_assert_room(
             &self.writer,
             crate::bits_required(0, (buffer_size as u32).saturating_sub(1)),
             value.len(),
         );
+        // as above: asserted into [1,i32::MAX] in string_length
+        #[allow(clippy::cast_possible_truncation, clippy::cast_possible_wrap)]
         self.serialize_int(&mut length, 0, buffer_size as i32 - 1)?;
         self.serialize_align()?;
         self.writer.write_bytes(value.as_bytes());
