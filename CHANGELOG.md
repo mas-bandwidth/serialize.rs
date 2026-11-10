@@ -214,7 +214,7 @@ where 1.1 carried the wide string and ends with the end. The C++ interop job pin
 reference at v2.0.0, and its file is now two packets, the golden one and the harness's
 extended one, each read by its own stream and ended by its own end. `tools/revendor.sh
 <tag>` re-vendors the four format paths from a reference tag; the spec-sync job diffs all
-four. The fuzz lockfile, stale at 2.3.2, is refreshed.
+four. The fuzz lockfile, stale at the unreleased 2.3.2, is refreshed.
 
 ## 2.4.0 — 2026-09-04
 
