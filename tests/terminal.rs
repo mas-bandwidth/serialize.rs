@@ -414,10 +414,16 @@ fn write_and_measure_objects_are_the_object_itself() {
 #[test]
 fn extended_fuzzing_is_described_as_scheduled() {
     // The roadmap is generated from docs/roadmap.sexp, so both must describe the current CI.
+    let source = include_str!("../docs/roadmap.sexp");
     let surfaces = [
         ("ROADMAP.md", include_str!("../ROADMAP.md")),
-        ("docs/roadmap.sexp", include_str!("../docs/roadmap.sexp")),
+        ("docs/roadmap.sexp", source),
     ];
+    let item_text = source
+        .lines()
+        .find_map(|line| line.trim().strip_prefix(":text \""))
+        .and_then(|rest| rest.strip_suffix('"'))
+        .expect("docs/roadmap.sexp carries the CI item text");
     for (name, text) in surfaces {
         assert!(
             text.contains(".github/workflows/nightly-fuzz.yml"),
@@ -430,6 +436,10 @@ fn extended_fuzzing_is_described_as_scheduled() {
         assert!(
             !text.contains("Keep useful source-change gates"),
             "{name} still describes extended fuzzing as unscheduled work"
+        );
+        assert!(
+            text.contains(item_text),
+            "{name} does not carry the roadmap source's item text"
         );
     }
 }
