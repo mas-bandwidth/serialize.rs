@@ -1,14 +1,15 @@
 # Changelog
 
-## 5.0.1 — unreleased
+## 5.0.1 — 2026-11-10
 
 **Reference v2.1.4.** The wire is unchanged (format 2.0), and so are `STANDARD.md` and the
 corpus. `IMPLEMENTING.md` is re-vendored at v2.1.4, and the C++ wire compatibility job pins
 v2.1.4.
 
 - **A write after a flush that stored a partial word traps** (IMPLEMENTING.md U11):
-  `BitWriter::write_bits` debug-asserts, and every write path (`write_bytes`, `write_align`,
-  the streams) goes through it. Compiled out in release, where the output is unspecified.
+  `BitWriter::write_bits` and `BitWriter::write_bytes` each debug-assert on entry, so
+  zero-length bytes and the empty string are caught too. Compiled out in release, where the
+  output is unspecified.
 - **`BitWriter::bits_available` and `BitReader::bits_remaining` saturate at zero** rather than
   wrapping once a release build has gone past the end.
 - U7's zero-length `bytes` still aligns (the `bytes-zero-count-*` vectors); a Rust slice has
