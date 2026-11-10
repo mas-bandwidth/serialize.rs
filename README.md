@@ -44,7 +44,7 @@ than tracking `main`:
 
 ```toml
 [dependencies]
-serialize-official = { git = "https://github.com/mas-bandwidth/serialize.rs", tag = "v3.0.0" }
+serialize-official = { git = "https://github.com/mas-bandwidth/serialize.rs", tag = "v5.0.0" }
 ```
 
 Two CI jobs hold the registry and this repository to each other, so no version number written
