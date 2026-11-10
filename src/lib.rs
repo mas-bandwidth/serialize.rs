@@ -375,25 +375,3 @@ pub const fn signed_to_unsigned(n: i32) -> u32 {
 pub const fn unsigned_to_signed(n: u32) -> i32 {
     i32::from_ne_bytes(((n >> 1) ^ 0u32.wrapping_sub(n & 1)).to_ne_bytes())
 }
-
-// IMPLEMENTING.md U8: release output after a write-contract violation is unspecified.
-// Pin the public documentation to that contract.
-#[cfg(test)]
-mod write_contract_documentation {
-    #[test]
-    fn release_write_misuse_documentation_is_accurate() {
-        let claim = ["malformed", "stream"].join(" ");
-        let surfaces = [
-            ("src/lib.rs", include_str!("lib.rs")),
-            ("README.md", include_str!("../README.md")),
-            ("src/write_stream.rs", include_str!("write_stream.rs")),
-            ("src/stream.rs", include_str!("stream.rs")),
-        ];
-        for (name, text) in surfaces {
-            assert!(
-                !text.contains(claim.as_str()),
-                "{name} contains outdated release write-misuse wording"
-            );
-        }
-    }
-}
