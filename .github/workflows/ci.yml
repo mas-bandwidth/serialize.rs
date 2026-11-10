@@ -56,6 +56,8 @@ jobs:
           components: clippy, rustfmt
       - name: Clippy (pedantic, via [lints] in Cargo.toml)
         run: cargo clippy --all-targets -- -D warnings
+      - name: Clippy (fuzz targets, a separate package)
+        run: cargo clippy --manifest-path fuzz/Cargo.toml -- -D warnings
       - name: Format
         run: cargo fmt --check
       - name: Docs

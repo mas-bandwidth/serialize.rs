@@ -17,6 +17,13 @@ impl Rng {
 }
 
 #[allow(clippy::too_many_lines)] // one arm per operation: splitting it would scatter the sentinel table
+#[allow(
+    clippy::cast_lossless,
+    clippy::cast_possible_truncation,
+    clippy::cast_possible_wrap,
+    clippy::cast_precision_loss,
+    clippy::cast_sign_loss
+)]
 fn op(stream: &mut ReadStream, k: u64) -> bool {
     match k % 14 {
         0 => {
@@ -142,6 +149,13 @@ fn op(stream: &mut ReadStream, k: u64) -> bool {
 }
 
 #[test]
+#[allow(
+    clippy::cast_lossless,
+    clippy::cast_possible_truncation,
+    clippy::cast_possible_wrap,
+    clippy::cast_precision_loss,
+    clippy::cast_sign_loss
+)]
 fn hostile_read_sentinels_and_latch() {
     let iterations = if cfg!(miri) { 200 } else { 100_000 };
     let mut rng = Rng(0x9E37_79B9_7F4A_7C15);

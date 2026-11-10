@@ -93,6 +93,13 @@ fn u2_reject_and_object_composition_latch_rejected() {
 // the caller's bytes exactly, and the measure counts exactly those bytes.
 
 #[test]
+#[allow(
+    clippy::cast_lossless,
+    clippy::cast_possible_truncation,
+    clippy::cast_possible_wrap,
+    clippy::cast_precision_loss,
+    clippy::cast_sign_loss
+)]
 fn u3_text_is_written_byte_for_byte() {
     let text = "naïve 日本 \u{1F600} \u{10FFFF}";
     let mut buffer = [0u8; 64];

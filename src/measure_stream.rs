@@ -103,6 +103,14 @@ impl Stream for MeasureStream<'_> {
     }
 
     #[inline]
+    // width and sign conversions are the codec's declared field widths
+    #[allow(
+        clippy::cast_lossless,
+        clippy::cast_possible_truncation,
+        clippy::cast_possible_wrap,
+        clippy::cast_precision_loss,
+        clippy::cast_sign_loss
+    )]
     fn serialize_bytes(&mut self, data: &mut [u8]) -> Result {
         self.serialize_align()?;
         self.bits_written += data.len() as u64 * 8;
@@ -116,6 +124,15 @@ impl Stream for MeasureStream<'_> {
     }
 
     #[inline]
+    // buffer_size is the declared i32-width length limit of the wire; the cast is the
+    // declaration's own narrowing, the same one the C++ signature takes
+    #[allow(
+        clippy::cast_lossless,
+        clippy::cast_possible_truncation,
+        clippy::cast_possible_wrap,
+        clippy::cast_precision_loss,
+        clippy::cast_sign_loss
+    )]
     fn serialize_string(&mut self, value: &mut String, buffer_size: usize) -> Result {
         let mut length = string_length(value, buffer_size);
         self.serialize_int(&mut length, 0, buffer_size as i32 - 1)?;
