@@ -326,8 +326,9 @@ fn debug_assert_room(writer: &BitWriter<'_>, field_bits: u32, payload: usize) {
 /// range `[0,buffer_size-1]`, and the payload must hold no zero byte (STANDARD.md, "string":
 /// a writer is handed well-formed UTF-8 with no NUL, which a Rust `String` guarantees for the
 /// first half). Every violation is a write-contract violation on a trusted path — a debug
-/// assertion, compiled out in release, where the malformed stream is one checked readers
-/// reject (never memory unsafety).
+/// assertion, compiled out in release, where the wire output is unspecified: a checked
+/// reader may decode it as arbitrary in-range values rather than rejecting it (never memory
+/// unsafety).
 pub(crate) fn string_length(value: &str, buffer_size: usize) -> i32 {
     let length = value.len();
     debug_assert!(
