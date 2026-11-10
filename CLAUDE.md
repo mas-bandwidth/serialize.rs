@@ -11,13 +11,6 @@ and the Go port's package name. Unlike netcode (where `netcode` was taken in 201
 unrelated project, forcing the `netcode-official` crate name), the import name keeps its
 natural spelling.
 
-PUBLISHING (crates.io) — the token is NOT on this bench
-The crates.io token lives at /Users/glenn/.cargo/credentials.toml on GLENN'S personal
-macOS account: mode 0600, owned by glenn, unreadable from the mas account. `cargo publish`
-here fails with "no token found". That is NOT a missing credential and NOT a reason to
-mint a new one — it is the wrong machine account. Either Glenn publishes from his own
-account, or he moves the token into the mas keychain with the prompting form
-(`security add-generic-password -U -a rowan -s crates-io-token -w`, no value after -w).
 
 STATE as verified 2026-11-10 (post 5.0.0): Cargo.toml is at 5.0.0 and `cargo package`
 packages and compiles clean. crates.io has `serialize-official` 2.2.2, 2.3.0 and 2.4.0
@@ -79,7 +72,7 @@ dependencies, zero unsafe, BSD-3.
    error; only the caller's `fail`, `reject` (release) or a nested object returning either
    does, as only they return false in C++ (IMPLEMENTING.md U9), recording nothing. From 2.0
    (the #52 ruling) to 4.x the write error type was `Infallible` and that false could not be
-   expressed; Glenn decided the 5.0.0 major on 2026-10-28 (crates.io only ever had 2.4.0).
+   expressed; the 5.0.0 major was decided on 2026-10-28 (crates.io only ever had 2.4.0).
    `Stream` is sealed (`stream::gate::Sealed`), and `refuse`/`refuse_if_failed`/
    `Error::from_name` are gone from the public surface (U15): `fail(&mut self, reason)` is the
    one latching refusal.
@@ -185,8 +178,6 @@ dependencies, zero unsafe, BSD-3.
   the C++ library, schema bench, Apple M2). The thin fallible wrappers carry
   `#[inline(always)]` because the hint alone loses to that same cold-callsite
   classification in long serialize functions.
-- Local toolchains on Glenn's Mac: homebrew rustup at `/opt/homebrew/opt/rustup/bin` (not on
-  default PATH), with `1.85` (MSRV) and `nightly` (+miri) installed; cargo-fuzz in ~/.cargo/bin
 - CI (.github/workflows/ci.yml): 3-OS test matrix (debug + release + example), lint
   (pedantic clippy / fmt / rustdoc / zero-dependency guard), MSRV 1.85 check, Miri, 60s fuzz
   smoke per target (uploads crash reproducers on failure), C++ wire interop, cross matrix
@@ -243,7 +234,7 @@ Rejected, with reasons — do not propose again:
 ## Releases
 
 v1.0.0 released 2026-07-12 (opened at 1.0.0 deliberately — the wire format is a decade old,
-like the Go port). 3.0.0 (2026-10-22) carries serialize format 2.0 (Glenn, 2026-10-22: "We
+like the Go port). 3.0.0 (2026-10-22) carries serialize format 2.0 (2026-10-22: "We
 change the protocol it's v2.0.0"): the one sanctioned wire change, made in lockstep with the
 C++ reference's v2.0.0 and the whole family; CHANGELOG.md has the migration notes. Release process: bump
 `version` in Cargo.toml, refresh both lockfiles (`cargo update -p serialize-official` at the
@@ -253,9 +244,7 @@ on that commit. New exported API = minor bump; a wire format change happens only
 family-wide format version decided upstream (as 2.0 was), never in this port alone. The cargo-semver-checks CI job flags accidental API
 breaks on PRs.
 
-The repo is public (that flip is done). The one step still waiting on Glenn is `cargo publish`
-— crates.io token via `cargo login`, and see the HOT block for why it cannot happen from the
-mas account. The package publishes as `serialize-official`; docs.rs builds automatically on
+The repo is public (that flip is done). `cargo publish` is still waiting. The package publishes as `serialize-official`; docs.rs builds automatically on
 publish.
 
 ## Portability notes

@@ -1139,7 +1139,7 @@ fn test_compressed_float_validation() {
 
 #[test]
 fn test_compressed_float_top_of_range_clamp() {
-    // STANDARD.md's normative integer clamp (2026-08-23, schema#109; ruling: Glenn, live),
+    // STANDARD.md's normative integer clamp (2026-08-23, schema#109),
     // ported from the C++ suite's test_compressed_float_top_of_range_clamp (serialize
     // PR #88). In [2^23, 2^24) the float32 ulp is 1, so scaled + 0.5 lands on a tie and
     // round-to-even can push the code past max_integer_value. Before the clamp, witness A
@@ -1390,7 +1390,7 @@ fn test_string_read_refusals() {
     }
 }
 
-// The fork #6 ruling (Glenn, 2026-08-15): "it's non-conforming. also, attempting to send NaN
+// Fork #6 ruling (2026-08-15): "it's non-conforming. also, attempting to send NaN
 // or INF or anything else through compressed float is non-conforming and should assert out
 // on write too." Value validity is asserted at intake, declaration validity at the param
 // computation site; all compile out in release.
@@ -3866,6 +3866,35 @@ fn test_read_bits_group_validates_wide_widths() {
     let buffer = [0u8; 16];
     let mut reader = BitReader::new(&buffer, 16);
     let _ = reader.read_bits_group(&[8, 33]);
+}
+
+#[test]
+fn repository_notes_omit_credential_material() {
+    let root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let notes = [
+        "CLAUDE.md",
+        "src/stream.rs",
+        "tests/serialize.rs",
+        "ROADMAP.md",
+        "docs/roadmap.sexp",
+        "CHANGELOG.md",
+    ];
+    let home_markers = [
+        format!("/{}/", ["Us", "ers"].concat()),
+        format!("/{}/", ["ho", "me"].concat()),
+        ["~", "/"].concat(),
+    ];
+    let keychain_cmd = ["add-", "generic-", "password"].concat();
+    for rel in notes {
+        let text = std::fs::read_to_string(root.join(rel)).expect("note file");
+        for marker in &home_markers {
+            assert!(!text.contains(marker), "{rel} still has a credential path");
+        }
+        assert!(
+            !text.contains(&keychain_cmd),
+            "{rel} still has a keychain service note"
+        );
+    }
 }
 
 #[test]
