@@ -455,3 +455,56 @@ fn reader_slack_is_documented_as_seven_bytes() {
         );
     }
 }
+
+#[test]
+fn stream_errors_are_documented_as_error() {
+    // Since 5.0.0 every stream, write and measure included, returns Error, so no public
+    // surface may call those error types uninhabited or infallible.
+    let surfaces = [
+        ("src/stream.rs", include_str!("../src/stream.rs")),
+        ("src/lib.rs", include_str!("../src/lib.rs")),
+        ("examples/packet.rs", include_str!("../examples/packet.rs")),
+        (
+            "examples/wire_interop.rs",
+            include_str!("../examples/wire_interop.rs"),
+        ),
+    ];
+    for (name, text) in surfaces {
+        let text = text.to_ascii_lowercase();
+        assert!(
+            !text.contains("uninhabited"),
+            "{name} still describes a stream error type as uninhabited"
+        );
+        assert!(
+            !text.contains("infallible"),
+            "{name} still describes a stream error type as infallible"
+        );
+    }
+}
+
+#[test]
+fn read_declarations_are_documented_as_refusals() {
+    // A bad `previous` or fixed-point declaration is refused on read in every build; only
+    // write and measure turn it into a debug assertion.
+    let readme = include_str!("../README.md");
+    for stale in [
+        "never arrives off the wire, so a `previous` outside the domain is a debug assertion",
+        "`serialize_fixed` takes its Q format and bounds as runtime arguments checked by debug",
+    ] {
+        assert!(
+            !readme.contains(stale),
+            "README still states that a read-side declaration is only debug-asserted"
+        );
+    }
+    assert!(readme.contains("`previous` outside its domain"));
+    assert!(readme.contains("A read refuses a bad declaration as `value_out_of_range`"));
+}
+
+#[test]
+fn cpp_interop_pin_names_the_release_tag() {
+    let ci = include_str!("../.github/workflows/ci.yml");
+    assert!(
+        ci.contains("ref: v2.1.3"),
+        "the C++ interop job does not pin the documented release tag"
+    );
+}
