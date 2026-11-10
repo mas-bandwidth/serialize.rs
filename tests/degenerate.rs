@@ -26,7 +26,7 @@ fn degenerate_range_costs_nothing() {
         w.serialize_int(&mut after, 0, 7).unwrap();
         bits_after = w.bits_processed();
         w.flush();
-        bytes = w.bytes_processed() as usize;
+        bytes = usize::try_from(w.bytes_processed()).expect("byte count fits usize");
     }
     // the next field must still start at bit 0 -- if the degenerate range
     // consumed bit space, everything downstream shifts and the wire stops
@@ -65,7 +65,7 @@ fn degenerate_range_64_and_128() {
         .unwrap();
         assert_eq!(w.bits_processed(), 0);
         w.flush();
-        bytes = w.bytes_processed().max(1) as usize;
+        bytes = usize::try_from(w.bytes_processed().max(1)).expect("byte count fits usize");
     }
 
     let mut r = ReadStream::new(&buffer, bytes);
@@ -184,7 +184,7 @@ fn degenerate_fixed_costs_nothing_on_every_width() {
         w.serialize_int(&mut after, 0, 7).unwrap();
         assert_eq!(w.bits_processed(), 3);
         w.flush();
-        bytes = w.bytes_processed() as usize;
+        bytes = usize::try_from(w.bytes_processed()).expect("byte count fits usize");
     }
     {
         let mut r = ReadStream::new(&buffer, bytes);
@@ -223,7 +223,7 @@ fn degenerate_fixed_costs_nothing_on_every_width() {
             w.serialize_int(&mut after, 0, 7).unwrap();
             assert_eq!(w.bits_processed(), 3);
             w.flush();
-            bytes = w.bytes_processed() as usize;
+            bytes = usize::try_from(w.bytes_processed()).expect("byte count fits usize");
         }
         {
             let mut r = ReadStream::new(&buffer, bytes);
@@ -294,7 +294,7 @@ fn degenerate_string_buffer_holds_the_empty_string() {
         w.serialize_string(&mut empty, 1)
             .expect("buffer_size 1 must accept the empty string");
         w.flush();
-        bytes = w.bytes_processed() as usize;
+        bytes = usize::try_from(w.bytes_processed()).expect("byte count fits usize");
     }
 
     let mut r = ReadStream::new(&buffer, bytes);

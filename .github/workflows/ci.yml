@@ -24,6 +24,8 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - name: Test (debug)
         run: cargo test --all-targets
+      - name: Doctests (debug)
+        run: cargo test --doc
       - name: Test (release, including the 320 MB large buffer test)
         run: cargo test --release -- --include-ignored
       - name: Example
@@ -54,6 +56,8 @@ jobs:
           components: clippy, rustfmt
       - name: Clippy (pedantic, via [lints] in Cargo.toml)
         run: cargo clippy --all-targets -- -D warnings
+      - name: Clippy (fuzz targets, a separate package)
+        run: cargo clippy --manifest-path fuzz/Cargo.toml -- -D warnings
       - name: Format
         run: cargo fmt --check
       - name: Docs
@@ -145,9 +149,9 @@ jobs:
           # harness's two-packet file and its ends depend on. v2.0.1 (object
           # read terminality), v2.1.0 (the `rejected` reason) and v2.1.1 (the
           # U6, U9 and U15 rulings, the text this port vendors) change no wire
-          # byte.
+          # byte; the later v2.1.x patch releases do not either.
           repository: mas-bandwidth/serialize
-          ref: v2.1.1
+          ref: v2.1.3
           path: cpp-serialize
       - uses: dtolnay/rust-toolchain@stable
       # no -DNDEBUG on purpose: serialize_assert stays live, so the degenerate
@@ -184,6 +188,9 @@ jobs:
           tool: cross
       - name: Test under qemu
         run: cross test --release --target ${{ matrix.target }}
+      - name: Test under qemu (debug, i686)
+        if: matrix.target == 'i686-unknown-linux-gnu'
+        run: cross test --target i686-unknown-linux-gnu
 
   wasm:
     name: wasm build

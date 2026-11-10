@@ -224,6 +224,7 @@ enum Kind {
         fraction_bits: u32,
         min: i64,
         max: i64,
+        unsigned: bool,
     },
     /// `object <n>` wraps the next `n` steps in a nested object.
     Object(usize),
@@ -289,6 +290,14 @@ impl Step {
 
     /// Seed every destination before a read, so an assertion that it still holds the seed is a
     /// real observation that the refused read wrote nothing.
+    // the sentinel is a signed number stored in the pattern's unsigned 128 bit slot
+    #[allow(
+        clippy::cast_lossless,
+        clippy::cast_possible_truncation,
+        clippy::cast_possible_wrap,
+        clippy::cast_precision_loss,
+        clippy::cast_sign_loss
+    )]
     fn seed(&mut self) {
         self.pattern = if matches!(
             self.kind,
@@ -473,6 +482,15 @@ fn run_steps<S: Stream>(
 /// widened back, and `seeded` records the narrowed seed so the refusal check compares like
 /// with like whatever the operation's width.
 #[allow(clippy::too_many_lines)]
+// the corpus states every value as a number and this runner narrows it to the operation's
+// own width, then widens it back into the pattern slot
+#[allow(
+    clippy::cast_lossless,
+    clippy::cast_possible_truncation,
+    clippy::cast_possible_wrap,
+    clippy::cast_precision_loss,
+    clippy::cast_sign_loss
+)]
 fn run_step<S: Stream>(stream: &mut S, step: &mut Step) -> Result<(), S::Error> {
     match step.kind {
         Kind::Bits(bits) => {
@@ -551,7 +569,16 @@ fn run_step<S: Stream>(stream: &mut S, step: &mut Step) -> Result<(), S::Error> 
             fraction_bits,
             min,
             max,
-        } => run_fixed(stream, step, integer_bits, fraction_bits, min, max),
+            unsigned,
+        } => run_fixed(
+            stream,
+            step,
+            integer_bits,
+            fraction_bits,
+            min,
+            max,
+            unsigned,
+        ),
         Kind::Object(_) => {
             unreachable!(
                 "nesting is driven by run_steps, which owns the step range an object wraps"
@@ -575,20 +602,28 @@ fn run_step<S: Stream>(stream: &mut S, step: &mut Step) -> Result<(), S::Error> 
 ///
 /// STANDARD.md makes the four parameters constants of the call site, and the storage type is
 /// what carries the width: Rust takes the parameters at runtime, so the declaration table this
-/// runner needs is the set of storage widths, one signed integer type each. A vector whose
+/// runner needs is the set of storage widths, signed and unsigned. A vector whose
 /// `integer_bits + fraction_bits` is not one of them has no runner and fails, which is checked
 /// where the step is built.
 macro_rules! fixed_arm {
     ($stream:expr, $step:expr, $storage:ty, $integer_bits:expr, $fraction_bits:expr, $min:expr, $max:expr) => {{
         let mut value = $step.pattern as $storage;
-        $step.seeded = i128::from(value) as u128;
+        $step.seeded = value as u128;
         let outcome =
             $stream.serialize_fixed(&mut value, $integer_bits, $fraction_bits, $min, $max);
-        $step.pattern = i128::from(value) as u128;
+        $step.pattern = value as u128;
         outcome
     }};
 }
 
+// the macro below narrows the pattern to the storage width and widens it back, the same
+// bit-pattern conversion run_step performs
+#[allow(
+    clippy::cast_lossless,
+    clippy::cast_possible_truncation,
+    clippy::cast_possible_wrap,
+    clippy::cast_sign_loss
+)]
 fn run_fixed<S: Stream>(
     stream: &mut S,
     step: &mut Step,
@@ -596,13 +631,19 @@ fn run_fixed<S: Stream>(
     fraction_bits: u32,
     min: i64,
     max: i64,
+    unsigned: bool,
 ) -> Result<(), S::Error> {
-    match integer_bits + fraction_bits {
-        8 => fixed_arm!(stream, step, i8, integer_bits, fraction_bits, min, max),
-        16 => fixed_arm!(stream, step, i16, integer_bits, fraction_bits, min, max),
-        32 => fixed_arm!(stream, step, i32, integer_bits, fraction_bits, min, max),
-        64 => fixed_arm!(stream, step, i64, integer_bits, fraction_bits, min, max),
-        128 => fixed_arm!(stream, step, i128, integer_bits, fraction_bits, min, max),
+    match (integer_bits + fraction_bits, unsigned) {
+        (8, false) => fixed_arm!(stream, step, i8, integer_bits, fraction_bits, min, max),
+        (16, false) => fixed_arm!(stream, step, i16, integer_bits, fraction_bits, min, max),
+        (32, false) => fixed_arm!(stream, step, i32, integer_bits, fraction_bits, min, max),
+        (64, false) => fixed_arm!(stream, step, i64, integer_bits, fraction_bits, min, max),
+        (128, false) => fixed_arm!(stream, step, i128, integer_bits, fraction_bits, min, max),
+        (8, true) => fixed_arm!(stream, step, u8, integer_bits, fraction_bits, min, max),
+        (16, true) => fixed_arm!(stream, step, u16, integer_bits, fraction_bits, min, max),
+        (32, true) => fixed_arm!(stream, step, u32, integer_bits, fraction_bits, min, max),
+        (64, true) => fixed_arm!(stream, step, u64, integer_bits, fraction_bits, min, max),
+        (128, true) => fixed_arm!(stream, step, u128, integer_bits, fraction_bits, min, max),
         _ => unreachable!("the storage width is checked where the step is built"),
     }
 }
@@ -800,6 +841,14 @@ fn operation_takes_param(operation: &str, name: &str) -> bool {
 }
 
 /// A step written as words, the spelling `sequence.txt` and `object.txt` document.
+// the words are a vector's numbers; each arm narrows one to the operation's own width
+#[allow(
+    clippy::cast_lossless,
+    clippy::cast_possible_truncation,
+    clippy::cast_possible_wrap,
+    clippy::cast_precision_loss,
+    clippy::cast_sign_loss
+)]
 fn step_from_words(text: &str) -> Result<Kind, String> {
     let words: Vec<&str> = text.split_whitespace().collect();
     let number = |index: usize| -> Result<u128, String> {
@@ -840,6 +889,14 @@ fn step_from_words(text: &str) -> Result<Kind, String> {
 /// A `fixed` declaration, checked against the storage widths this runner carries. A vector
 /// naming a declaration with no runner FAILS rather than passes, the same contract the corpus
 /// states for an operation with no runner.
+// the widths were checked against the storage set just above, so they fit u32
+#[allow(
+    clippy::cast_lossless,
+    clippy::cast_possible_truncation,
+    clippy::cast_possible_wrap,
+    clippy::cast_precision_loss,
+    clippy::cast_sign_loss
+)]
 fn fixed_kind(
     integer_bits: i128,
     fraction_bits: i128,
@@ -862,12 +919,21 @@ fn fixed_kind(
         fraction_bits: fraction_bits as u32,
         min,
         max,
+        unsigned: false,
     })
 }
 
 /// Build a vector's step list. A single operation vector becomes a one or two step sequence:
 /// the operations whose interesting behavior exists only at a non-zero bit index take a
 /// `preceding_bits` parameter, which becomes a leading `bits` step.
+// parameters are read as numbers and narrowed to the width each operation declares
+#[allow(
+    clippy::cast_lossless,
+    clippy::cast_possible_truncation,
+    clippy::cast_possible_wrap,
+    clippy::cast_precision_loss,
+    clippy::cast_sign_loss
+)]
 fn build_steps(vector: &Vector) -> Result<Vec<Step>, String> {
     for (name, _) in &vector.params {
         if !operation_takes_param(&vector.operation, name) {
@@ -1234,7 +1300,10 @@ fn run_measure(floor: u64, steps: &mut [Step]) -> Result<(), String> {
 
 /// Run one vector through every leg it states.
 fn run_vector(vector: &Vector) -> Result<(), String> {
-    let mut steps = build_steps(vector)?;
+    run_vector_with_steps(vector, build_steps(vector)?)
+}
+
+fn run_vector_with_steps(vector: &Vector, mut steps: Vec<Step>) -> Result<(), String> {
     if let Some(pattern) = vector.writer_input {
         run_writer_input(vector, pattern)?;
     }
@@ -1251,6 +1320,37 @@ fn run_vector(vector: &Vector) -> Result<(), String> {
         run_measure(floor, &mut steps)?;
     }
     Ok(())
+}
+
+#[test]
+fn unsigned_fixed_conformance_vectors() {
+    let mut checked = 0;
+    for (_, vector) in corpus_vectors() {
+        if vector.operation != "fixed" {
+            continue;
+        }
+        let mut steps = build_steps(&vector).expect("fixed vector has a supported declaration");
+        let mut unsigned = false;
+        for step in &mut steps {
+            if let Kind::Fixed {
+                min,
+                unsigned: storage,
+                ..
+            } = &mut step.kind
+            {
+                if *min >= 0 {
+                    *storage = true;
+                    unsigned = true;
+                }
+            }
+        }
+        if unsigned {
+            run_vector_with_steps(&vector, steps)
+                .unwrap_or_else(|reason| panic!("{}: {reason}", vector.name));
+            checked += 1;
+        }
+    }
+    assert!(checked > 0, "the corpus has no unsigned fixed vectors");
 }
 
 /// Every vector in the corpus, parsed, with the file it came from. Vector names are unique

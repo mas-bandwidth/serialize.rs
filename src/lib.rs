@@ -64,8 +64,9 @@
 //! stream has a refusal state, so nothing is recorded and no later operation fails. In
 //! release the checks compile out, and correctness is the
 //! caller's responsibility (size buffers conservatively, or pre-measure with
-//! [`MeasureStream`]; a violated write contract in release produces a malformed stream that
-//! checked readers reject — never memory unsafety). The read path is the trust boundary:
+//! [`MeasureStream`]; a violated write contract in release leaves the wire output
+//! unspecified — a checked reader may decode it as arbitrary in-range values rather than
+//! rejecting it — though it is never memory unsafety). The read path is the trust boundary:
 //! packet data comes from the network and may be malicious, so every read is bounds checked
 //! and range validated at runtime and fails with an [`Error`] instead of panicking. The `?`
 //! operator aborts the entire serialize function on the first error, so a truncated or
@@ -292,8 +293,8 @@ pub struct U15HiddenExports;
 
 /// A specialized result type for serialization. `Result` alone is `Result<(), Error>`, the
 /// return type of every fallible (read stream) serialize method. Serialize functions generic
-/// over the stream name the stream's own error instead — `Result<(), S::Error>` — so their
-/// write and measure instantiations are statically infallible.
+/// over the stream name the stream's own error instead — `Result<(), S::Error>` — which is
+/// [`Error`] on all three streams.
 pub type Result<T = (), E = Error> = core::result::Result<T, E>;
 
 // Every data-dependent failure funnels through this constructor so LLVM sees the error
@@ -363,7 +364,8 @@ pub const fn bits_required128(min: u128, max: u128) -> u32 {
 pub const fn signed_to_unsigned(n: i32) -> u32 {
     // shift in the unsigned domain: left shift of a negative signed value is undefined
     // behavior in the C++ this ports, and the unsigned form is exact in both languages
-    ((n as u32) << 1) ^ 0u32.wrapping_sub((n as u32) >> 31)
+    let n = u32::from_ne_bytes(n.to_ne_bytes());
+    (n << 1) ^ 0u32.wrapping_sub(n >> 31)
 }
 
 /// Convert an unsigned integer to a signed integer with zig-zag encoding.
@@ -371,5 +373,27 @@ pub const fn signed_to_unsigned(n: i32) -> u32 {
 /// 0,1,2,3,4... becomes 0,-1,+1,-2,+2...
 #[must_use]
 pub const fn unsigned_to_signed(n: u32) -> i32 {
-    ((n >> 1) ^ 0u32.wrapping_sub(n & 1)) as i32
+    i32::from_ne_bytes(((n >> 1) ^ 0u32.wrapping_sub(n & 1)).to_ne_bytes())
+}
+
+// IMPLEMENTING.md U8: release output after a write-contract violation is unspecified.
+// Pin the public documentation to that contract.
+#[cfg(test)]
+mod write_contract_documentation {
+    #[test]
+    fn release_write_misuse_documentation_is_accurate() {
+        let claim = ["malformed", "stream"].join(" ");
+        let surfaces = [
+            ("src/lib.rs", include_str!("lib.rs")),
+            ("README.md", include_str!("../README.md")),
+            ("src/write_stream.rs", include_str!("write_stream.rs")),
+            ("src/stream.rs", include_str!("stream.rs")),
+        ];
+        for (name, text) in surfaces {
+            assert!(
+                !text.contains(claim.as_str()),
+                "{name} contains outdated release write-misuse wording"
+            );
+        }
+    }
 }

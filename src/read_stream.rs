@@ -29,6 +29,10 @@ use crate::{Error, Result, cold_error};
 ///
 /// Cloning a read stream snapshots its position and its failure state: clone before a
 /// speculative read, and drop the clone (or keep reading from it) depending on what you find.
+///
+/// [`ReadStream`] is `!Send`: its optional context is an `Option<&'a dyn Any>`, and `dyn Any`
+/// is not `Sync`, so a stream cannot be moved to another thread or held across an `.await`
+/// point in a `Send` future, even when no context is set.
 #[derive(Clone)]
 pub struct ReadStream<'a> {
     reader: BitReader<'a>,
@@ -52,7 +56,7 @@ impl core::fmt::Debug for ReadStream<'_> {
 impl<'a> ReadStream<'a> {
     /// Creates a read stream that reads `bytes` bytes of packet data from `buffer`.
     ///
-    /// `buffer` is the full allocation view: pass a slice extending at least 8 bytes past the
+    /// `buffer` is the full allocation view: pass a slice extending at least 7 bytes past the
     /// packet data to keep every read on the branchless fast path. See [`BitReader::new`].
     ///
     /// `bytes` must not exceed the buffer length. A larger count is caller misuse on read,
@@ -130,6 +134,15 @@ impl<'a> ReadStream<'a> {
 
     /// Set a context on the stream, retrievable inside serialize functions with
     /// [`Stream::context`].
+    ///
+    /// [`ReadStream`] is `!Send` because the context is an `Option<&'a dyn Any>`: `dyn Any` is
+    /// not `Sync`, so the stream cannot move across threads or be held across an `.await` in a
+    /// `Send` future, even when no context is set.
+    ///
+    /// ```compile_fail
+    /// fn assert_send<T: Send>() {}
+    /// assert_send::<serialize::ReadStream<'static>>();
+    /// ```
     #[inline]
     pub fn set_context(&mut self, context: &'a dyn Any) {
         self.context = Some(context);
@@ -205,6 +218,14 @@ impl Stream for ReadStream<'_> {
     }
 
     #[inline]
+    // width and sign conversions are the codec's declared field widths
+    #[allow(
+        clippy::cast_lossless,
+        clippy::cast_possible_truncation,
+        clippy::cast_possible_wrap,
+        clippy::cast_precision_loss,
+        clippy::cast_sign_loss
+    )]
     fn serialize_bytes(&mut self, data: &mut [u8]) -> Result {
         self.serialize_align()?;
         // compare in bytes rather than bits, consistent with the 64 bit bookkeeping
@@ -228,6 +249,15 @@ impl Stream for ReadStream<'_> {
     }
 
     #[inline]
+    // the cast is safe past the check above, and the decoded length is in [0,buffer_size-1];
+    // both are the declaration's i32-width conversions, as in the C++ signature
+    #[allow(
+        clippy::cast_lossless,
+        clippy::cast_possible_truncation,
+        clippy::cast_possible_wrap,
+        clippy::cast_precision_loss,
+        clippy::cast_sign_loss
+    )]
     fn serialize_string(&mut self, value: &mut String, buffer_size: usize) -> Result {
         // a buffer_size outside [1,i32::MAX] is a bad declaration, refused as
         // value_out_of_range after the failure state, never asserted (U7, U16)
@@ -278,6 +308,14 @@ impl Stream for ReadStream<'_> {
     /// [`Error::NonzeroPadding`] when any is set. An accepted end has consumed the whole
     /// stream.
     #[inline]
+    // width and sign conversions are the codec's declared field widths
+    #[allow(
+        clippy::cast_lossless,
+        clippy::cast_possible_truncation,
+        clippy::cast_possible_wrap,
+        clippy::cast_precision_loss,
+        clippy::cast_sign_loss
+    )]
     fn serialize_end(&mut self) -> Result {
         if let Some(error) = self.failed {
             return cold_error(error);

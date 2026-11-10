@@ -44,7 +44,7 @@ than tracking `main`:
 
 ```toml
 [dependencies]
-serialize-official = { git = "https://github.com/mas-bandwidth/serialize.rs", tag = "v3.0.0" }
+serialize-official = { git = "https://github.com/mas-bandwidth/serialize.rs", tag = "v5.0.0" }
 ```
 
 Two CI jobs hold the registry and this repository to each other, so no version number written
@@ -179,7 +179,8 @@ Three obligations from STANDARD.md's Reader Obligations hold in every build:
   is `2^31` or above, not a negative sequence number. The absolute tier is canonical too: a
   `current` no more than 69914 above `previous` has a bounded encoding, so carried in the
   absolute tier it is refused as `non_canonical`. `previous` is the caller's own state and
-  never arrives off the wire, so a `previous` outside the domain is a debug assertion.
+  never arrives off the wire: a read refuses one outside the domain as `value_out_of_range`
+  in every build, while on write and measure it is a debug assertion.
 
 The write path is trusted — the writer-trusted contract the whole family shares, matching the
 C++ library's checkless writer. No built-in write or measure operation returns an error; the
@@ -188,10 +189,11 @@ only one a write or measure produces is U9's false from the caller's own `fail`,
 `Infallible` and that false could not be expressed). Invalid arguments and out of
 range values are debug assertions, compiled out in release, where correctness is the
 caller's responsibility — size buffers conservatively or pre-measure with `MeasureStream`
-(its estimate is guaranteed conservative). A violated write contract in release produces a
-malformed stream that checked readers reject; it is never memory unsafety, and writing past
-the end of a buffer still panics via the slice bounds check rather than being undefined
-behavior. Readers keep every packet data check: fully fallible, in every build.
+(its estimate is guaranteed conservative). A violated write contract in release leaves the
+wire output unspecified: a checked reader may decode it as arbitrary in-range values rather
+than rejecting it, and it is never memory unsafety; writing past the end of a buffer still
+panics via the slice bounds check rather than being undefined behavior. Readers keep every
+packet data check: fully fallible, in every build.
 
 Caller declarations (bits out of [1,32]/[1,64], `min > max`, a fixed point Q format that does
 not fit, precomputed compressed float constants that cannot be right, an `int_relative`
@@ -245,10 +247,11 @@ compressed float declaration whose `max - min`, quantum count or top decode (`mi
   serialize functions can carry whatever state they need.
 - 128 bit values use Rust's native `i128`/`u128` on every platform; there is no equivalent
   of the C++ library's emulated 128 bit pair, and none is needed. The wire is identical.
-- `serialize_fixed` takes its Q format and bounds as runtime arguments checked by debug
-  assertions (the storage type is generic over `FixedPointStorage`, so
-  `stream.serialize_fixed(&mut value, 48, 16, min, max)` mirrors the C++ call shape); the
-  C++ library checks the same constraints at compile time with `static_assert`s. The wire is identical, and the C++
+- `serialize_fixed` takes its Q format and bounds as runtime arguments (the storage type is
+  generic over `FixedPointStorage`, so `stream.serialize_fixed(&mut value, 48, 16, min, max)`
+  mirrors the C++ call shape). A read refuses a bad declaration as `value_out_of_range` in
+  every build; on write and measure it is a debug assertion. The C++ library checks the same
+  constraints at compile time with `static_assert`s. The wire is identical, and the C++
   contract notes about 128 bit division do not apply: the codec never divides in either
   implementation.
 - Buffer sizes and bit counts are `u64` internally, matching the C++ library's 64 bit

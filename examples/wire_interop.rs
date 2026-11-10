@@ -259,13 +259,13 @@ where
     let mut stream = WriteStream::new(&mut buffer);
     serialize(&mut stream);
     stream.flush();
-    let bytes = stream.bytes_processed() as usize;
+    let bytes = usize::try_from(stream.bytes_processed()).expect("byte count fits usize");
     buffer.truncate(bytes);
     buffer
 }
 
 fn encode_golden(data: &mut GoldenWireData) -> Vec<u8> {
-    // writes are infallible as of 2.0: Ok is the only pattern
+    // built-in writes do not fail: Ok is the only pattern
     write_packet(|stream| {
         golden_wire_serialize(stream, data).unwrap();
     })
@@ -303,8 +303,8 @@ fn read_file(path: &str) -> std::result::Result<(), String> {
     }
     let (golden, extended_bytes) = input.split_at(GOLDEN_WIRE_BYTES.len());
 
-    // each packet gets its own buffer extending 8 bytes past the data, per the read
-    // allocation contract, and exactly its own bytes as the stream length: the end of each
+    // each packet gets its own buffer with 8 bytes of slack, comfortably above the 7 the
+    // read fast path needs, and exactly its own bytes as the stream length: the end of each
     // refuses anything else
     let with_slack = |packet: &[u8]| {
         let mut buffer = packet.to_vec();

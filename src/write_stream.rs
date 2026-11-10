@@ -15,6 +15,10 @@ use crate::{Error, Result, cold_error};
 /// correctness is the caller's responsibility — size buffers conservatively or pre-measure
 /// with [`crate::MeasureStream`]. Writing past the end of the buffer panics via the slice
 /// bounds check rather than being undefined behavior as in C++.
+///
+/// [`WriteStream`] is `!Send`: its optional context is an `Option<&'a dyn Any>`, and `dyn Any`
+/// is not `Sync`, so a stream cannot be moved to another thread or held across an `.await`
+/// point in a `Send` future, even when no context is set.
 pub struct WriteStream<'a> {
     writer: BitWriter<'a>,
     context: Option<&'a dyn Any>,
@@ -46,6 +50,15 @@ impl<'a> WriteStream<'a> {
 
     /// Set a context on the stream, retrievable inside serialize functions with
     /// [`Stream::context`].
+    ///
+    /// [`WriteStream`] is `!Send` because the context is an `Option<&'a dyn Any>`: `dyn Any` is
+    /// not `Sync`, so the stream cannot move across threads or be held across an `.await` in a
+    /// `Send` future, even when no context is set.
+    ///
+    /// ```compile_fail
+    /// fn assert_send<T: Send>() {}
+    /// assert_send::<serialize::WriteStream<'static>>();
+    /// ```
     #[inline]
     pub fn set_context(&mut self, context: &'a dyn Any) {
         self.context = Some(context);
@@ -261,6 +274,15 @@ impl Stream for WriteStream<'_> {
     }
 
     #[inline]
+    // buffer_size is the declared i32-width length limit of the wire; these casts are the
+    // declaration's own narrowing, the same one the C++ signature takes
+    #[allow(
+        clippy::cast_lossless,
+        clippy::cast_possible_truncation,
+        clippy::cast_possible_wrap,
+        clippy::cast_precision_loss,
+        clippy::cast_sign_loss
+    )]
     fn serialize_string(&mut self, value: &mut String, buffer_size: usize) -> Result {
         let mut length = string_length(value, buffer_size);
         debug_assert_room(
@@ -309,6 +331,14 @@ impl Stream for WriteStream<'_> {
 /// written ahead of a payload that does not fit. A debug assertion, like every write misuse
 /// (U9); in release the payload copy still stops at the slice bounds check.
 #[inline]
+// width and sign conversions are the codec's declared field widths
+#[allow(
+    clippy::cast_lossless,
+    clippy::cast_possible_truncation,
+    clippy::cast_possible_wrap,
+    clippy::cast_precision_loss,
+    clippy::cast_sign_loss
+)]
 fn debug_assert_room(writer: &BitWriter<'_>, field_bits: u32, payload: usize) {
     if cfg!(debug_assertions) {
         let after_field = writer.bits_written() + u64::from(field_bits);
@@ -326,8 +356,18 @@ fn debug_assert_room(writer: &BitWriter<'_>, field_bits: u32, payload: usize) {
 /// range `[0,buffer_size-1]`, and the payload must hold no zero byte (STANDARD.md, "string":
 /// a writer is handed well-formed UTF-8 with no NUL, which a Rust `String` guarantees for the
 /// first half). Every violation is a write-contract violation on a trusted path — a debug
-/// assertion, compiled out in release, where the malformed stream is one checked readers
-/// reject (never memory unsafety).
+/// assertion, compiled out in release, where the wire output is unspecified: a checked
+/// reader may decode it as arbitrary in-range values rather than rejecting it (never memory
+/// unsafety).
+// the length is below buffer_size, which the debug assertion bounds by i32::MAX; the cast is
+// the same i32-width length the C++ signature uses
+#[allow(
+    clippy::cast_lossless,
+    clippy::cast_possible_truncation,
+    clippy::cast_possible_wrap,
+    clippy::cast_precision_loss,
+    clippy::cast_sign_loss
+)]
 pub(crate) fn string_length(value: &str, buffer_size: usize) -> i32 {
     let length = value.len();
     debug_assert!(

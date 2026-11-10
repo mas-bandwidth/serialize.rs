@@ -34,6 +34,7 @@ enum Value {
     Int64 { value: i64, min: i64, max: i64 },
     Bool(bool),
     Float(f32),
+    CompressedFloat(f32),
     Double(f64),
     Bytes(Vec<u8>),
     Align,
@@ -60,8 +61,17 @@ const FIXED112_MAX_UNITS: i64 = 1152921504606846976;
 // one match arm per op kind, mirroring the C++ fuzz harness's op table; splitting it would
 // separate the ops from the distribution that drives them
 #[allow(clippy::too_many_lines)]
+// each arm narrows the random stream into the op's wire width, or forms a two's complement
+// value from it, exactly as the C++ harness does
+#[allow(
+    clippy::cast_lossless,
+    clippy::cast_possible_truncation,
+    clippy::cast_possible_wrap,
+    clippy::cast_precision_loss,
+    clippy::cast_sign_loss
+)]
 fn random_value(rng: &mut Rng) -> Value {
-    match rng.range(20) {
+    match rng.range(21) {
         0 => {
             let bits = rng.range(32) as u32 + 1;
             let value = (rng.next() as u32) & (((1u64 << bits) - 1) as u32);
@@ -193,6 +203,7 @@ fn random_value(rng: &mut Rng) -> Value {
             let raw = rng.next128() % (raw_range + 1);
             Value::Fixed128Unsigned { raw }
         }
+        20 => Value::CompressedFloat(rng.range(257) as f32 / 256.0),
         _ => {
             let raw_min = i128::from(FIXED112_MIN_UNITS) << 16;
             let raw_range = ((FIXED112_MAX_UNITS - FIXED112_MIN_UNITS) as u128) << 16;
@@ -213,6 +224,9 @@ fn serialize_value<S: Stream>(
         Value::Int64 { value, min, max } => stream.serialize_int64(value, *min, *max),
         Value::Bool(value) => stream.serialize_bool(value),
         Value::Float(value) => stream.serialize_f32(value),
+        Value::CompressedFloat(value) => {
+            stream.serialize_compressed_float(value, 0.0, 1.0, 1.0 / 256.0)
+        }
         Value::Double(value) => stream.serialize_f64(value),
         Value::Bytes(data) => stream.serialize_bytes(data),
         Value::Align => stream.serialize_align(),
@@ -260,6 +274,7 @@ fn blank(value: &Value) -> Value {
         },
         Value::Bool(_) => Value::Bool(false),
         Value::Float(_) => Value::Float(0.0),
+        Value::CompressedFloat(_) => Value::CompressedFloat(0.0),
         Value::Double(_) => Value::Double(0.0),
         Value::Bytes(data) => Value::Bytes(vec![0; data.len()]),
         Value::Align => Value::Align,
@@ -310,7 +325,8 @@ fn finite_double_bits(bits: u64) -> u64 {
 /// negative zero or a subnormal that came back altered counts as a mismatch.
 fn matches(written: &Value, read: &Value) -> bool {
     match (written, read) {
-        (Value::Float(a), Value::Float(b)) => a.to_bits() == b.to_bits(),
+        (Value::Float(a), Value::Float(b))
+        | (Value::CompressedFloat(a), Value::CompressedFloat(b)) => a.to_bits() == b.to_bits(),
         (Value::Double(a), Value::Double(b)) => a.to_bits() == b.to_bits(),
         _ => written == read,
     }
@@ -322,6 +338,14 @@ const ROUND_TRIP_SEEDS: u64 = if cfg!(miri) { 8 } else { 500 };
 const HOSTILE_SEEDS: u64 = if cfg!(miri) { 16 } else { 2000 };
 
 #[test]
+// the buffer is 4096 bytes, so the processed byte count fits the slice index
+#[allow(
+    clippy::cast_lossless,
+    clippy::cast_possible_truncation,
+    clippy::cast_possible_wrap,
+    clippy::cast_precision_loss,
+    clippy::cast_sign_loss
+)]
 fn test_differential_round_trip() {
     // write a random value sequence, then a read of the same sequence must return exactly the
     // written values, and the measure stream must never under-measure the write
@@ -364,6 +388,23 @@ fn test_differential_round_trip() {
 }
 
 #[test]
+fn compressed_float_uses_quantized_width() {
+    let mut buffer = [0u8; 8];
+    let mut value = Value::CompressedFloat(0.5);
+    let mut stream = WriteStream::new(&mut buffer);
+    serialize_value(&mut stream, &mut value).unwrap();
+    assert_eq!(stream.bits_processed(), 9);
+}
+
+#[test]
+// the hostile length is drawn from a 64 wide range and indexes a local buffer
+#[allow(
+    clippy::cast_lossless,
+    clippy::cast_possible_truncation,
+    clippy::cast_possible_wrap,
+    clippy::cast_precision_loss,
+    clippy::cast_sign_loss
+)]
 fn test_hostile_read() {
     // arbitrary bytes driven through every ReadStream primitive must fail cleanly with an
     // error, never panic. mirrors the hostile pass of the C++ fuzz harness.

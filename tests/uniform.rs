@@ -26,11 +26,21 @@ fn put(stream: &mut WriteStream<'_>, mut value: u32, bits: u32) {
     stream.serialize_bits(&mut value, bits).unwrap();
 }
 
-/// Run `f` and report whether it panicked, without printing the panic. Every caller is a
-/// checked-build test (the trap is compiled out in release), so the helper is too.
+/// Run `f`, require it to trap, and require the panic message to contain `expected`. Every
+/// caller is a checked-build test (the trap is compiled out in release), so the helper is too.
 #[cfg(debug_assertions)]
-fn panics(f: impl FnOnce()) -> bool {
-    std::panic::catch_unwind(std::panic::AssertUnwindSafe(f)).is_err()
+fn panics(f: impl FnOnce(), expected: &str) {
+    let payload = std::panic::catch_unwind(std::panic::AssertUnwindSafe(f))
+        .expect_err("the operation should have trapped");
+    let message = payload
+        .downcast_ref::<&str>()
+        .copied()
+        .or_else(|| payload.downcast_ref::<String>().map(String::as_str))
+        .unwrap_or("<non-string panic payload>");
+    assert!(
+        message.contains(expected),
+        "panic message {message:?} does not contain {expected:?}"
+    );
 }
 
 // ------------------------------------------------------------------------------------------
@@ -83,6 +93,13 @@ fn u2_reject_and_object_composition_latch_rejected() {
 // the caller's bytes exactly, and the measure counts exactly those bytes.
 
 #[test]
+#[allow(
+    clippy::cast_lossless,
+    clippy::cast_possible_truncation,
+    clippy::cast_possible_wrap,
+    clippy::cast_precision_loss,
+    clippy::cast_sign_loss
+)]
 fn u3_text_is_written_byte_for_byte() {
     let text = "naïve 日本 \u{1F600} \u{10FFFF}";
     let mut buffer = [0u8; 64];
@@ -110,17 +127,23 @@ fn u3_text_is_written_byte_for_byte() {
 #[test]
 #[cfg(debug_assertions)]
 fn u4_nul_in_a_string_asserts_on_write_and_measure() {
-    assert!(panics(|| {
-        let mut buffer = [0u8; 16];
-        let mut write = WriteStream::new(&mut buffer);
-        let mut value = String::from("a\0b");
-        let _ = write.serialize_string(&mut value, 16);
-    }));
-    assert!(panics(|| {
-        let mut measure = MeasureStream::new();
-        let mut value = String::from("a\0b");
-        let _ = measure.serialize_string(&mut value, 16);
-    }));
+    panics(
+        || {
+            let mut buffer = [0u8; 16];
+            let mut write = WriteStream::new(&mut buffer);
+            let mut value = String::from("a\0b");
+            let _ = write.serialize_string(&mut value, 16);
+        },
+        "string holds a NUL byte",
+    );
+    panics(
+        || {
+            let mut measure = MeasureStream::new();
+            let mut value = String::from("a\0b");
+            let _ = measure.serialize_string(&mut value, 16);
+        },
+        "string holds a NUL byte",
+    );
 }
 
 // ------------------------------------------------------------------------------------------
@@ -172,52 +195,85 @@ fn u6_measure_refuses_nothing() {
 #[cfg(debug_assertions)]
 fn u6_measure_traps_what_write_traps() {
     // a value too wide for its bits: the gap the 2.1.1 survey found
-    assert!(panics(|| {
-        let mut value = 0x1FFu32;
-        let _ = MeasureStream::new().serialize_bits(&mut value, 8);
-    }));
-    assert!(panics(|| {
-        let mut value = 1u64 << 40;
-        let _ = MeasureStream::new().serialize_bits64(&mut value, 40);
-    }));
-    assert!(panics(|| {
-        let mut value = 11i32;
-        let _ = MeasureStream::new().serialize_int(&mut value, 0, 10);
-    }));
-    assert!(panics(|| {
-        let mut value = 0u32;
-        let _ = MeasureStream::new().serialize_bits(&mut value, 33);
-    }));
-    assert!(panics(|| {
-        let mut value = f32::NAN;
-        let _ = MeasureStream::new().serialize_f32(&mut value);
-    }));
-    assert!(panics(|| {
-        let mut value = f64::INFINITY;
-        let _ = MeasureStream::new().serialize_f64(&mut value);
-    }));
-    assert!(panics(|| {
-        let mut value = f32::NAN;
-        let _ = MeasureStream::new().serialize_compressed_float(&mut value, 0.0, 1.0, 0.1);
-    }));
-    assert!(panics(|| {
-        let mut text = String::from("abcd");
-        let _ = MeasureStream::new().serialize_string(&mut text, 4);
-    }));
-    assert!(panics(|| {
-        let mut text = String::from("a\0b");
-        let _ = MeasureStream::new().serialize_string(&mut text, 16);
-    }));
-    assert!(panics(|| {
-        let mut text = String::new();
-        let _ = MeasureStream::new().serialize_string(&mut text, 0);
-    }));
+    panics(
+        || {
+            let mut value = 0x1FFu32;
+            let _ = MeasureStream::new().serialize_bits(&mut value, 8);
+        },
+        "does not fit in 8 bits",
+    );
+    panics(
+        || {
+            let mut value = 1u64 << 40;
+            let _ = MeasureStream::new().serialize_bits64(&mut value, 40);
+        },
+        "u128::from(*value) < (1u128 << bits)",
+    );
+    panics(
+        || {
+            let mut value = 11i32;
+            let _ = MeasureStream::new().serialize_int(&mut value, 0, 10);
+        },
+        "*value <= max",
+    );
+    panics(
+        || {
+            let mut value = 0u32;
+            let _ = MeasureStream::new().serialize_bits(&mut value, 33);
+        },
+        "bits must be in [1,32]",
+    );
+    panics(
+        || {
+            let mut value = f32::NAN;
+            let _ = MeasureStream::new().serialize_f32(&mut value);
+        },
+        "serialize_f32: the format carries finite values only",
+    );
+    panics(
+        || {
+            let mut value = f64::INFINITY;
+            let _ = MeasureStream::new().serialize_f64(&mut value);
+        },
+        "serialize_f64: the format carries finite values only",
+    );
+    panics(
+        || {
+            let mut value = f32::NAN;
+            let _ = MeasureStream::new().serialize_compressed_float(&mut value, 0.0, 1.0, 0.1);
+        },
+        "written value must be finite",
+    );
+    panics(
+        || {
+            let mut text = String::from("abcd");
+            let _ = MeasureStream::new().serialize_string(&mut text, 4);
+        },
+        "does not fit buffer_size",
+    );
+    panics(
+        || {
+            let mut text = String::from("a\0b");
+            let _ = MeasureStream::new().serialize_string(&mut text, 16);
+        },
+        "string holds a NUL byte",
+    );
+    panics(
+        || {
+            let mut text = String::new();
+            let _ = MeasureStream::new().serialize_string(&mut text, 0);
+        },
+        "string buffer_size must be in [1,i32::MAX]",
+    );
     // the trap latches nothing: the same measure keeps measuring after a caught misuse
     let mut measure = MeasureStream::new();
-    assert!(panics(|| {
-        let mut value = 0x1FFu32;
-        let _ = measure.serialize_bits(&mut value, 8);
-    }));
+    panics(
+        || {
+            let mut value = 0x1FFu32;
+            let _ = measure.serialize_bits(&mut value, 8);
+        },
+        "does not fit in 8 bits",
+    );
     let mut value = 0xFFu32;
     measure.serialize_bits(&mut value, 8).unwrap();
 }
@@ -281,25 +337,37 @@ fn u7_misuse_on_a_failed_stream_keeps_the_first_reason() {
 #[test]
 #[cfg(debug_assertions)]
 fn u8_over_wide_values_assert_on_write() {
-    assert!(panics(|| {
-        let mut buffer = [0u8; 8];
-        put(&mut WriteStream::new(&mut buffer), 4, 2);
-    }));
-    assert!(panics(|| {
-        let mut buffer = [0u8; 16];
-        let mut value = 1u64 << 40;
-        let _ = WriteStream::new(&mut buffer).serialize_bits64(&mut value, 40);
-    }));
-    assert!(panics(|| {
-        let mut buffer = [0u8; 8];
-        let mut value = 11i32;
-        let _ = WriteStream::new(&mut buffer).serialize_int(&mut value, 0, 10);
-    }));
-    assert!(panics(|| {
-        let mut buffer = [0u8; 8];
-        let mut value = i128::MAX;
-        let _ = WriteStream::new(&mut buffer).serialize_int128(&mut value, 0, 10);
-    }));
+    panics(
+        || {
+            let mut buffer = [0u8; 8];
+            put(&mut WriteStream::new(&mut buffer), 4, 2);
+        },
+        "u64::from(value) < (1u64 << bits)",
+    );
+    panics(
+        || {
+            let mut buffer = [0u8; 16];
+            let mut value = 1u64 << 40;
+            let _ = WriteStream::new(&mut buffer).serialize_bits64(&mut value, 40);
+        },
+        "u128::from(*value) < (1u128 << bits)",
+    );
+    panics(
+        || {
+            let mut buffer = [0u8; 8];
+            let mut value = 11i32;
+            let _ = WriteStream::new(&mut buffer).serialize_int(&mut value, 0, 10);
+        },
+        "*value <= max",
+    );
+    panics(
+        || {
+            let mut buffer = [0u8; 8];
+            let mut value = i128::MAX;
+            let _ = WriteStream::new(&mut buffer).serialize_int128(&mut value, 0, 10);
+        },
+        "*value <= max",
+    );
 }
 
 // ------------------------------------------------------------------------------------------
@@ -427,11 +495,15 @@ fn u9_reject_on_write_and_measure_returns_err_in_release() {
 #[test]
 #[cfg(debug_assertions)]
 fn u9_compressed_float_misuse_uses_the_same_mechanism() {
-    assert!(panics(|| {
-        let mut buffer = [0u8; 8];
-        let mut value = 0.5f32;
-        let _ = WriteStream::new(&mut buffer).serialize_compressed_float(&mut value, 1.0, 0.0, 0.1);
-    }));
+    panics(
+        || {
+            let mut buffer = [0u8; 8];
+            let mut value = 0.5f32;
+            let _ =
+                WriteStream::new(&mut buffer).serialize_compressed_float(&mut value, 1.0, 0.0, 0.1);
+        },
+        "requires min < max and resolution > 0",
+    );
 }
 
 // U9 (2.1.1 ruling): a NaN or infinite compressed_float value traps in a checked build, on
@@ -440,16 +512,22 @@ fn u9_compressed_float_misuse_uses_the_same_mechanism() {
 #[cfg(debug_assertions)]
 fn u9_compressed_float_non_finite_value_traps() {
     for bad in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
-        assert!(panics(|| {
-            let mut buffer = [0u8; 8];
-            let mut value = bad;
-            let _ =
-                WriteStream::new(&mut buffer).serialize_compressed_float(&mut value, 0.0, 1.0, 0.1);
-        }));
-        assert!(panics(|| {
-            let mut value = bad;
-            let _ = MeasureStream::new().serialize_compressed_float(&mut value, 0.0, 1.0, 0.1);
-        }));
+        panics(
+            || {
+                let mut buffer = [0u8; 8];
+                let mut value = bad;
+                let _ = WriteStream::new(&mut buffer)
+                    .serialize_compressed_float(&mut value, 0.0, 1.0, 0.1);
+            },
+            "written value must be finite",
+        );
+        panics(
+            || {
+                let mut value = bad;
+                let _ = MeasureStream::new().serialize_compressed_float(&mut value, 0.0, 1.0, 0.1);
+            },
+            "written value must be finite",
+        );
     }
 }
 
@@ -469,10 +547,13 @@ fn u9_reject_on_a_measure_traps() {
 fn u9_write_misuse_never_latches() {
     let mut buffer = [0u8; 8];
     let mut write = WriteStream::new(&mut buffer);
-    assert!(panics(|| {
-        let mut value = 11i32;
-        let _ = write.serialize_int(&mut value, 0, 10);
-    }));
+    panics(
+        || {
+            let mut value = 11i32;
+            let _ = write.serialize_int(&mut value, 0, 10);
+        },
+        "*value <= max",
+    );
     assert_eq!(write.bits_processed(), 0);
     let mut value = 0xA5u32;
     write.serialize_bits(&mut value, 8).unwrap();
@@ -491,11 +572,14 @@ fn u10_bytes_that_do_not_fit_write_nothing() {
     put(&mut write, 1, 3); // unaligned: the align bits must not go out ahead of the payload
     let before = write.bits_processed();
     let mut payload = [0xAAu8; 8]; // 5 align bits + 64 > the 61 bits left
-    assert!(panics(|| {
-        let _ = write.serialize_bytes(&mut payload);
-    }));
+    panics(
+        || {
+            let _ = write.serialize_bytes(&mut payload);
+        },
+        "for the whole operation",
+    );
     assert_eq!(write.bits_processed(), before);
-    assert!(panics(|| write.write_bytes(&payload)));
+    panics(|| write.write_bytes(&payload), "for the whole operation");
     assert_eq!(write.bits_processed(), before);
 }
 
@@ -507,9 +591,12 @@ fn u10_a_string_that_does_not_fit_writes_no_length() {
     let mut text = String::from("1234567"); // 6 length bits + 2 align + 56 > 64 - 8
     put(&mut write, 0, 8);
     let before = write.bits_processed();
-    assert!(panics(|| {
-        let _ = write.serialize_string(&mut text, 64);
-    }));
+    panics(
+        || {
+            let _ = write.serialize_string(&mut text, 64);
+        },
+        "for the whole operation",
+    );
     assert_eq!(write.bits_processed(), before);
     // the same string fits a fresh buffer exactly: the check is the whole operation, no more
     let mut fresh = [0u8; 8];
@@ -774,26 +861,44 @@ fn u15_split_write_forms_are_wire_identical_from_every_offset() {
 #[test]
 #[cfg(debug_assertions)]
 fn u15_split_write_forms_catch_misuse_as_their_twins() {
-    // the same misuse through each unified form and its split twin: both must assert
-    fn both(unified: impl FnOnce(&mut WriteStream<'_>), split: impl FnOnce(&mut WriteStream<'_>)) {
-        let unified_panics = panics(|| {
-            let mut buffer = [0u8; 8];
-            unified(&mut WriteStream::new(&mut buffer));
-        });
-        let split_panics = panics(|| {
-            let mut buffer = [0u8; 8];
-            split(&mut WriteStream::new(&mut buffer));
-        });
-        assert!(unified_panics && split_panics);
+    // the same misuse through each unified form and its split twin: both must trap the same way
+    fn both(
+        unified: impl FnOnce(&mut WriteStream<'_>),
+        split: impl FnOnce(&mut WriteStream<'_>),
+        expected: &str,
+    ) {
+        panics(
+            || {
+                let mut buffer = [0u8; 8];
+                unified(&mut WriteStream::new(&mut buffer));
+            },
+            expected,
+        );
+        panics(
+            || {
+                let mut buffer = [0u8; 8];
+                split(&mut WriteStream::new(&mut buffer));
+            },
+            expected,
+        );
     }
-    both(|s| put(s, 4, 2), |s| s.write_bits(4, 2));
-    both(|s| put(s, 1, 0), |s| s.write_bits(1, 0));
+    both(
+        |s| put(s, 4, 2),
+        |s| s.write_bits(4, 2),
+        "u64::from(value) < (1u64 << bits)",
+    );
+    both(
+        |s| put(s, 1, 0),
+        |s| s.write_bits(1, 0),
+        "bits must be in [1,32]",
+    );
     both(
         |s| {
             let mut v = 1u64 << 40;
             s.serialize_bits64(&mut v, 40).unwrap();
         },
         |s| s.write_bits64(1 << 40, 40),
+        "u128::from(*value) < (1u128 << bits)",
     );
     both(
         |s| {
@@ -801,6 +906,7 @@ fn u15_split_write_forms_catch_misuse_as_their_twins() {
             s.serialize_bits64(&mut v, 65).unwrap();
         },
         |s| s.write_bits64(0, 65),
+        "bits must be in [1,64]",
     );
     both(
         |s| {
@@ -808,6 +914,7 @@ fn u15_split_write_forms_catch_misuse_as_their_twins() {
             s.serialize_int(&mut v, 0, 10).unwrap();
         },
         |s| s.write_int(11, 0, 10),
+        "*value <= max",
     );
     both(
         |s| {
@@ -815,6 +922,7 @@ fn u15_split_write_forms_catch_misuse_as_their_twins() {
             s.serialize_int(&mut v, 10, 0).unwrap();
         },
         |s| s.write_int(5, 10, 0),
+        "must not be greater than max",
     );
     both(
         |s| {
@@ -822,6 +930,7 @@ fn u15_split_write_forms_catch_misuse_as_their_twins() {
             s.serialize_int64(&mut v, -10, 10).unwrap();
         },
         |s| s.write_int64(-11, -10, 10),
+        "*value >= min",
     );
     both(
         |s| {
@@ -829,6 +938,7 @@ fn u15_split_write_forms_catch_misuse_as_their_twins() {
             s.serialize_f32(&mut v).unwrap();
         },
         |s| s.write_f32(f32::INFINITY),
+        "serialize_f32: the format carries finite values only",
     );
     both(
         |s| {
@@ -836,6 +946,7 @@ fn u15_split_write_forms_catch_misuse_as_their_twins() {
             s.serialize_f64(&mut v).unwrap();
         },
         |s| s.write_f64(f64::NAN),
+        "serialize_f64: the format carries finite values only",
     );
     // U10: a payload with no room for all of it
     both(
@@ -844,6 +955,7 @@ fn u15_split_write_forms_catch_misuse_as_their_twins() {
             s.serialize_bytes(&mut data).unwrap();
         },
         |s| s.write_bytes(&[0u8; 9]),
+        "for the whole operation",
     );
 }
 
@@ -965,17 +1077,26 @@ fn u16_compressed_float_declarations_are_refused_on_read() {
 #[test]
 #[cfg(debug_assertions)]
 fn u16_bad_declarations_assert_on_write_and_measure() {
-    assert!(panics(|| {
-        let mut buffer = [0u8; 8];
-        let mut value = 0i32;
-        let _ = WriteStream::new(&mut buffer).serialize_int(&mut value, 1, 0);
-    }));
-    assert!(panics(|| {
-        let mut value = 0i32;
-        let _ = MeasureStream::new().serialize_int(&mut value, 1, 0);
-    }));
-    assert!(panics(|| {
-        let mut value = 0u64;
-        let _ = MeasureStream::new().serialize_bits64(&mut value, 65);
-    }));
+    panics(
+        || {
+            let mut buffer = [0u8; 8];
+            let mut value = 0i32;
+            let _ = WriteStream::new(&mut buffer).serialize_int(&mut value, 1, 0);
+        },
+        "must not be greater than max",
+    );
+    panics(
+        || {
+            let mut value = 0i32;
+            let _ = MeasureStream::new().serialize_int(&mut value, 1, 0);
+        },
+        "must not be greater than max",
+    );
+    panics(
+        || {
+            let mut value = 0u64;
+            let _ = MeasureStream::new().serialize_bits64(&mut value, 65);
+        },
+        "bits must be in [1,64]",
+    );
 }
