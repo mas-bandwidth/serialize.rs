@@ -316,8 +316,8 @@ fn finite_double_bits(bits: u64) -> u64 {
 /// negative zero or a subnormal that came back altered counts as a mismatch.
 fn matches(written: &Value, read: &Value) -> bool {
     match (written, read) {
-        (Value::Float(a), Value::Float(b)) => a.to_bits() == b.to_bits(),
-        (Value::CompressedFloat(a), Value::CompressedFloat(b)) => a.to_bits() == b.to_bits(),
+        (Value::Float(a), Value::Float(b))
+        | (Value::CompressedFloat(a), Value::CompressedFloat(b)) => a.to_bits() == b.to_bits(),
         (Value::Double(a), Value::Double(b)) => a.to_bits() == b.to_bits(),
         _ => written == read,
     }
