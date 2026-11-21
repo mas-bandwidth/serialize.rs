@@ -6,6 +6,11 @@
 
 A simple bitpacking serializer for Rust.
 
+If you would rather not write serialize functions by hand,
+[Schema](https://github.com/mas-bandwidth/schema) generates them for Rust and many other
+languages from one definition of your data. The packet code it generates for Rust uses this
+library as its runtime.
+
 This is a port of the C++ [serialize](https://github.com/mas-bandwidth/serialize) library and
 is **bit-for-bit wire compatible** with it. It carries **serialize format 2.0**: the wire
 carries only integers and bytes, and every value has exactly one encoding (STANDARD.md). The
