@@ -4,12 +4,10 @@
 ; :tested-revision is the main commit whose CI passed with that evidence.
 (:schema 1
  :root "goal"
- :page (:title "serialize.rs roadmap"
-        :roadmaps ("encoding" "untrusted" "compat" "platforms" "testing"))
+ :page (:roadmaps ("encoding" "untrusted" "compat" "platforms" "testing"))
  :nodes
  ((:id "goal" :type :work-set :children ("encoding" "untrusted" "compat" "platforms" "testing"))
   (:id "encoding" :type :roadmap :title "Encoding"
-   :text "The values one serialize function can write, read and measure, each packed into exactly the bits it needs."
    :rows (("one-function" "one serialize function for write, read and measure")
           ("bits" "raw bits, 1 to 64 at a time")
           ("bool-uints" "bool, u8, u16, u32 and u64")
@@ -22,7 +20,7 @@
           ("fixed" "fixed point (Q formats) serialized exactly")
           ("int-relative" "relative sequence numbers (int_relative)")
           ("bytes-align" "byte arrays and alignment")
-          ("strings" "UTF-8 strings and UTF-16 wide strings")
+          ("strings" "UTF-8 strings")
           ("measure" "a conservative size estimate before writing")
           ("large-buffers" "buffers past 256 MB round trip"))
    :columns (("done" "done"))
@@ -53,16 +51,15 @@
   (:id "encoding/fixed" :type :task :title "fixed point (Q formats) serialized exactly" :state :done :evidence ("tests/serialize.rs: test_serialize_fixed" "tests/serialize.rs: test_serialize_fixed_wide" "tests/serialize.rs: test_serialize_fixed_matches_int64") :tested-revision "6b1559a7135fb1d06b6cda7f93011834c27883ac")
   (:id "encoding/int-relative" :type :task :title "relative sequence numbers (int_relative)" :state :done :evidence ("tests/serialize.rs: test_int_relative_round_trip" "tests/serialize.rs: test_int_relative_reconstruction_is_checked_in_every_tier") :tested-revision "6b1559a7135fb1d06b6cda7f93011834c27883ac")
   (:id "encoding/bytes-align" :type :task :title "byte arrays and alignment" :state :done :evidence ("tests/serialize.rs: test_serialize_bytes_validation" "tests/serialize.rs: test_write_bytes_wire_identical" "tests/serialize.rs: test_serialize") :tested-revision "6b1559a7135fb1d06b6cda7f93011834c27883ac")
-  (:id "encoding/strings" :type :task :title "UTF-8 strings and UTF-16 wide strings" :state :done :evidence ("tests/serialize.rs: test_wstring_utf16_code_units" "tests/serialize.rs: test_wstring_family_vector_emoji_first" "tests/degenerate.rs: degenerate_string_buffer_holds_the_empty_string") :tested-revision "6b1559a7135fb1d06b6cda7f93011834c27883ac")
+  (:id "encoding/strings" :type :task :title "UTF-8 strings" :state :done :evidence ("tests/serialize.rs: test_string_read_refusals" "tests/degenerate.rs: degenerate_string_buffer_holds_the_empty_string") :tested-revision "6b1559a7135fb1d06b6cda7f93011834c27883ac")
   (:id "encoding/measure" :type :task :title "a conservative size estimate before writing" :state :done :evidence ("tests/serialize.rs: test_measure") :tested-revision "6b1559a7135fb1d06b6cda7f93011834c27883ac")
   (:id "encoding/large-buffers" :type :task :title "buffers past 256 MB round trip" :state :done :evidence ("tests/serialize.rs: test_large_buffer (ci.yml test job, release step with --include-ignored)") :tested-revision "6b1559a7135fb1d06b6cda7f93011834c27883ac")
   (:id "untrusted" :type :roadmap :title "Reading untrusted data"
-   :text "The read path is the trust boundary: hostile packet data is refused with an error, never a panic."
    :rows (("no-panic" "hostile data is refused, never panics")
           ("range-checked" "out-of-range values in bit headroom refused")
           ("destination-unwritten" "a refused read leaves its destination unwritten")
           ("terminal" "failure is terminal until the stream is rebuilt")
-          ("string-refusals" "malformed UTF-8 and UTF-16 refused")
+          ("string-refusals" "malformed UTF-8 refused")
           ("int-relative-domain" "int_relative results outside the int32 domain refused")
           ("custom-refuse" "custom serialize functions refuse decoded values (stream.refuse)")
           ("infallible-write" "write and measure cannot fail (Infallible error type)")
@@ -81,14 +78,13 @@
   (:id "untrusted/range-checked" :type :task :title "out-of-range values in bit headroom refused" :state :done :evidence ("tests/serialize.rs: test_serialize_integer_validation" "tests/serialize.rs: test_serialize_int64_validation" "tests/serialize.rs: test_serialize_fixed_validation") :tested-revision "6b1559a7135fb1d06b6cda7f93011834c27883ac")
   (:id "untrusted/destination-unwritten" :type :task :title "a refused read leaves its destination unwritten" :state :done :evidence ("tests/conformance.rs: every_conformance_vector") :tested-revision "6b1559a7135fb1d06b6cda7f93011834c27883ac")
   (:id "untrusted/terminal" :type :task :title "failure is terminal until the stream is rebuilt" :state :done :evidence ("tests/terminal.rs: failure_before_consumption_is_terminal" "tests/terminal.rs: failure_after_partial_consumption_is_terminal" "tests/terminal.rs: re_initialization_clears_the_latch" "tests/terminal.rs: a_clone_carries_the_latch") :tested-revision "6b1559a7135fb1d06b6cda7f93011834c27883ac")
-  (:id "untrusted/string-refusals" :type :task :title "malformed UTF-8 and UTF-16 refused" :state :done :evidence ("tests/serialize.rs: test_string_read_refusals" "tests/serialize.rs: test_wstring_read_refusals" "tests/terminal.rs: failure_on_a_malformed_string_is_terminal") :tested-revision "6b1559a7135fb1d06b6cda7f93011834c27883ac")
+  (:id "untrusted/string-refusals" :type :task :title "malformed UTF-8 refused" :state :done :evidence ("tests/serialize.rs: test_string_read_refusals" "tests/terminal.rs: failure_on_a_malformed_string_is_terminal") :tested-revision "6b1559a7135fb1d06b6cda7f93011834c27883ac")
   (:id "untrusted/int-relative-domain" :type :task :title "int_relative results outside the int32 domain refused" :state :done :evidence ("tests/serialize.rs: test_int_relative_absolute_tier_refusals" "tests/terminal.rs: failure_on_int_relative_is_terminal") :tested-revision "6b1559a7135fb1d06b6cda7f93011834c27883ac")
   (:id "untrusted/custom-refuse" :type :task :title "custom serialize functions refuse decoded values (stream.refuse)" :state :unknown
    :note "stream.refuse is public and documented, but no test calls it from a custom serialize function; a test that a custom refuse fails the read and latches the stream makes this done.")
   (:id "untrusted/infallible-write" :type :task :title "write and measure cannot fail (Infallible error type)" :state :done :evidence ("examples/packet.rs: irrefutable let Ok(()) on the write and measure streams" "commit 17254fb (Infallible writes in safe Rust, 2.0.0, #39)") :tested-revision "6b1559a7135fb1d06b6cda7f93011834c27883ac")
   (:id "untrusted/no-unsafe" :type :task :title "no unsafe code, enforced by the compiler" :state :done :evidence ("commit 1746514 (forbid(unsafe_code), Miri, MSRV, libFuzzer)" ".github/workflows/ci.yml: miri job (the whole suite under Miri)") :tested-revision "6b1559a7135fb1d06b6cda7f93011834c27883ac")
   (:id "compat" :type :roadmap :title "Compatibility"
-   :text "Bit-for-bit wire compatibility with the C++ serialize library and the shared family standard."
    :rows (("golden" "the 112 byte golden wire vector, byte for byte")
           ("cpp-interop" "head to head with the real C++ library, both directions")
           ("conformance" "the shared conformance corpus, every vector")
@@ -106,7 +102,6 @@
   (:id "compat/standard-sync" :type :task :title "STANDARD.md and conformance/ kept in sync with upstream" :state :done :evidence (".github/workflows/ci.yml: spec-sync job") :tested-revision "6b1559a7135fb1d06b6cda7f93011834c27883ac")
   (:id "compat/endian" :type :task :title "endian independent (big-endian s390x)" :state :done :evidence (".github/workflows/ci.yml: cross-targets job, s390x-unknown-linux-gnu under qemu") :tested-revision "6b1559a7135fb1d06b6cda7f93011834c27883ac")
   (:id "platforms" :type :roadmap :title "Platforms and packaging"
-   :text "Where the crate builds and how it reaches users."
    :rows (("desktop" "Linux, macOS and Windows, debug and release")
           ("32-bit" "32 bit (i686)")
           ("wasm" "wasm32 builds")
@@ -130,7 +125,6 @@
   (:id "platforms/crates-io" :type :task :title "published on crates.io as serialize-official" :state :done :evidence (".github/workflows/consumer.yml: consumer job (installs from crates.io, nightly and on push)" ".github/workflows/ci.yml: published-version job") :tested-revision "6b1559a7135fb1d06b6cda7f93011834c27883ac")
   (:id "platforms/semver" :type :task :title "API compatibility checked on pull requests" :state :done :evidence (".github/workflows/ci.yml: semver job (cargo semver-checks against main)") :tested-revision "6b1559a7135fb1d06b6cda7f93011834c27883ac")
   (:id "testing" :type :roadmap :title "Testing"
-   :text "How the crate is checked on every change."
    :rows (("cpp-suite" "the C++ test suite, ported test for test")
           ("differential" "differential write-read round trip")
           ("miri" "the whole suite under Miri")

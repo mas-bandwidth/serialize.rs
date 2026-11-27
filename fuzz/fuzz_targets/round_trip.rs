@@ -66,6 +66,11 @@ enum Value {
     // [-1e11,+1e11] whole units, and the wide Q112.16 in ±2^60 whole units
     Fixed48 { raw: i64 },
     Fixed112 { raw: i128 },
+    Fixed8 { raw: i8 },
+    Fixed8Unsigned { raw: u8 },
+    Fixed32Unsigned { raw: u32 },
+    Fixed64Unsigned { raw: u64 },
+    Fixed128Unsigned { raw: u128 },
 }
 
 const FIXED48_MIN_UNITS: i64 = -100000000000;
@@ -102,7 +107,7 @@ fn ordered_i128(a: i128, b: i128) -> (i128, i128) {
 
 fn parse(cursor: &mut Cursor) -> Option<Value> {
     let op = cursor.u8()?;
-    Some(match op % 16 {
+    Some(match op % 21 {
         0 => {
             let bits = u32::from(cursor.u8()?) % 32 + 1;
             let value = cursor.u32()? & (((1u64 << bits) - 1) as u32);
@@ -137,8 +142,28 @@ fn parse(cursor: &mut Cursor) -> Option<Value> {
             Value::Int64 { value, min, max }
         }
         4 => Value::Bool(cursor.u8()? & 1 == 1),
-        5 => Value::Float(f32::from_bits(cursor.u32()?)),
-        6 => Value::Double(f64::from_bits(cursor.u64()?)),
+        // float and double carry finite values only as of format 2.0 (a non-finite write is
+        // debug asserted, and fuzz builds keep debug assertions on): an all-ones exponent
+        // field loses its top bit, so every finite pattern, -0 and the subnormals included,
+        // is still reachable
+        5 => {
+            let bits = cursor.u32()?;
+            let finite = if bits & 0x7F80_0000 == 0x7F80_0000 {
+                bits & !0x4000_0000
+            } else {
+                bits
+            };
+            Value::Float(f32::from_bits(finite))
+        }
+        6 => {
+            let bits = cursor.u64()?;
+            let finite = if bits & 0x7FF0_0000_0000_0000 == 0x7FF0_0000_0000_0000 {
+                bits & !0x4000_0000_0000_0000
+            } else {
+                bits
+            };
+            Value::Double(f64::from_bits(finite))
+        }
         7 => {
             // non-finite values through a compressed float are non-conforming on write as
             // of 2.0 (debug asserted, and fuzz builds keep debug assertions on): the round
@@ -192,6 +217,34 @@ fn parse(cursor: &mut Cursor) -> Option<Value> {
             let raw = (raw_min as u64).wrapping_add(cursor.u64()? % (raw_range + 1)) as i64;
             Value::Fixed48 { raw }
         }
+        16 => {
+            // Q4.4 in [-7,7] whole units: raw in [-112,112]
+            let raw = (i16::from(cursor.u8()?) % 225 - 112) as i8;
+            Value::Fixed8 { raw }
+        }
+        17 => {
+            // Q4.4 unsigned in [0,15] whole units: raw in [0,240]
+            let raw = cursor.u8()? % 241;
+            Value::Fixed8Unsigned { raw }
+        }
+        18 => {
+            // Q16.16 unsigned in [0,60000] whole units
+            let raw_range = 60000u64 << 16;
+            let raw = (cursor.u64()? % (raw_range + 1)) as u32;
+            Value::Fixed32Unsigned { raw }
+        }
+        19 => {
+            // Q48.16 unsigned in [0,1e9] whole units
+            let raw_range = 1000000000u64 << 16;
+            let raw = cursor.u64()? % (raw_range + 1);
+            Value::Fixed64Unsigned { raw }
+        }
+        20 => {
+            // Q112.16 unsigned in [0,2^61] whole units
+            let raw_range = 2305843009213693952u128 << 16;
+            let raw = cursor.u128()? % (raw_range + 1);
+            Value::Fixed128Unsigned { raw }
+        }
         _ => {
             let raw_min = i128::from(FIXED112_MIN_UNITS) << 16;
             let raw_range = ((FIXED112_MAX_UNITS - FIXED112_MIN_UNITS) as u128) << 16;
@@ -229,6 +282,13 @@ fn serialize_value<S: Stream>(stream: &mut S, value: &mut Value) -> Result<(), S
         }
         Value::Fixed112 { raw } => {
             stream.serialize_fixed(raw, 112, 16, FIXED112_MIN_UNITS, FIXED112_MAX_UNITS)
+        }
+        Value::Fixed8 { raw } => stream.serialize_fixed(raw, 4, 4, -7, 7),
+        Value::Fixed8Unsigned { raw } => stream.serialize_fixed(raw, 4, 4, 0, 15),
+        Value::Fixed32Unsigned { raw } => stream.serialize_fixed(raw, 16, 16, 0, 60000),
+        Value::Fixed64Unsigned { raw } => stream.serialize_fixed(raw, 48, 16, 0, 1000000000),
+        Value::Fixed128Unsigned { raw } => {
+            stream.serialize_fixed(raw, 112, 16, 0, 2305843009213693952)
         }
     }
 }
@@ -276,11 +336,16 @@ fn blank(value: &Value) -> Value {
         Value::Fixed112 { .. } => Value::Fixed112 {
             raw: i128::from(FIXED112_MIN_UNITS) << 16,
         },
+        Value::Fixed8 { .. } => Value::Fixed8 { raw: -112 },
+        Value::Fixed8Unsigned { .. } => Value::Fixed8Unsigned { raw: 0 },
+        Value::Fixed32Unsigned { .. } => Value::Fixed32Unsigned { raw: 0 },
+        Value::Fixed64Unsigned { .. } => Value::Fixed64Unsigned { raw: 0 },
+        Value::Fixed128Unsigned { .. } => Value::Fixed128Unsigned { raw: 0 },
     }
 }
 
-/// Compare a written value against its read-back. Floats compare by bit pattern so NaN round
-/// trips count as equal; the compressed float compares against the clamped written value
+/// Compare a written value against its read-back. Floats compare by bit pattern, so a -0 or a
+/// subnormal that came back altered is a mismatch; the compressed float compares against the clamped written value
 /// within the quantization tolerance.
 fn matches(written: &Value, read: &Value) -> bool {
     match (written, read) {
@@ -336,4 +401,8 @@ fuzz_target!(|data: &[u8]| {
         serialize_value(&mut read_stream, &mut read).expect("read of just-written data failed");
         assert!(matches(written, &read), "wrote {written:?}, read {read:?}");
     }
+    // the stream holds exactly the bytes the writer reported, so its end accepts
+    read_stream
+        .serialize_end()
+        .expect("the end of just-written data was refused");
 });

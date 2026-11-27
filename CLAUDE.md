@@ -5,55 +5,54 @@ WHAT: this repo is serialize.rs, the Rust port of mas-bandwidth/serialize — th
 bitpacking library. NOT that upstream itself, NOT the sibling ports (serialize.c,
 serialize.cs, serialize.go), NOT serialize.modern (the experimental C++23 one).
 
-NAME: the crate is `serialize` and as of 2026-08-14 that name is STILL FREE on crates.io
-— unpublished, unclaimed. Unlike netcode (where `netcode` was taken in 2017 by an
-unrelated project, forcing the `netcode-official` crate name), there is no name trap here
-yet. Publishing sooner rather than later is what keeps it that way.
+NAME: the package publishes as `serialize-official` on crates.io; the library and import
+name is `serialize`, matching the C++ namespace
+and the Go port's package name. Unlike netcode (where `netcode` was taken in 2017 by an
+unrelated project, forcing the `netcode-official` crate name), the import name keeps its
+natural spelling.
 
-PUBLISHING (crates.io) — the token is NOT on this bench
-The crates.io token lives at /Users/glenn/.cargo/credentials.toml on GLENN'S personal
-macOS account: mode 0600, owned by glenn, unreadable from the mas account. `cargo publish`
-here fails with "no token found". That is NOT a missing credential and NOT a reason to
-mint a new one — it is the wrong machine account. Either Glenn publishes from his own
-account, or he moves the token into the mas keychain with the prompting form
-(`security add-generic-password -U -a rowan -s crates-io-token -w`, no value after -w).
 
-STATE as verified 2026-08-15 (post infallible-writes-v2): Cargo.toml is at 2.0.0, `cargo
-package` packages and compiles clean, and the crate has still never been published — v1.0.0 through v1.6.0 are git tags and
-GitHub releases only, nothing on crates.io. The repo itself is already public. This is a
-publish-NEW, so a token needs the `publish-new` scope — the other two Rust ports are
-publish-UPDATE.
+STATE as verified 2026-11-10: Cargo.toml is at 5.0.1 and `cargo package`
+packages and compiles clean. crates.io has `serialize-official` 2.2.2, 2.3.0 and 2.4.0
+(2.4.0 the newest, 2026-09-04); 3.0.0 through 5.0.0 are git tags and GitHub releases only.
+The repo itself is already public. The next publish is a publish-UPDATE.
 <!-- HOT:END -->
 
 # serialize.rs
 
-Rust port of the C++ serialize library (github.com/mas-bandwidth/serialize). Crate name
-`serialize` (matches the C++ namespace and the Go port's package name). Zero dependencies,
-zero unsafe, BSD-3.
+Rust port of the C++ serialize library (github.com/mas-bandwidth/serialize). Package name
+`serialize-official` on crates.io; the library and import name is `serialize` (matches the C++ namespace and the Go port's package name). Zero
+dependencies, zero unsafe, BSD-3.
 
 ## Invariants — never break these
 
-1. **The wire format is frozen and bit-identical to the C++ library.**
-   `test_golden_wire_format` pins 112 golden bytes that match the C++ suite's
-   `golden_wire_bytes` verbatim (bytes 0..72 are the original vector; the fixed point tail
-   was derived from STANDARD.md's stated rules independently of both implementations),
-   and the `cpp-interop` CI job proves it against the real thing on every push and PR: it
-   builds interop/golden.cpp against the actual C++ library (pinned at v1.16.0, never going
-   back past v1.7.0: the harness's extended sequence carries a degenerate 64 bit range that
-   older releases abort on, plus STANDARD.md's between-quanta compressed float vector, and
-   the build keeps asserts live with no -ffp-contract=off), both implementations write the
-   golden data plus the extended sequence, the bytes are compared with `cmp`, and each
-   implementation decodes the other's file (examples/wire_interop.rs is the Rust half).
+1. **The wire format is serialize format 2.0 and bit-identical to the C++ library.**
+   `test_golden_wire_format` pins STANDARD.md's 106-byte "whole message", which matches the
+   C++ suite's `golden_wire_bytes` verbatim and ends with the end, and the `cpp-interop` CI
+   job proves it against the real thing on every push and PR: it builds interop/golden.cpp
+   against the actual C++ library (pinned at v2.1.4, never going back past v2.0.0: the golden
+   message ends with `serialize_end` and drops `wstring` from v2.0.0 on; the build keeps
+   asserts live with no -ffp-contract=off), both implementations write a file of two
+   packets — the golden one and the harness's extended one (a degenerate 64 bit range,
+   STANDARD.md's between-quanta compressed floats, the clamp witnesses), each ended by its
+   own end — the bytes are compared with `cmp`, and each implementation decodes the
+   other's file (examples/wire_interop.rs is the Rust half).
    Never change any encoding without coordinating with the C++ library. When adding
    serialization features, port them from serialize.h and mirror its tests. Note the golden
    float is the literal `3.1415926` (bit pattern 0x40490FDA) — NOT `f32::consts::PI`, which
    differs in the last bit.
 2. **Malicious packet data never panics.** Every ReadStream operation is bounds checked and
-   range validated and fails with an `Error`. Since 2.1.2 API misuse is `debug_assert!` on
-   every stream, read and write alike, compiled out in release (the check model: the caller
-   is responsible for well formed calls); the only hard panics left are the two structural
-   write cases the language itself enforces — a write buffer that is not a multiple of 8
-   bytes, and writing past the end of a buffer, which is the slice bounds check. Three read
+   range validated and fails with an `Error`. Caller declarations (bit counts, ranges, Q
+   formats, precomputed constants, `previous`, string `buffer_size`) are refused as
+   `ValueOutOfRange` on read in every build, never asserted (IMPLEMENTING.md U7, U16, since
+   4.0.0), and write-side misuse has one mechanism, the trap (IMPLEMENTING.md U9, the
+   2.1.1 ruling): a `debug_assert!` panic at the call in a checked build, compiled out in
+   release; a measure traps on everything a write does except room (U6); write misuse never
+   latches. `fail` on a write or measure stream returns `Err(reason)` (U9's false, 5.0.0),
+   records nothing and never panics; the only hard panic left in
+   release is the one the language itself enforces — writing past the end of a buffer (a write
+   that reaches a non-multiple-of-8 buffer's short final word is one), which is the slice
+   bounds check. Three read
    obligations bind in every build (STANDARD.md, Reader Obligations): a refused read leaves
    its scalar destination unwritten, failure is terminal (the `ReadStream` latch), and every
    refusal rule the standard states is enforced. A degenerate range (min == max) is NOT
@@ -64,39 +63,51 @@ zero unsafe, BSD-3.
    `serialize_compressed_float` still requires a strictly increasing range — its quantization
    divides by the range. `tests/differential.rs::test_hostile_read` enforces the no-panic
    property — keep it passing.
-3. **Error control flow, read side; infallibility, write side.** Serialize methods return
-   `Result<(), Self::Error>` where `Stream::Error` is `Error` on ReadStream and `Infallible`
-   on WriteStream/MeasureStream (2.0, the #52 ruling). On read, callers propagate with `?`
-   so the first failure aborts the whole serialize function — the safety property that
-   replaces the C++ early-return macros and the Go port's sticky errors: a serialized value
-   that controls a loop is always validated before use. Do not add APIs that return
-   unvalidated values. On write and measure the error type is uninhabited: no write can
-   fail, and no fallibility may be added back to the write path (the canonical generic
-   signature is `-> Result<(), S::Error>`; read-side validation in custom serialize
-   functions goes through `Stream::fail` under an `IS_READING` guard).
-4. **Write buffers are multiples of 8 bytes** (the writer stores qwords; enforced by a panic).
+3. **Error control flow on every stream; U9's false on write (5.0.0).** Serialize methods
+   return `Result<(), Self::Error>` and `Stream::Error` is `Error` on all three streams. On
+   read, callers propagate with `?` so the first failure aborts the whole serialize function —
+   the safety property that replaces the C++ early-return macros and the Go port's sticky
+   errors: a serialized value that controls a loop is always validated before use. Do not add
+   APIs that return unvalidated values. On write and measure no built-in operation returns an
+   error; only the caller's `fail`, `reject` (release) or a nested object returning either
+   does, as only they return false in C++ (IMPLEMENTING.md U9), recording nothing. From 2.0
+   (the #52 ruling) to 4.x the write error type was `Infallible` and that false could not be
+   expressed; the 5.0.0 major was decided on 2026-10-28 (crates.io only ever had 2.4.0).
+   `Stream` is sealed (`stream::gate::Sealed`), and `refuse`/`refuse_if_failed`/
+   `Error::from_name` are gone from the public surface (U15): `fail(&mut self, reason)` is the
+   one latching refusal.
+4. **Write buffers are multiples of 8 bytes** (the writer stores qwords; a `debug_assert!` in
+   `BitWriter::new`, the U9 trap, compiled out in release, where a write that reaches the
+   short final word stops at the slice bounds panic).
    The reader takes (buffer, bytes) and uses branchless 64 bit window loads when the buffer
-   extends ≥ 8 bytes past the packet data, with a guarded-copy fallback when it doesn't. No
+   extends ≥ 7 bytes past the packet data, with a guarded-copy fallback when it doesn't. No
    unsafe code anywhere — the fast path is `slice.get(i..i+8)` + `u64::from_le_bytes`.
 
 ## Layout
 
-- `src/lib.rs` — crate docs, `Error`/`Result`, `bits_required`/`bits_required64`/
+- `src/lib.rs` — crate docs, `Error` (STANDARD.md's closed list of nine refusal reasons, `Rejected` the caller's own since standard 2.1;
+  `name()` is the family spelling) / `Result`, `bits_required`/`bits_required64`/
   `bits_required128`, zigzag (all const fn)
+- `src/control.rs` — the negative controls: with `--cfg serialize_controls`, a thread-local
+  switch that deletes one refusal rule; every other build compiles `deleted()` to `false`.
+  A rule guarded by it reads `if <rule fires> && !deleted(Control::X)`
 - `src/bitpacker.rs` — `BitWriter` (64 bit scratch, LE qword stores), `BitReader` (branchless
   windows, `read_byte_slice` returns borrowed subslices for zero-copy strings)
-- `src/stream.rs` — `Stream` trait: `type Error` (Error on read, Infallible on write/measure),
-  `fail()` (the error constructor) and `refuse()` (the `&mut self` form every built-in read
-  refusal goes through, so `ReadStream` can latch), required primitives per stream (bits/bytes/align/strings) plus default
+- `src/stream.rs` — `Stream` trait (sealed): `type Error` (`Error` on every stream),
+  `fail(&mut self, reason)` (every built-in read refusal goes through it, so `ReadStream` can
+  latch; on write/measure it returns `Err`, U9's false), the crate-private
+  `refuse_if_failed` gate, required primitives per stream (bits/bytes/align/string/end) plus default
   methods for everything derivable (int/int64/int128/bits64/bool/u8-u64/u128/
   f32/f64/compressed float/fixed point/int relative). `serialize_compressed_float_precomputed`
   is the audited home of the compressed float quantization arithmetic (schema#82):
   `serialize_compressed_float` derives its constants per call with the free function
   `serialize_compressed_float_params` and forwards there, and generated code passes constants
   a schema compiler derived at generation time. `IS_WRITING`/`IS_READING` are associated
-  consts, so the branches monomorphize away, and `misuse_check!` keeps argument misuse a hard
-  assert on read but debug-only on the writer-trusted paths. `FixedPointStorage` is the storage trait behind
-  `serialize_fixed` (i8..i128 and their unsigned twins). `Serialize` trait for objects.
+  consts, so the branches monomorphize away, and `declaration_check!` refuses a bad caller
+  declaration as `ValueOutOfRange` on read and debug-asserts it on write and measure (U16). `FixedPointStorage` is the storage trait behind
+  `serialize_fixed` (i8..i128 and their unsigned twins). `Serialize` trait for objects;
+  nested objects go through `Stream::serialize_object`, which gates on the read latch on
+  entry and exit (a failed stream refuses even an empty object without calling it).
 - `src/write_stream.rs` / `src/read_stream.rs` / `src/measure_stream.rs` — the three streams.
   Context is `Option<&'a dyn Any>` (the C++ void* context; copy out of it before serializing).
   `ReadStream` carries the terminal-failure latch (`failed: Option<Error>`, reported by
@@ -111,14 +122,29 @@ zero unsafe, BSD-3.
   machine drives the single operation files and the `sequence`/`object`/`message` ones alike:
   accepts pin the value (as a 128 bit pattern, never through a float) and the bits consumed,
   `writer = canonical` pins the emitted stream byte for byte, `measure_at_least` is a floor,
-  and refusals pin non-mutation of the scalar destination plus terminality by behavior. An
-  empty directory, an operation with no dispatch arm, an unknown parameter and a `fixed`
-  storage width with no Rust integer type all FAIL rather than skip
+  `writer_input` pins the writer's bytes for a given float32, and refusals pin the stated
+  REASON (first refusal, via `failure()`), non-mutation of the scalar destination, and
+  terminality by behavior. An empty directory, an operation with no dispatch arm, an
+  unknown parameter, a refusal with no known reason, a duplicate vector name and a `fixed`
+  storage width with no Rust integer type all FAIL rather than skip. It also runs the
+  controls: `unknown-operation.txt` (and a `wstring` vector) must fail in every build, and
+  under `--cfg serialize_controls` each of the eighteen controls must fail exactly its
+  `conformance-controls/<rule>.expected` list
+- `tests/format2.rs` — format 2.0's new rules through the public API, each with the 1.x
+  behaviour named: reasons, finite floats, the compressed float decode, the canonical
+  int_relative tier, end, the string NUL-before-UTF-8 order, real text byte for byte
+- `tests/uniform.rs` — IMPLEMENTING.md's uniform rules U1 to U16, one section per rule, each
+  test citing its number
 - `tests/terminal.rs` — the terminal-failure latch across six failure shapes (before
   consumption, after partial consumption, range headroom, alignment, malformed string,
   int_relative), plus re-initialization and clone behavior
-- `conformance/` — a VERBATIM VENDORED COPY of the shared conformance corpus from
-  mas-bandwidth/serialize, synced by the same `spec-sync` CI job as STANDARD.md
+- `tests/hostile.rs` — seeded hostile packets through every read with sentinel
+  destinations: refused reads leave the sentinel, accepts stay in bounds, refusals latch
+  (the `hostile_read` fuzz target asserts the same)
+- `conformance/`, `conformance-controls/` and `IMPLEMENTING.md` — VERBATIM VENDORED COPIES
+  of the shared corpus, its negative controls and the implementation practice from
+  mas-bandwidth/serialize, synced by the same `spec-sync` CI job as STANDARD.md;
+  `tools/revendor.sh <tag>` copies all four across from a reference tag
 - `examples/packet.rs` — condensed example.cpp; `examples/wire_interop.rs` — the Rust half of
   the C++ interop job (writes the golden + extended interop file, reads the C++ one)
 - `fuzz/` — a separate crate (not in the library's dependency graph) with the `hostile_read`
@@ -131,6 +157,8 @@ zero unsafe, BSD-3.
 ## Commands
 
 - `cargo test` — full suite except the 320 MB test
+- `RUSTFLAGS="--cfg serialize_controls" cargo test --test conformance` — the negative
+  controls (the `conformance-controls` CI job)
 - `cargo test --release -- --include-ignored` — everything
 - `cargo clippy --all-targets -- -D warnings` and `cargo fmt --check` — CI enforces both;
   clippy runs at pedantic via `[lints]` in Cargo.toml, with each allow justified by a comment
@@ -150,8 +178,6 @@ zero unsafe, BSD-3.
   the C++ library, schema bench, Apple M2). The thin fallible wrappers carry
   `#[inline(always)]` because the hint alone loses to that same cold-callsite
   classification in long serialize functions.
-- Local toolchains on Glenn's Mac: homebrew rustup at `/opt/homebrew/opt/rustup/bin` (not on
-  default PATH), with `1.85` (MSRV) and `nightly` (+miri) installed; cargo-fuzz in ~/.cargo/bin
 - CI (.github/workflows/ci.yml): 3-OS test matrix (debug + release + example), lint
   (pedantic clippy / fmt / rustdoc / zero-dependency guard), MSRV 1.85 check, Miri, 60s fuzz
   smoke per target (uploads crash reproducers on failure), C++ wire interop, cross matrix
@@ -161,6 +187,11 @@ zero unsafe, BSD-3.
   `#![forbid(unsafe_code)]` attribute in lib.rs, and the lint table is the one place to look.
   nightly-fuzz.yml runs 30 min per fuzz target daily with a cumulative cached corpus (free now
   that the repo is public).
+  nightly-conformance.yml runs nightly: it builds the C++ reference at
+  mas-bandwidth/serialize main HEAD, certifies the upstream corpus with its ctest conformance
+  targets, runs tests/conformance.rs against that corpus via `SERIALIZE_CONFORMANCE_ROOT` (plain
+  and under `--cfg serialize_controls`), and fails on any drift of the vendored copies. A
+  dispatch with `flip_byte` is its negative control and must go red.
 
 ## API review decisions (red/blue review, 2026-07-12 — do not relitigate without new evidence)
 
@@ -168,7 +199,8 @@ Accepted: `serialize_f32`/`serialize_f64` naming (type-name consistency with
 `serialize_u8..u64`; `serialize_compressed_float` keeps its name — it's an algorithm, not a
 type mapping); `Debug` on all public types (counters only, never buffer contents); `Clone` on
 `BitReader`/`ReadStream`/`MeasureStream` (position snapshot for speculative reads);
-`first_chunk` instead of `try_into().unwrap()` in the window load.
+`get(..)` plus `try_into()` in the window load, whose single `get` emits one compare with
+the load on the fall-through path (the two-step `get`/`first_chunk` form was longer).
 
 Rejected, with reasons — do not propose again:
 - **serde-style split read/write traits or `-> Result<Self>` construction.** The unified
@@ -201,30 +233,30 @@ Rejected, with reasons — do not propose again:
 
 ## Releases
 
-v1.0.0 released 2026-07-12 (opened at 1.0.0 deliberately — the wire format is a decade old
-and frozen, like the Go port); latest released tag is v1.6.0 (2026-08-15); main carries
-2.0.0, the infallible write path (semver major, CHANGELOG.md has the migration notes). Release process: bump
+v1.0.0 released 2026-07-12 (opened at 1.0.0 deliberately — the wire format is a decade old,
+like the Go port). 3.0.0 (2026-10-22) carries serialize format 2.0 (2026-10-22: "We
+change the protocol it's v2.0.0"): the one sanctioned wire change, made in lockstep with the
+C++ reference's v2.0.0 and the whole family; CHANGELOG.md has the migration notes. Release process: bump
 `version` in Cargo.toml, refresh both lockfiles (`cargo update -p serialize-official` at the
 root and in fuzz/ — both are committed, and a stale one is the step that gets skipped), verify
 `cargo package`, push, wait for CI fully green, then `git tag -a vX.Y.Z` + `gh release create`
-on that commit. New exported API = minor bump; any wire format change is forbidden (see
-invariant 1), not a version discussion. The cargo-semver-checks CI job flags accidental API
+on that commit. New exported API = minor bump; a wire format change happens only as a
+family-wide format version decided upstream (as 2.0 was), never in this port alone. The cargo-semver-checks CI job flags accidental API
 breaks on PRs.
 
-The repo is public (that flip is done). The one step still waiting on Glenn is `cargo publish`
-— crates.io token via `cargo login`, and see the HOT block for why it cannot happen from the
-mas account. The `serialize` crate name was still unclaimed on 2026-08-14. docs.rs builds
-automatically on publish.
+The repo is public (that flip is done). `cargo publish` is still waiting. The package publishes as `serialize-official`; docs.rs builds automatically on
+publish.
+
+Pushing a `vX.Y.Z` tag runs `.github/workflows/publish.yml`, which publishes to crates.io
+when the `CRATES_IO_TOKEN` secret exists (an org secret in mas-bandwidth); without it the
+workflow skips the upload.
 
 ## Portability notes
 
 - Endianness is handled entirely by `to_le_bytes`/`from_le_bytes`; there is no byte-swap
   code and no platform detection. The s390x CI job is the proof.
-- `serialize_string` refuses invalid UTF-8 and interior NULs on read (STANDARD.md's refusal
-  rules, adopted 2026-08-15). `serialize_wide_string` is the family `wchar_t` format: each
-  32 bit group is one UTF-16 CODE UNIT — astral chars travel as surrogate pairs, split on
-  write (`encode_utf16`) and recombined on read — and the reader refuses groups above
-  0xFFFF, interior NUL groups, and unpaired/misordered surrogates in every build mode. The
-  family conformance pin ("a" + U+1F600, 8-unit buffer, 13 bytes) is
-  `test_wstring_utf16_code_units`, byte-identical across serialize, serialize.c and
-  serialize.cs.
+- `serialize_string` refuses an interior NUL (`embedded_nul`, scanned over the whole payload
+  FIRST) and then invalid UTF-8 (`invalid_utf8`) on read; format 2.0 requires that order.
+  `serialize_wide_string` is gone: format 2.0 removed `wstring`, and text is UTF-8 only.
+- `serialize_f32`/`serialize_f64` test the RAW bits for finiteness before `from_bits`, so
+  i686's x87 handling of a signaling NaN can never change the verdict.

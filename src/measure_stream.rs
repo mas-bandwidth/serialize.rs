@@ -1,21 +1,25 @@
 //! [`MeasureStream`]: the [`Stream`] that counts bits instead of writing them.
 
 use core::any::Any;
-use core::convert::Infallible;
 
 use crate::stream::Stream;
 use crate::write_stream::string_length;
-use crate::{Error, Result};
+use crate::{Error, Result, cold_error};
 
 /// Stream for estimating how many bits it would take to serialize something.
 ///
 /// Acts like a write stream (`IS_WRITING` is true, `IS_READING` is false), but instead of
 /// writing data it counts how many bits would be written. It shares the write path's trust
-/// model: the error type is [`Infallible`], so no serialize method on this stream can fail,
-/// and misuse is a debug assertion. When the serialization includes alignment to byte
+/// model: no built-in operation on this stream returns an error (only [`Stream::fail`],
+/// [`Stream::reject`] in release, or a nested object that returns one, U9), and misuse traps exactly as it does on a write, a `debug_assert!` panic in a checked build,
+/// room aside (IMPLEMENTING.md U6, U9), latching nothing. When the serialization includes alignment to byte
 /// boundaries the measurement is an estimate, not exact: every align counts as the worst
 /// case 7 bits, so the estimate is guaranteed to be conservative — a buffer sized from a
 /// measurement always fits the real write.
+///
+/// [`MeasureStream`] is `!Send`: its optional context is an `Option<&'a dyn Any>`, and `dyn Any`
+/// is not `Sync`, so a stream cannot be moved to another thread or held across an `.await`
+/// point in a `Send` future, even when no context is set.
 #[derive(Default, Clone)]
 pub struct MeasureStream<'a> {
     bits_written: u64,
@@ -44,9 +48,25 @@ impl<'a> MeasureStream<'a> {
 
     /// Set a context on the stream, retrievable inside serialize functions with
     /// [`Stream::context`].
+    ///
+    /// [`MeasureStream`] is `!Send` because the context is an `Option<&'a dyn Any>`: `dyn Any`
+    /// is not `Sync`, so the stream cannot move across threads or be held across an `.await` in
+    /// a `Send` future, even when no context is set.
+    ///
+    /// ```compile_fail
+    /// fn assert_send<T: Send>() {}
+    /// assert_send::<serialize::MeasureStream<'static>>();
+    /// ```
     #[inline]
     pub fn set_context(&mut self, context: &'a dyn Any) {
         self.context = Some(context);
+    }
+}
+
+impl crate::stream::gate::Sealed for MeasureStream<'_> {
+    #[inline(always)]
+    fn gate(&mut self) -> Result {
+        Ok(())
     }
 }
 
@@ -54,66 +74,62 @@ impl Stream for MeasureStream<'_> {
     const IS_WRITING: bool = true;
     const IS_READING: bool = false;
 
-    /// Measures cannot fail: the error type is uninhabited, exactly as on
-    /// [`crate::WriteStream`] — the measure path shares the write path's trust model.
-    type Error = Infallible;
+    /// The one error a write or measure produces is U9's false: [`Stream::fail`],
+    /// [`Stream::reject`] in release, or a nested object returning either. No built-in
+    /// operation returns it; write misuse traps instead (U9).
+    type Error = Error;
 
+    /// Nothing to refuse: returns `Err(error)` (U9's false) in every build, never a panic,
+    /// and records nothing, so a later operation behaves exactly as it would have without it.
     #[inline]
-    fn fail(error: Error) -> Result<(), Infallible> {
-        unreachable!(
-            "a measure stream cannot fail: fail({error:?}) must only be reachable under an IS_READING guard"
-        )
+    fn fail(&mut self, error: Error) -> Result {
+        cold_error(error)
     }
 
     #[inline]
-    fn serialize_bits(&mut self, _value: &mut u32, bits: u32) -> Result<(), Infallible> {
+    fn serialize_bits(&mut self, value: &mut u32, bits: u32) -> Result {
         debug_assert!(
             bits.wrapping_sub(1) < 32,
             "bits must be in [1,32] (got {bits})"
+        );
+        // U6: a measure checks what a write checks (BitWriter::write_bits), room aside
+        debug_assert!(
+            u64::from(*value) < (1u64 << bits),
+            "value {} does not fit in {bits} bits",
+            *value
         );
         self.bits_written += u64::from(bits);
         Ok(())
     }
 
     #[inline]
-    fn serialize_bytes(&mut self, data: &mut [u8]) -> Result<(), Infallible> {
+    fn serialize_bytes(&mut self, data: &mut [u8]) -> Result {
         self.serialize_align()?;
         self.bits_written += data.len() as u64 * 8;
         Ok(())
     }
 
     #[inline]
-    fn serialize_align(&mut self) -> Result<(), Infallible> {
+    fn serialize_align(&mut self) -> Result {
         self.bits_written += u64::from(self.align_bits());
         Ok(())
     }
 
     #[inline]
-    fn serialize_string(
-        &mut self,
-        value: &mut String,
-        buffer_size: usize,
-    ) -> Result<(), Infallible> {
-        let mut length = string_length(value.len(), buffer_size);
+    fn serialize_string(&mut self, value: &mut String, buffer_size: usize) -> Result {
+        let mut length = string_length(value, buffer_size);
+        // buffer_size outside [1,i32::MAX] is write misuse, asserted in string_length
+        #[allow(clippy::cast_possible_truncation, clippy::cast_possible_wrap)]
         self.serialize_int(&mut length, 0, buffer_size as i32 - 1)?;
         self.serialize_align()?;
         self.bits_written += value.len() as u64 * 8;
         Ok(())
     }
 
+    /// The end of the object costs nothing: the unused bits of the final byte are already
+    /// inside the byte rounding every caller applies to a bit count.
     #[inline]
-    fn serialize_wide_string(
-        &mut self,
-        value: &mut String,
-        buffer_size: usize,
-    ) -> Result<(), Infallible> {
-        // the measure counts the UTF-16 code units transmitted, not the chars held: an
-        // astral char is a surrogate pair, two 32 bit groups — exactly what the write
-        // stream emits (STANDARD.md "wstring", adopted 2026-08-15)
-        let count = value.encode_utf16().count();
-        let mut length = string_length(count, buffer_size);
-        self.serialize_int(&mut length, 0, buffer_size as i32 - 1)?;
-        self.bits_written += count as u64 * 32;
+    fn serialize_end(&mut self) -> Result {
         Ok(())
     }
 

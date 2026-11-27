@@ -39,13 +39,18 @@ impl Serialize for WorldStatePacket {
         // a serialized value that controls a loop must be validated before use: serialize_int
         // bounds it to [0,MAX_PLAYERS] and ? aborts on failure, so a malicious packet can
         // never drive this loop with garbage
-        let mut num_players = self.players.len() as i32;
-        stream.serialize_int(&mut num_players, 0, MAX_PLAYERS as i32)?;
+        let mut num_players =
+            i32::try_from(self.players.len()).expect("player count fits the i32 field");
+        stream.serialize_int(
+            &mut num_players,
+            0,
+            i32::try_from(MAX_PLAYERS).expect("MAX_PLAYERS fits the i32 field"),
+        )?;
         if S::IS_READING {
             self.players = (0..num_players).map(|_| Player::default()).collect();
         }
         for player in &mut self.players {
-            player.serialize(stream)?;
+            stream.serialize_object(player)?;
         }
 
         stream.serialize_string(&mut self.map_name, 64)?;
@@ -83,17 +88,18 @@ fn main() -> Result {
     };
 
     // measure how many bytes the packet needs (conservative: aligns count as 7 bits).
-    // measures cannot fail — the error type is uninhabited, so Ok is the only pattern
+    // built-in measure operations do not fail, so Ok is the only pattern here
     let mut measure = MeasureStream::new();
-    let Ok(()) = packet.serialize(&mut measure);
+    packet.serialize(&mut measure).unwrap();
     println!("measured packet size: {} bytes", measure.bytes_processed());
 
-    // write the packet. writes cannot fail either: the writer is trusted
+    // write the packet. built-in writes do not fail either: the writer is trusted
     let mut buffer = [0u8; 256]; // multiple of 8 bytes, comfortably above the measure
     let mut writer = WriteStream::new(&mut buffer);
-    let Ok(()) = packet.serialize(&mut writer);
+    packet.serialize(&mut writer).unwrap();
     writer.flush();
-    let packet_bytes = writer.bytes_processed() as usize;
+    let packet_bytes =
+        usize::try_from(writer.bytes_processed()).expect("packet byte count fits usize");
     println!("wrote packet: {packet_bytes} bytes");
 
     // ... the wire ...
@@ -102,6 +108,9 @@ fn main() -> Result {
     let mut received = WorldStatePacket::default();
     let mut reader = ReadStream::new(&buffer, packet_bytes);
     received.serialize(&mut reader)?;
+    // a packet reader reads the end (STANDARD.md, format 2.0): a byte left over, or a set bit
+    // in the final byte's padding, means these are not the bytes the writer reported
+    reader.serialize_end()?;
 
     assert_eq!(received.sequence, packet.sequence);
     assert_eq!(received.players.len(), packet.players.len());

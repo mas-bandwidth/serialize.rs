@@ -6,19 +6,27 @@
 
 A simple bitpacking serializer for Rust.
 
+If you would rather not write serialize functions by hand,
+[Schema](https://github.com/mas-bandwidth/schema) generates them for Rust and many other
+languages from one definition of your data. The packet code it generates for Rust uses this
+library as its runtime.
+
 This is a port of the C++ [serialize](https://github.com/mas-bandwidth/serialize) library and
-is **bit-for-bit wire compatible** with it. The golden wire format test pins 112 exact bytes —
-byte for byte the vector `golden_wire_bytes` pins in the C++ test suite — and on every push and
-pull request CI builds the real C++ library at a pinned release (v1.16.0) and runs both
+is **bit-for-bit wire compatible** with it. It carries **serialize format 2.0**: the wire
+carries only integers and bytes, and every value has exactly one encoding (STANDARD.md). The
+golden wire format test pins the 106 exact bytes of STANDARD.md's "The whole message" — byte
+for byte the vector `golden_wire_bytes` pins in the C++ test suite — and on every push and
+pull request CI builds the real C++ library at the release pinned in
+`.github/workflows/ci.yml` and runs both
 implementations head to head over the library's own golden serialize function: they write
-byte-identical data and each decodes the other's output. That machine check covers all 112 of
-those bytes, and continues past them into an extended harness-defined sequence covering what
-the golden data does not: degenerate ranges (`min == max`, zero bits on the wire, 32 and 64
+byte-identical data and each decodes the other's output. That machine check covers all 106 of
+those bytes, and a second, harness-defined packet beside them covering what the golden data
+does not: degenerate ranges (`min == max`, zero bits on the wire, 32 and 64
 bit, mid-sequence) and compressed floats that land between quanta — STANDARD.md's
 discriminating vector, which fails the byte comparison under FMA contraction or double
 widening where an on-quantum value would pass silently. The pin never goes backwards past
-v1.7.0, the C++ release that accepts the degenerate 64 bit range (older releases abort on
-it, asserts live) and pins the compressed float arithmetic to unfused float32.
+v2.0.0, the first C++ release carrying format 2.0: its golden message ends with the end, and
+it reads each packet as exactly the bytes its writer reported.
 
 Nothing here exercises the [C](https://github.com/mas-bandwidth/serialize.c),
 [C#](https://github.com/mas-bandwidth/serialize.cs) and
@@ -27,10 +35,8 @@ family beyond the C++ one. What ties the family together is the C++ library as t
 reference: each port runs its own head-to-head check against it in its own CI, all four ports
 vendor a byte-identical copy of [STANDARD.md](STANDARD.md) and of the shared
 [conformance/](conformance) corpus — the upstream specification and its vectors, with a CI job
-in each repo that fails on drift — and the golden vectors line up, the Go port pinning
-this exact 112 byte vector, the C# port pinning the same bytes in two pieces (the 72 byte core
-and the 40 byte fixed point tail), while the C port pins sequences of its own that its CI
-checks against the C++ library. Compatibility across the family rests on that shared reference
+in each repo that fails on drift. This port runs every vector of that corpus, the golden
+message included, and refuses each refused vector for the reason it states. Compatibility across the family rests on that shared reference
 and that shared specification, not on any Rust-to-Go or Rust-to-C# test.
 
 Zero dependencies, no unsafe code, BSD 3-Clause. Install with `cargo add serialize-official`
@@ -43,7 +49,7 @@ than tracking `main`:
 
 ```toml
 [dependencies]
-serialize-official = { git = "https://github.com/mas-bandwidth/serialize.rs", tag = "v2.4.0" }
+serialize-official = { git = "https://github.com/mas-bandwidth/serialize.rs", tag = "v5.0.1" }
 ```
 
 Two CI jobs hold the registry and this repository to each other, so no version number written
@@ -77,10 +83,22 @@ impl Packet {
 }
 ```
 
-The stream picks the error type: `S::Error` is `Error` for `ReadStream` and `Infallible` for
-`WriteStream` and `MeasureStream`, so the write and measure instantiations of that one
-function are statically incapable of failing — `let Ok(()) = packet.serialize(&mut writer);`
-is irrefutable, and `?` compiles to nothing.
+A packet reader reads the end after the packet's top-level object, on a stream holding
+exactly the bytes the writer reported. STANDARD.md requires it: the end refuses a whole byte
+left over (`trailing_data`) and a set bit in the final byte's padding (`nonzero_padding`), so
+one value has one byte sequence. On write and measure the end emits nothing:
+
+```rust
+let mut stream = ReadStream::new(&buffer, bytes_written);
+packet.serialize(&mut stream)?;
+stream.serialize_end()?;     // the packet ends exactly here
+```
+
+`S::Error` is `Error` on all three streams (5.0.0). On a read it is a refusal. On a write or
+measure no built-in operation returns it; it comes back only when your own serialize function
+fails (`stream.fail(reason)`, `stream.reject()` in release, or a nested object returning
+either), which is IMPLEMENTING.md U9's false: the caller's `?` stops there, and nothing is
+recorded on the stream.
 
 See [examples/packet.rs](examples/packet.rs) for a fuller example with nested objects,
 variable length arrays and measuring.
@@ -128,51 +146,85 @@ controls a loop (a count, a length) is always validated before it drives anythin
 Rust rendering of the C++ library's early-return serialize macros and the Go port's sticky
 errors, and it is the reason serialize methods take `&mut` values and return `Result`.
 
+Every refusal names the rule that refused it, from STANDARD.md's closed list, as an `Error`
+variant whose `name()` is the family-wide spelling: `past_end`, `value_out_of_range`,
+`nonzero_padding`, `trailing_data`, `non_finite_float`, `invalid_utf8`, `embedded_nul`,
+`non_canonical`, and (standard 2.1) `rejected`, the caller's own refusal of a value whose bytes
+were well formed. `ReadStream::failure()` reports the first refusal's reason; the later
+refusals of a failed stream are its echoes, and a refused stream never reports none.
+
+The caller refuses with `stream.reject()`, the port of the C++ `serialize_reject`, under an
+`IS_READING` guard; a nested object whose `serialize` returns `Err(Error::Rejected.into())` is
+latched as `rejected` by `serialize_object` the same way. Either goes through the one latch,
+so it is terminal and the first reason wins. Reject is read only: on a write or measure stream
+it is write misuse, so it traps (panics) in a checked build (U9), and returns
+`Err(Error::Rejected)`, U9's false, in release.
+
 Three obligations from STANDARD.md's Reader Obligations hold in every build:
 
 - **A refused read leaves its scalar destination unwritten.** The value the caller passed in
   is exactly what it holds afterwards, so a caller that trusts the destination over the
-  return code never proceeds on a value the stream did not carry. The three operations that
-  fill a caller-owned buffer — `serialize_bytes`, `serialize_string` and
-  `serialize_wide_string` — leave that buffer's contents unspecified after a refusal, and a
+  return code never proceeds on a value the stream did not carry. The two operations that
+  fill a caller-owned buffer — `serialize_bytes` and `serialize_string` — leave that
+  buffer's contents unspecified after a refusal, and a
   composite read may leave earlier members written, because it is a sequence of primitive
   reads and each one carries the rule alone.
 - **Failure is terminal.** The first refused read latches the `ReadStream`: every later read
-  on it fails with the same error, consuming no bits and writing no destination, and
-  `ReadStream::failure()` reports what stopped it. Nothing after a failing operation has a
+  on it fails with the same reason, consuming no bits and writing no destination, and
+  `ReadStream::failure()` reports the first reason. Nothing after a failing operation has a
   defined position, so the stream enforces that rather than the caller's discipline. The
   latch clears only by re-initialization, which here is constructing a new stream. Custom
-  serialize functions reject a decoded value with `stream.refuse(error)`, which latches;
-  `Stream::fail` is the error constructor it is built from and does not.
+  serialize functions reject a decoded value with `stream.reject()` (or `stream.fail(error)`
+  for a reason of the format's), which latches.
 - **`serialize_int_relative` carries the non-negative int32 domain, `0` to `i32::MAX`.** Both
   `previous` and `current` lie in it, and the sequence is strictly increasing — a caller with
   a wrapping counter unwraps it before serializing. Every tier reconstructs `current` in a
   width that cannot wrap and then refuses a result outside the domain or not above
   `previous`, the absolute tier's 32 raw bits included: they are unsigned, so a top bit set
-  is `2^31` or above, not a negative sequence number. `previous` is the caller's own state
-  and never arrives off the wire, so a `previous` outside the domain is a debug assertion.
+  is `2^31` or above, not a negative sequence number. The absolute tier is canonical too: a
+  `current` no more than 69914 above `previous` has a bounded encoding, so carried in the
+  absolute tier it is refused as `non_canonical`. `previous` is the caller's own state and
+  never arrives off the wire: a read refuses one outside the domain as `value_out_of_range`
+  in every build, while on write and measure it is a debug assertion.
 
-The write path is trusted and, as of 2.0, **infallible** — the writer-trusted contract the
-whole family shares, matching the C++ library's checkless writer. `WriteStream` and
-`MeasureStream` set `S::Error = Infallible`, so no write or measure can return an error and
-no error control flow survives in the compiled write path. Invalid arguments and out of
+The write path is trusted — the writer-trusted contract the whole family shares, matching the
+C++ library's checkless writer. No built-in write or measure operation returns an error; the
+only one a write or measure produces is U9's false from the caller's own `fail`, `reject`
+(release) or failing nested object (5.0.0; from 2.0 to 4.x the write error type was
+`Infallible` and that false could not be expressed). Invalid arguments and out of
 range values are debug assertions, compiled out in release, where correctness is the
 caller's responsibility — size buffers conservatively or pre-measure with `MeasureStream`
-(its estimate is guaranteed conservative). A violated write contract in release produces a
-malformed stream that checked readers reject; it is never memory unsafety, and writing past
-the end of a buffer still panics via the slice bounds check rather than being undefined
-behavior. Readers keep every packet data check: fully fallible, in every build.
+(its estimate is guaranteed conservative). A violated write contract in release leaves the
+wire output unspecified: a checked reader may decode it as arbitrary in-range values rather
+than rejecting it, and it is never memory unsafety; writing past the end of a buffer still
+panics via the slice bounds check rather than being undefined behavior. Readers keep every
+packet data check: fully fallible, in every build.
 
-API misuse (bits out of [1,32]/[1,64], `min > max`, a `buffer_size` below 2, a write
-buffer not a multiple of 8 bytes) is a debug assertion on every stream, read and write
-alike, compiled out in release exactly like the C++ library's `serialize_assert` — the
-family standard is minimal runtime checking in release, and the hard checks release keeps
-are the read path's buffer-end and content refusals, which validate packet data, never
-arguments. A degenerate range where `min == max` is not misuse — the format defines it as
+Caller declarations (bits out of [1,32]/[1,64], `min > max`, a fixed point Q format that does
+not fit, precomputed compressed float constants that cannot be right, an `int_relative`
+`previous` outside its domain, a string `buffer_size` below 1) are validated on every stream
+before any bits move (IMPLEMENTING.md U16). A reader never traps (U7): on read a bad
+declaration is refused as `value_out_of_range` in every build, after the failure state, so a
+stream that already refused keeps its first reason, and a `ReadStream` handed a byte count
+past its buffer starts refused the same way. On write and measure, declarations and every
+other write misuse (a write buffer not a multiple of 8 bytes, a value too wide for its field,
+an operation without room for all of it) are write misuse, and write misuse has one
+mechanism, the trap (IMPLEMENTING.md U9): in a checked build (`debug_assertions`) it panics at
+the call, through `debug_assert!`, before any bit of the operation is written, and in release
+it is compiled out exactly like the C++ library's `serialize_assert`, leaving the output
+unspecified. A measure traps on every misuse a write does, room aside (U6). Write misuse never
+latches: a write or measure stream has no refusal state, so nothing is recorded and no later
+operation fails. `Stream::fail` on a write or measure stream never panics in any build,
+records nothing, and returns `Err(reason)`, U9's false (`reject` in release likewise, with
+`rejected`). The uniform rules U1 to U16 are each proven by
+`tests/uniform.rs`. A degenerate range where `min == max` is not misuse — the format defines it as
 costing zero bits, and the ranged integer methods accept it and recover the value from the
-range alone. Non-finite values through `serialize_compressed_float` are non-conforming and
-debug-assert on write, as does a compressed float declaration whose `max - min` or quantum
-count is not finite.
+range alone. `serialize_f32` and `serialize_f64` carry finite values only: a reader refuses
+NaN and both infinities as `non_finite_float`, testing the raw bits, and a writer
+debug-asserts on them; negative zero and the subnormals travel bit exact. Non-finite values
+through `serialize_compressed_float` are non-conforming and debug-assert on write, as does a
+compressed float declaration whose `max - min`, quantum count or top decode (`min` plus
+`max - min`) is not finite; a reader refuses a non-finite decode as `non_finite_float`.
 
 ## Buffer contracts
 
@@ -187,23 +239,24 @@ count is not finite.
 
 ## Differences from the C++ library
 
-- Errors instead of `return false` — on the read path: serialize functions return `Result`
-  and propagate with `?`. No macros needed. On the write and measure paths the error type is
-  uninhabited (`Infallible`), which is Rust for the C++ writer's contract: it cannot fail,
-  and the compiler knows it.
-- `serialize_string` operates on `String` and refuses invalid UTF-8 and interior NULs on
-  read (STANDARD.md's refusal rules). `serialize_wide_string` matches the `wchar_t` wire
-  format — each 32 bit group is one UTF-16 code unit, so astral chars travel as surrogate
-  pairs (split on write, recombined on read) — and refuses malformed UTF-16 on read: groups
-  above 0xFFFF, interior NUL groups, and unpaired or misordered surrogates.
+- Errors instead of `return false`: serialize functions return `Result` and propagate with
+  `?`. No macros needed. On the write and measure paths only the caller's own `fail`,
+  `reject` (release) or failing nested object returns an error, as only they return false in
+  C++.
+- `Stream` is sealed: the three streams are the reference's (IMPLEMENTING.md U15).
+- `serialize_string` operates on `String` and refuses a NUL byte (`embedded_nul`, checked
+  over the whole payload first) and invalid UTF-8 (`invalid_utf8`) on read, accepting every
+  well-formed payload byte for byte. Format 2.0 removed the wide string: text travels as
+  UTF-8 only, and a Rust `String` already is.
 - The stream context is `&dyn Any` instead of `void*`. There is no allocator pointer — Rust
   serialize functions can carry whatever state they need.
 - 128 bit values use Rust's native `i128`/`u128` on every platform; there is no equivalent
   of the C++ library's emulated 128 bit pair, and none is needed. The wire is identical.
-- `serialize_fixed` takes its Q format and bounds as runtime arguments checked by debug
-  assertions (the storage type is generic over `FixedPointStorage`, so
-  `stream.serialize_fixed(&mut value, 48, 16, min, max)` mirrors the C++ call shape); the
-  C++ library checks the same constraints at compile time with `static_assert`s. The wire is identical, and the C++
+- `serialize_fixed` takes its Q format and bounds as runtime arguments (the storage type is
+  generic over `FixedPointStorage`, so `stream.serialize_fixed(&mut value, 48, 16, min, max)`
+  mirrors the C++ call shape). A read refuses a bad declaration as `value_out_of_range` in
+  every build; on write and measure it is a debug assertion. The C++ library checks the same
+  constraints at compile time with `static_assert`s. The wire is identical, and the C++
   contract notes about 128 bit division do not apply: the codec never divides in either
   implementation.
 - Buffer sizes and bit counts are `u64` internally, matching the C++ library's 64 bit

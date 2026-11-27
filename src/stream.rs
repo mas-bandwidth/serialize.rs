@@ -2,6 +2,7 @@
 
 use core::any::Any;
 
+use crate::control::{Control, deleted};
 use crate::{Error, Result, bits_required, bits_required64, bits_required128};
 
 /// Types that serialize themselves to a [`Stream`]. The equivalent of the C++ library's
@@ -12,21 +13,28 @@ pub trait Serialize {
     /// # Errors
     ///
     /// Whatever the serialize implementation propagates — see the [`Stream`] methods it
-    /// calls. On write and measure streams `S::Error` is uninhabited, so the returned
-    /// `Result` is statically `Ok`.
+    /// calls. On write and measure streams `S::Error` is [`enum@Error`] too: only `fail`,
+    /// `reject` (release) or a nested object returning either produces one (U9's false).
     fn serialize<S: Stream>(&mut self, stream: &mut S) -> Result<(), S::Error>;
 }
 
-// API misuse checks in the shared serialize methods (invalid arguments — never packet data).
-// Debug assertions in every stream, compiled out in release, matching the C++ library's
-// serialize_assert exactly (the family standard: the caller is responsible for well formed
-// calls; release carries minimal runtime checking). Packet data validation is separate and
-// unaffected: readers bounds check and range validate wire data in every build, returning
-// Error. In release a violated call contract produces a malformed stream on write and
-// garbage-in-garbage-out values on read — never memory unsafety.
-macro_rules! misuse_check {
-    ($cond:expr, $($arg:tt)+) => {
-        debug_assert!($cond, $($arg)+);
+// Caller declaration checks in the shared serialize methods (a bit count, a range, a Q format,
+// precomputed constants, a `previous` — never packet data), IMPLEMENTING.md U16: validated on
+// every stream before any bits move. On a read stream a bad declaration is refused as
+// value_out_of_range in every build, never asserted (U7: a reader never traps), and through
+// `fail`, so a stream that already failed keeps its first reason. On write and measure it is
+// the write-misuse mechanism, a debug assertion compiled out in release exactly like the C++
+// library's serialize_assert (U9), leaving the wire output unspecified — a checked reader may
+// decode arbitrary in-range values rather than rejecting it — though never memory unsafety.
+macro_rules! declaration_check {
+    ($stream_type:ty, $stream:expr, $cond:expr, $($arg:tt)+) => {
+        let declared: bool = $cond;
+        if !declared {
+            if <$stream_type as Stream>::IS_READING {
+                return $stream.fail(Error::ValueOutOfRange);
+            }
+            debug_assert!(declared, $($arg)+);
+        }
     };
 }
 
@@ -41,100 +49,118 @@ macro_rules! misuse_check {
 ///
 /// The stream also decides fallibility, through [`Stream::Error`]: write the canonical
 /// signature `fn serialize<S: Stream>(&mut self, stream: &mut S) -> Result<(), S::Error>`
-/// and the read instantiation is fully checked while the write and measure instantiations
-/// are statically infallible — their error type is uninhabited, so `?` and every error
-/// branch compile to nothing.
+/// and the read instantiation is fully checked, while the write and measure instantiations
+/// fail only when the caller's own `fail`, `reject` (release) or a nested object returns an
+/// error (U9's false); no built-in operation does.
 ///
 /// On read, every method validates before storing and returns an [`enum@Error`] on malicious
 /// or truncated data. Propagate errors with `?` so the first failure aborts the entire
 /// serialize function: a serialized value that controls a loop must never be used
 /// unvalidated.
-pub trait Stream {
+pub trait Stream: gate::Sealed {
     /// True if this stream writes (or measures) values.
     const IS_WRITING: bool;
 
     /// True if this stream reads values.
     const IS_READING: bool;
 
-    /// The error type of this stream's serialize methods: [`enum@Error`] for
-    /// [`crate::ReadStream`] — the network is the world, reads must be fallible — and
-    /// [`core::convert::Infallible`] for [`crate::WriteStream`] and
-    /// [`crate::MeasureStream`], whose serialize methods cannot fail. `Into<Error>` lets a
-    /// function returning [`Result`] absorb any stream's error with `map_err(Into::into)`
-    /// (or plain `?`, via `From<Infallible> for Error`, when the stream type is concrete).
-    type Error: core::fmt::Debug + Into<Error>;
+    /// The error type of this stream's serialize methods: [`enum@Error`] on every stream
+    /// since 5.0.0. On a read stream it is a refusal; on a write or measure stream it is
+    /// IMPLEMENTING.md U9's false, which only [`Stream::fail`], [`Stream::reject`] (release)
+    /// and a nested object that returns it can produce, recording nothing. It stays an
+    /// associated type so the canonical signature `-> Result<(), S::Error>` is unchanged, and
+    /// `From<Error>` lets a nested object return `Err(reason.into())` without latching, the
+    /// C++ callback returning false: [`Stream::serialize_object`] latches it on read.
+    type Error: core::fmt::Debug + Into<Error> + From<Error>;
 
-    /// Construct a data validation failure, without touching the stream.
+    /// Fail the operation: the port of the C++ `serialize_fail`.
     ///
-    /// This is the error constructor [`Stream::refuse`] is built from. Serialize functions
-    /// call `refuse` instead: failure is terminal, and only the `&mut self` form can latch
-    /// the stream so every later read fails too.
+    /// On a read stream this refuses the read and latches the stream's failure state, so
+    /// every later read on it fails as well (STANDARD.md, Reader Obligations: failure is
+    /// terminal). It is how the built-in serialize methods reject decoded values that fail
+    /// validation, and the hook for the same policy in custom serialize functions: guard
+    /// with `if S::IS_READING { ... return stream.fail(error); }`. A stream that already
+    /// failed keeps its first reason.
+    ///
+    /// On a write or measure stream there is nothing to refuse: it returns `Err(error)`,
+    /// U9's false, so the caller's `?` stops there as a C++ caller stops on false. It records
+    /// nothing (the stream has no refusal state, U6, U9), never panics in any build, and a
+    /// later write emits exactly what it would have without it.
     ///
     /// # Errors
     ///
-    /// On a read stream, always returns `Err(error)` (routed through the crate's `#[cold]`
-    /// error constructor, so the failure edge stays cold).
-    ///
-    /// # Panics
-    ///
-    /// On a write or measure stream. Those streams cannot fail — reaching a data validation
-    /// failure on one is a bug in the calling code, not a data condition.
-    fn fail(error: Error) -> Result<(), Self::Error>;
+    /// Always. On a read stream, `error` or the reason the stream already latched; on a
+    /// write or measure stream, `error`.
+    fn fail(&mut self, error: Error) -> Result<(), Self::Error>;
 
-    /// Refuse the read: report a data validation failure and latch the stream's failure
-    /// state, so every later read on it fails as well.
+    /// Reject the read: the caller's own refusal of a value whose bytes were well formed —
+    /// an enum value the program does not know, say, or two fields that contradict each
+    /// other. The port of the C++ `serialize_reject`.
     ///
-    /// This is how the built-in serialize methods reject decoded values that fail
-    /// validation on read, and it is the hook for the same policy in custom serialize
-    /// functions: guard with `if S::IS_READING { ... return stream.refuse(error); }` and the
-    /// write and measure instantiations compile the guard away.
+    /// STANDARD.md, "Refusal reasons" (standard 2.1): a refusal the caller decides, rather
+    /// than the wire, is [`Error::Rejected`]. It goes through the same latch as every wire
+    /// refusal, so it is terminal and the first reason wins: rejecting a stream that already
+    /// refused leaves the wire's reason in place. Guard it the way any read-side validation
+    /// is guarded, `if S::IS_READING { ... return stream.reject(); }`.
     ///
-    /// Failure is terminal (STANDARD.md, Reader Obligations): nothing after a failing
-    /// operation has a defined position, so the stream — not the caller's discipline —
-    /// enforces that nothing after it is interpretable. [`crate::ReadStream`] overrides this
-    /// to set its latch; write and measure streams cannot fail, so the default body is just
-    /// [`Stream::fail`].
+    /// Reject is read only (IMPLEMENTING.md, U2 and U9): on a write or measure stream there
+    /// is nothing to refuse, so calling it there is write misuse: it traps in a checked build
+    /// (a `debug_assert!` panic, U9), and in release returns `Err(Error::Rejected)`, U9's
+    /// false, recording nothing.
     ///
     /// # Errors
     ///
-    /// On a read stream, always returns `Err(error)`.
-    ///
-    /// # Panics
-    ///
-    /// On a write or measure stream, exactly as [`Stream::fail`] does.
-    #[inline(always)]
-    fn refuse(&mut self, error: Error) -> Result<(), Self::Error> {
-        Self::fail(error)
+    /// Always. On a read stream, [`Error::Rejected`], or the reason the stream already
+    /// latched; on a write or measure stream in release, [`Error::Rejected`].
+    #[inline]
+    fn reject(&mut self) -> Result<(), Self::Error> {
+        debug_assert!(
+            Self::IS_READING,
+            "reject is read only: there is nothing to refuse on a write or measure stream"
+        );
+        let reason = if Self::IS_READING && deleted(Control::RejectReason) {
+            Error::ValueOutOfRange
+        } else {
+            Error::Rejected
+        };
+        self.fail(reason)
     }
 
-    /// The failure gate an operation that touches no bits still passes.
+    /// Serialize a nested object: the port of the C++ `serialize_object`.
     ///
-    /// STANDARD.md, Reader Obligations: "every read consults the failure state before it
-    /// does anything else, zero-bit reads included, so a degenerate ranged read, an `align`
-    /// on an already aligned stream, a `bytes` call of zero count and `object` all refuse on
-    /// a stream that has already failed." Every operation that reaches the bit level gets
-    /// the gate for free, because [`ReadStream`](crate::ReadStream) folds the latch into its
-    /// past-end test. A degenerate range reaches no bits at all, so it calls this instead.
+    /// STANDARD.md, "object": a nested object contributes no bytes of its own, so this is
+    /// `object.serialize(self)` with the failure gate on both sides of it. On a read stream
+    /// that has already refused, the object is refused on entry with the latched reason and
+    /// its `serialize` is never called, so even an empty object (zero bits) after a refusal
+    /// refuses, as Reader Obligations require of `object`. If the object's `serialize`
+    /// returns an error the stream latches it, unless an inner read already latched a reason
+    /// (the first refusal wins), and if it returns `Ok` over an inner refusal it swallowed,
+    /// the latched reason is returned on exit. Prefer this to calling `object.serialize`
+    /// directly: a direct call cannot consult the failure state before the object runs.
     ///
-    /// On a write or measure stream the answer is always `Ok(())` and the call compiles
-    /// away, because neither stream can fail.
+    /// On a write or measure stream it is exactly `object.serialize(self)`.
     ///
     /// # Errors
     ///
-    /// On a read stream that has already latched a failure, the latched error.
+    /// On a read stream, the latched error if the stream had already failed, or the first
+    /// refusal of the object's own reads.
     #[inline(always)]
-    fn refuse_if_failed(&mut self) -> Result<(), Self::Error> {
-        Ok(())
+    fn serialize_object<T: Serialize + ?Sized>(&mut self, object: &mut T) -> Result<(), Self::Error>
+    where
+        Self: Sized,
+    {
+        object.serialize(self)
     }
 
     /// Serialize `bits` bits of an unsigned integer value in `[0,(1<<bits)-1]`.
     ///
-    /// `bits` outside `[1,32]` is API misuse — a debug assertion on every stream, compiled
-    /// out in release.
+    /// `bits` outside `[1,32]` is a bad declaration (IMPLEMENTING.md U16): refused as
+    /// [`Error::ValueOutOfRange`] on read in every build, a debug assertion on write and
+    /// measure, compiled out in release.
     ///
     /// # Errors
     ///
-    /// On read, [`Error::Overflow`] if the read would pass the end of the buffer. Writes and
+    /// On read, [`Error::PastEnd`] if the read would pass the end of the buffer. Writes and
     /// measures cannot error.
     fn serialize_bits(&mut self, value: &mut u32, bits: u32) -> Result<(), Self::Error>;
 
@@ -144,62 +170,62 @@ pub trait Stream {
     ///
     /// # Errors
     ///
-    /// On read, [`Error::Overflow`] if the read would pass the end of the buffer, or
-    /// [`Error::Align`] if the alignment padding contains nonzero bits. Writes and measures
-    /// cannot error.
+    /// On read, [`Error::NonzeroPadding`] if the alignment padding contains a set bit —
+    /// checked before the payload length — or [`Error::PastEnd`] if the read would pass the
+    /// end of the buffer. Writes and measures cannot error.
     fn serialize_bytes(&mut self, data: &mut [u8]) -> Result<(), Self::Error>;
 
     /// Serialize an alignment to the next byte boundary, padding with zero bits. On read, the
-    /// padding is validated: nonzero padding fails with [`Error::Align`].
+    /// padding is validated: a set padding bit fails with [`Error::NonzeroPadding`].
     ///
     /// # Errors
     ///
-    /// On read, [`Error::Overflow`] if the read would pass the end of the buffer, or
-    /// [`Error::Align`] if the padding bits are nonzero. Writes and measures cannot error.
+    /// On read, [`Error::PastEnd`] if the read would pass the end of the buffer, or
+    /// [`Error::NonzeroPadding`] if a padding bit is set. Writes and measures cannot error.
     fn serialize_align(&mut self) -> Result<(), Self::Error>;
 
     /// Serialize a string of fewer than `buffer_size` bytes. The wire format is the length in
     /// `[0,buffer_size-1]`, an alignment, then the raw bytes, so `buffer_size` must match
-    /// between write and read. On read the payload is validated (STANDARD.md's refusal
-    /// rules, adopted 2026-08-15), failing with [`Error::InvalidString`]: the bytes must be
-    /// valid UTF-8, and an interior NUL byte is refused — it is well-formed UTF-8, but it
-    /// gives the payload two lengths (the wire's and the `strlen` a consumer computes), the
-    /// smuggling primitive the ruling closes.
+    /// between write and read. On read the payload is validated (STANDARD.md, "string"): a
+    /// zero byte anywhere in it is refused as [`Error::EmbeddedNul`] — it is well-formed
+    /// UTF-8, but it gives the payload two lengths (the wire's and the `strlen` a consumer
+    /// computes) — and that scan runs over the whole payload BEFORE the encoding is checked,
+    /// so a payload breaking both rules is `embedded_nul`; then a payload that is not
+    /// well-formed UTF-8 is refused as [`Error::InvalidUtf8`]. Every well-formed payload is
+    /// accepted byte for byte: no normalization, no BOM stripping, no replacement.
     ///
     /// # Errors
     ///
-    /// On read, [`Error::Overflow`], [`Error::Align`] or [`Error::InvalidString`] on
-    /// truncated, misaligned, non-UTF-8 or interior-NUL data. Writes and measures cannot
-    /// error: a string that does not fit in `buffer_size - 1` bytes is a write-contract
-    /// violation — a debug assertion, and in release a malformed stream that checked
-    /// readers reject.
+    /// On read, [`Error::ValueOutOfRange`] for a length above `buffer_size - 1`,
+    /// [`Error::NonzeroPadding`] for set align padding (checked before the payload length),
+    /// [`Error::PastEnd`] for a truncated payload, then [`Error::EmbeddedNul`] or
+    /// [`Error::InvalidUtf8`]. Writes and measures cannot error: a string that does not fit
+    /// in `buffer_size - 1` bytes, or that holds a NUL, is a write-contract violation — a
+    /// debug assertion, and in release the wire output is unspecified: a checked reader may
+    /// decode it as arbitrary in-range values rather than rejecting it.
     fn serialize_string(
         &mut self,
         value: &mut String,
         buffer_size: usize,
     ) -> Result<(), Self::Error>;
 
-    /// Serialize a wide string, matching the family's `wchar_t` wire format: each 32 bit
-    /// group carries one UTF-16 CODE UNIT (STANDARD.md "wstring", adopted 2026-08-15), so
-    /// an astral char travels as its surrogate pair — split on write, recombined on read.
-    /// `buffer_size` bounds the length in code units and must match between write and read.
-    /// On read, malformed payloads fail with [`Error::InvalidString`] in every build mode:
-    /// a group above 0xFFFF (not a code unit), an interior NUL group, an unpaired or
-    /// misordered surrogate, and a dangling high surrogate as the final group are all
-    /// refused. Well-formed pairs pass — a Rust `String` holds chars, so the pair
-    /// recombines; there is no char for a lone surrogate to become.
+    /// Serialize the end of the object (STANDARD.md, "end", format 2.0).
+    ///
+    /// An object ends at the bit index after its last field, and the stream ends there too.
+    /// A packet reader MUST call this after the last field of the packet's top-level object,
+    /// on a stream holding exactly the bytes the writer reported: it consumes the unused bits
+    /// of the final byte and refuses anything a conforming writer would not have left there.
+    /// Without it, trailing bytes and padding go unexamined, and one value no longer has
+    /// exactly one byte sequence. Write and measure ends emit nothing and cost nothing, so a
+    /// serialize function generic over the stream may call it too.
     ///
     /// # Errors
     ///
-    /// On read, [`Error::Overflow`] or [`Error::InvalidString`] on truncated or malformed
-    /// data. Writes and measures cannot error: a string that does not fit in
-    /// `buffer_size - 1` code units is a write-contract violation — a debug assertion, and
-    /// in release a malformed stream that checked readers reject.
-    fn serialize_wide_string(
-        &mut self,
-        value: &mut String,
-        buffer_size: usize,
-    ) -> Result<(), Self::Error>;
+    /// On read: the first refusal's reason on a stream that has already failed;
+    /// [`Error::TrailingData`] if a whole byte or more remains — checked first, whatever the
+    /// padding holds; otherwise [`Error::NonzeroPadding`] if a bit of the final byte's padding
+    /// is set. Writes and measures cannot error.
+    fn serialize_end(&mut self) -> Result<(), Self::Error>;
 
     /// If we were to serialize an align right now, how many bits would be required? Result in
     /// `[0,7]`. Measure streams always answer 7, the conservative worst case.
@@ -229,17 +255,21 @@ pub trait Stream {
     /// malicious packet can smuggle an out of range value into the bit headroom of the
     /// encoding, so the range is validated, not assumed.
     ///
-    /// `min > max` is API misuse — a debug assertion on every stream, compiled out in
-    /// release. A degenerate range (`min == max`) is legal and costs zero bits.
+    /// `min > max` is a bad declaration (IMPLEMENTING.md U16): refused as
+    /// [`Error::ValueOutOfRange`] on read in every build, a debug assertion on write and
+    /// measure, compiled out in release. A degenerate range (`min == max`) is legal and costs
+    /// zero bits.
     ///
     /// # Errors
     ///
-    /// On read, [`Error::Overflow`] if the read would pass the end of the buffer, or
+    /// On read, [`Error::PastEnd`] if the read would pass the end of the buffer, or
     /// [`Error::ValueOutOfRange`] if the decoded value is outside `[min,max]`. Writes and
     /// measures cannot error: a value outside `[min,max]` is a debug assertion.
     #[inline(always)]
     fn serialize_int(&mut self, value: &mut i32, min: i32, max: i32) -> Result<(), Self::Error> {
-        misuse_check!(
+        declaration_check!(
+            Self,
+            self,
             min <= max,
             "serialize_int: min ({min}) must not be greater than max ({max})"
         );
@@ -249,7 +279,7 @@ pub trait Stream {
             // This must not reach serialize_bits, whose bit count has to be at
             // least 1, so the failure gate every other read gets from the bit
             // level is taken explicitly here.
-            self.refuse_if_failed()?;
+            refuse_if_failed(self)?;
             if Self::IS_READING {
                 *value = min;
             }
@@ -257,20 +287,25 @@ pub trait Stream {
         }
         // arithmetic is done in the unsigned domain: max - min overflows signed arithmetic
         // when the range is wider than 2^31
-        let range = (max as u32).wrapping_sub(min as u32);
+        let min_bits = u32::from_ne_bytes(min.to_ne_bytes());
+        let range = u32::from_ne_bytes(max.to_ne_bytes()).wrapping_sub(min_bits);
         let bits = bits_required(0, range);
         let mut unsigned_value = 0u32;
         if Self::IS_WRITING {
             debug_assert!(*value >= min);
             debug_assert!(*value <= max);
-            unsigned_value = (*value as u32).wrapping_sub(min as u32);
+            unsigned_value = u32::from_ne_bytes(value.to_ne_bytes()).wrapping_sub(min_bits);
         }
         self.serialize_bits(&mut unsigned_value, bits)?;
         if Self::IS_READING {
-            if unsigned_value > range {
-                return self.refuse(Error::ValueOutOfRange);
+            if unsigned_value > range && !deleted(Control::RangedRange) {
+                return self.fail(Error::ValueOutOfRange);
             }
-            *value = unsigned_value.wrapping_add(min as u32) as i32;
+            *value = if deleted(Control::RangedReconstruction) {
+                i32::from_ne_bytes(unsigned_value.to_ne_bytes())
+            } else {
+                i32::from_ne_bytes(unsigned_value.wrapping_add(min_bits).to_ne_bytes())
+            };
         }
         Ok(())
     }
@@ -278,17 +313,21 @@ pub trait Stream {
     /// Serialize a 64 bit integer value in `[min,max]`. The full 64 bit range is supported, and
     /// the minimal number of bits for the range is used on the wire.
     ///
-    /// `min > max` is API misuse — a debug assertion on every stream, compiled out in
-    /// release. A degenerate range (`min == max`) is legal and costs zero bits.
+    /// `min > max` is a bad declaration (IMPLEMENTING.md U16): refused as
+    /// [`Error::ValueOutOfRange`] on read in every build, a debug assertion on write and
+    /// measure, compiled out in release. A degenerate range (`min == max`) is legal and costs
+    /// zero bits.
     ///
     /// # Errors
     ///
-    /// On read, [`Error::Overflow`] if the read would pass the end of the buffer, or
+    /// On read, [`Error::PastEnd`] if the read would pass the end of the buffer, or
     /// [`Error::ValueOutOfRange`] if the decoded value is outside `[min,max]`. Writes and
     /// measures cannot error: a value outside `[min,max]` is a debug assertion.
     #[inline(always)]
     fn serialize_int64(&mut self, value: &mut i64, min: i64, max: i64) -> Result<(), Self::Error> {
-        misuse_check!(
+        declaration_check!(
+            Self,
+            self,
             min <= max,
             "serialize_int64: min ({min}) must not be greater than max ({max})"
         );
@@ -298,7 +337,7 @@ pub trait Stream {
             // This must not reach serialize_bits, whose bit count has to be at
             // least 1, so the failure gate every other read gets from the bit
             // level is taken explicitly here.
-            self.refuse_if_failed()?;
+            refuse_if_failed(self)?;
             if Self::IS_READING {
                 *value = min;
             }
@@ -306,16 +345,17 @@ pub trait Stream {
         }
         // arithmetic is done in the unsigned domain: max - min overflows signed arithmetic
         // when the range is wider than 2^63
-        let range = (max as u64).wrapping_sub(min as u64);
+        let min_bits = u64::from_ne_bytes(min.to_ne_bytes());
+        let range = u64::from_ne_bytes(max.to_ne_bytes()).wrapping_sub(min_bits);
         let bits = bits_required64(0, range);
         let mut unsigned_value = 0u64;
         if Self::IS_WRITING {
             debug_assert!(*value >= min);
             debug_assert!(*value <= max);
-            unsigned_value = (*value as u64).wrapping_sub(min as u64);
+            unsigned_value = u64::from_ne_bytes(value.to_ne_bytes()).wrapping_sub(min_bits);
         }
         if bits <= 32 {
-            let mut lo = unsigned_value as u32;
+            let mut lo = (unsigned_value & 0xFFFF_FFFF) as u32;
             self.serialize_bits(&mut lo, bits)?;
             unsigned_value = u64::from(lo);
         } else {
@@ -328,9 +368,20 @@ pub trait Stream {
         }
         if Self::IS_READING {
             if unsigned_value > range {
-                return self.refuse(Error::ValueOutOfRange);
+                return self.fail(Error::ValueOutOfRange);
             }
-            *value = unsigned_value.wrapping_add(min as u64) as i64;
+            *value = i64::from_ne_bytes(unsigned_value.wrapping_add(min_bits).to_ne_bytes());
+            // the rounding through f64 is the control's whole point
+            #[allow(clippy::cast_precision_loss, clippy::cast_possible_truncation)]
+            if deleted(Control::Int64ThroughDouble) {
+                // a reader backed by a double number type: exact to 2^53, rounded past it
+                let through_double = *value as f64;
+                *value = if through_double >= 9_223_372_036_854_775_807.0 {
+                    i64::MAX
+                } else {
+                    through_double as i64
+                };
+            }
         }
         Ok(())
     }
@@ -344,12 +395,14 @@ pub trait Stream {
     /// bits without changing the wire. Do not confuse this with [`Stream::serialize_u128`],
     /// which is not ranged — it is a raw 128 bit field and always costs 128 bits.
     ///
-    /// `min > max` is API misuse — a debug assertion on every stream, compiled out in
-    /// release. A degenerate range (`min == max`) is legal and costs zero bits.
+    /// `min > max` is a bad declaration (IMPLEMENTING.md U16): refused as
+    /// [`Error::ValueOutOfRange`] on read in every build, a debug assertion on write and
+    /// measure, compiled out in release. A degenerate range (`min == max`) is legal and costs
+    /// zero bits.
     ///
     /// # Errors
     ///
-    /// On read, [`Error::Overflow`] if the read would pass the end of the buffer, or
+    /// On read, [`Error::PastEnd`] if the read would pass the end of the buffer, or
     /// [`Error::ValueOutOfRange`] if the decoded value is outside `[min,max]`. Writes and
     /// measures cannot error: a value outside `[min,max]` is a debug assertion.
     fn serialize_int128(
@@ -358,7 +411,9 @@ pub trait Stream {
         min: i128,
         max: i128,
     ) -> Result<(), Self::Error> {
-        misuse_check!(
+        declaration_check!(
+            Self,
+            self,
             min <= max,
             "serialize_int128: min ({min}) must not be greater than max ({max})"
         );
@@ -368,7 +423,7 @@ pub trait Stream {
             // This must not reach serialize_bits, whose bit count has to be at
             // least 1, so the failure gate every other read gets from the bit
             // level is taken explicitly here.
-            self.refuse_if_failed()?;
+            refuse_if_failed(self)?;
             if Self::IS_READING {
                 *value = min;
             }
@@ -376,20 +431,21 @@ pub trait Stream {
         }
         // arithmetic is done in the unsigned domain: max - min overflows signed arithmetic
         // when the range is wider than 2^127
-        let range = (max as u128).wrapping_sub(min as u128);
+        let min_bits = u128::from_ne_bytes(min.to_ne_bytes());
+        let range = u128::from_ne_bytes(max.to_ne_bytes()).wrapping_sub(min_bits);
         let bits = bits_required128(0, range);
         let mut offset = 0u128;
         if Self::IS_WRITING {
             debug_assert!(*value >= min);
             debug_assert!(*value <= max);
-            offset = (*value as u128).wrapping_sub(min as u128);
+            offset = u128::from_ne_bytes(value.to_ne_bytes()).wrapping_sub(min_bits);
         }
         serialize_offset128(self, &mut offset, bits)?;
         if Self::IS_READING {
             if offset > range {
-                return self.refuse(Error::ValueOutOfRange);
+                return self.fail(Error::ValueOutOfRange);
             }
-            *value = offset.wrapping_add(min as u128) as i128;
+            *value = i128::from_ne_bytes(offset.wrapping_add(min_bits).to_ne_bytes());
         }
         Ok(())
     }
@@ -397,16 +453,19 @@ pub trait Stream {
     /// Serialize `bits` bits of an unsigned 64 bit integer value in `[0,(1<<bits)-1]`. Values
     /// wider than 32 bits are serialized as the low dword then the high remainder.
     ///
-    /// `bits` outside `[1,64]` is API misuse — a debug assertion on every stream, compiled
-    /// out in release.
+    /// `bits` outside `[1,64]` is a bad declaration (IMPLEMENTING.md U16): refused as
+    /// [`Error::ValueOutOfRange`] on read in every build, a debug assertion on write and
+    /// measure, compiled out in release.
     ///
     /// # Errors
     ///
-    /// On read, [`Error::Overflow`] if the read would pass the end of the buffer. Writes and
+    /// On read, [`Error::PastEnd`] if the read would pass the end of the buffer. Writes and
     /// measures cannot error.
     #[inline(always)]
     fn serialize_bits64(&mut self, value: &mut u64, bits: u32) -> Result<(), Self::Error> {
-        misuse_check!(
+        declaration_check!(
+            Self,
+            self,
             (1..=64).contains(&bits),
             "bits must be in [1,64] (got {bits})"
         );
@@ -417,7 +476,7 @@ pub trait Stream {
             debug_assert!(u128::from(*value) < (1u128 << bits));
         }
         if bits <= 32 {
-            let mut lo = *value as u32;
+            let mut lo = (*value & 0xFFFF_FFFF) as u32;
             self.serialize_bits(&mut lo, bits)?;
             if Self::IS_READING {
                 *value = u64::from(lo);
@@ -438,7 +497,7 @@ pub trait Stream {
     ///
     /// # Errors
     ///
-    /// On read, [`Error::Overflow`] if the read would pass the end of the buffer.
+    /// On read, [`Error::PastEnd`] if the read would pass the end of the buffer.
     #[inline(always)]
     fn serialize_bool(&mut self, value: &mut bool) -> Result<(), Self::Error> {
         let mut unsigned_value = u32::from(Self::IS_WRITING && *value);
@@ -453,13 +512,13 @@ pub trait Stream {
     ///
     /// # Errors
     ///
-    /// On read, [`Error::Overflow`] if the read would pass the end of the buffer.
+    /// On read, [`Error::PastEnd`] if the read would pass the end of the buffer.
     #[inline]
     fn serialize_u8(&mut self, value: &mut u8) -> Result<(), Self::Error> {
         let mut unsigned_value = u32::from(*value);
         self.serialize_bits(&mut unsigned_value, 8)?;
         if Self::IS_READING {
-            *value = unsigned_value as u8;
+            *value = (unsigned_value & 0xFF) as u8;
         }
         Ok(())
     }
@@ -468,13 +527,13 @@ pub trait Stream {
     ///
     /// # Errors
     ///
-    /// On read, [`Error::Overflow`] if the read would pass the end of the buffer.
+    /// On read, [`Error::PastEnd`] if the read would pass the end of the buffer.
     #[inline]
     fn serialize_u16(&mut self, value: &mut u16) -> Result<(), Self::Error> {
         let mut unsigned_value = u32::from(*value);
         self.serialize_bits(&mut unsigned_value, 16)?;
         if Self::IS_READING {
-            *value = unsigned_value as u16;
+            *value = (unsigned_value & 0xFFFF) as u16;
         }
         Ok(())
     }
@@ -483,7 +542,7 @@ pub trait Stream {
     ///
     /// # Errors
     ///
-    /// On read, [`Error::Overflow`] if the read would pass the end of the buffer.
+    /// On read, [`Error::PastEnd`] if the read would pass the end of the buffer.
     #[inline]
     fn serialize_u32(&mut self, value: &mut u32) -> Result<(), Self::Error> {
         self.serialize_bits(value, 32)
@@ -493,7 +552,7 @@ pub trait Stream {
     ///
     /// # Errors
     ///
-    /// On read, [`Error::Overflow`] if the read would pass the end of the buffer.
+    /// On read, [`Error::PastEnd`] if the read would pass the end of the buffer.
     #[inline(always)]
     fn serialize_u64(&mut self, value: &mut u64) -> Result<(), Self::Error> {
         self.serialize_bits64(value, 64)
@@ -509,10 +568,10 @@ pub trait Stream {
     ///
     /// # Errors
     ///
-    /// On read, [`Error::Overflow`] if the read would pass the end of the buffer. Writes and
+    /// On read, [`Error::PastEnd`] if the read would pass the end of the buffer. Writes and
     /// measures cannot error.
     fn serialize_u128(&mut self, value: &mut u128) -> Result<(), Self::Error> {
-        let mut lo = *value as u64;
+        let mut lo = (*value & 0xFFFF_FFFF_FFFF_FFFF) as u64;
         let mut hi = (*value >> 64) as u64;
         self.serialize_bits64(&mut lo, 64)?;
         self.serialize_bits64(&mut hi, 64)?;
@@ -524,14 +583,32 @@ pub trait Stream {
 
     /// Serialize a float value, as its 32 bit pattern.
     ///
+    /// The format carries FINITE values only (STANDARD.md, format 2.0): NaN with any payload
+    /// or sign and both infinities are refused on read, and writing one is a debug
+    /// assertion. Negative zero and the subnormals are finite and travel bit exact. The
+    /// refusal tests the raw bits off the wire, before any conversion, so no platform's
+    /// float handling (a quieted signaling NaN on i686, say) can change the verdict.
+    ///
     /// # Errors
     ///
-    /// On read, [`Error::Overflow`] if the read would pass the end of the buffer.
+    /// On read, [`Error::PastEnd`] if the read would pass the end of the buffer, or
+    /// [`Error::NonFiniteFloat`] if the pattern's exponent field is all ones; the destination
+    /// is left unwritten either way. Writes and measures cannot error.
     #[inline(always)]
     fn serialize_f32(&mut self, value: &mut f32) -> Result<(), Self::Error> {
-        let mut int_value = if Self::IS_WRITING { value.to_bits() } else { 0 };
+        let mut int_value = 0;
+        if Self::IS_WRITING {
+            int_value = value.to_bits();
+            debug_assert!(
+                float_bits_are_finite(int_value),
+                "serialize_f32: the format carries finite values only (got bits 0x{int_value:08X})"
+            );
+        }
         self.serialize_bits(&mut int_value, 32)?;
         if Self::IS_READING {
+            if !float_bits_are_finite(int_value) && !deleted(Control::FloatFinite) {
+                return self.fail(Error::NonFiniteFloat);
+            }
             *value = f32::from_bits(int_value);
         }
         Ok(())
@@ -539,14 +616,29 @@ pub trait Stream {
 
     /// Serialize a double precision float value, as its 64 bit pattern.
     ///
+    /// Finite values only, exactly as [`Stream::serialize_f32`]: the raw 64 bits are tested
+    /// on read, and a non-finite write is a debug assertion.
+    ///
     /// # Errors
     ///
-    /// On read, [`Error::Overflow`] if the read would pass the end of the buffer.
+    /// On read, [`Error::PastEnd`] if the read would pass the end of the buffer, or
+    /// [`Error::NonFiniteFloat`] if the pattern's exponent field is all ones; the destination
+    /// is left unwritten either way. Writes and measures cannot error.
     #[inline]
     fn serialize_f64(&mut self, value: &mut f64) -> Result<(), Self::Error> {
-        let mut int_value = if Self::IS_WRITING { value.to_bits() } else { 0 };
+        let mut int_value = 0;
+        if Self::IS_WRITING {
+            int_value = value.to_bits();
+            debug_assert!(
+                double_bits_are_finite(int_value),
+                "serialize_f64: the format carries finite values only (got bits 0x{int_value:016X})"
+            );
+        }
         self.serialize_bits64(&mut int_value, 64)?;
         if Self::IS_READING {
+            if !double_bits_are_finite(int_value) && !deleted(Control::DoubleFinite) {
+                return self.fail(Error::NonFiniteFloat);
+            }
             *value = f64::from_bits(int_value);
         }
         Ok(())
@@ -568,9 +660,10 @@ pub trait Stream {
     ///
     /// # Errors
     ///
-    /// On read, [`Error::Overflow`] if the read would pass the end of the buffer, or
-    /// [`Error::ValueOutOfRange`] if the quantized integer is above the maximum for the range.
-    /// Writes and measures cannot error.
+    /// On read, [`Error::PastEnd`] if the read would pass the end of the buffer,
+    /// [`Error::ValueOutOfRange`] if the quantized integer is above the maximum for the range,
+    /// or [`Error::NonFiniteFloat`] if the decode is not finite. Writes and measures cannot
+    /// error.
     #[inline]
     fn serialize_compressed_float(
         &mut self,
@@ -586,6 +679,28 @@ pub trait Stream {
         // the wire lives in serialize_compressed_float_precomputed, statement for statement.
         // test_compressed_float_precomputed_differential holds this composition to byte and
         // bit identity against a frozen copy of the original unsplit body.
+        // U16: the declaration is validated before the derivation, whose own checks are debug
+        // assertions (it is a free function with no stream to refuse on)
+        declaration_check!(
+            Self,
+            self,
+            min < max && resolution > 0.0,
+            "serialize_compressed_float: requires min < max and resolution > 0 (got [{min},{max}] at {resolution})"
+        );
+        declaration_check!(
+            Self,
+            self,
+            (max - min).is_finite(),
+            "serialize_compressed_float: max - min must be finite (got {})",
+            max - min
+        );
+        declaration_check!(
+            Self,
+            self,
+            ((max - min) / resolution).is_finite(),
+            "serialize_compressed_float: (max - min) / resolution must be finite (got {})",
+            (max - min) / resolution
+        );
         let params = serialize_compressed_float_params(min, max, resolution);
         self.serialize_compressed_float_precomputed(
             value,
@@ -611,15 +726,19 @@ pub trait Stream {
     /// On write, the value is clamped into the declared range and quantized; writing a
     /// non-finite value is non-conforming (STANDARD.md) and a debug assertion. The constants
     /// must be exactly what [`serialize_compressed_float_params`] derives for a conforming
-    /// declaration — anything else is API misuse, a debug assertion on every stream,
-    /// compiled out in release (writer-trusted).
+    /// declaration. What can be checked without that declaration is (U16): `bits` equal to
+    /// `bits_required(0, max_integer_value)`, `max_integer_value` in `[1,4294967040]`, and
+    /// `delta` positive and finite. A violation is a bad declaration (IMPLEMENTING.md U16):
+    /// refused as [`Error::ValueOutOfRange`] on read in every build, a debug assertion on
+    /// write and measure, compiled out in release.
     ///
     /// # Errors
     ///
-    /// On read, [`Error::Overflow`] if the read would pass the end of the buffer, or
+    /// On read, [`Error::PastEnd`] if the read would pass the end of the buffer,
     /// [`Error::ValueOutOfRange`] if the quantized integer is above `max_integer_value` — a
-    /// malicious packet can smuggle one into the bit headroom of the encoding. Writes and
-    /// measures cannot error.
+    /// malicious packet can smuggle one into the bit headroom of the encoding — or
+    /// [`Error::NonFiniteFloat`] if the decode is not finite. Writes and measures cannot
+    /// error.
     #[inline]
     fn serialize_compressed_float_precomputed(
         &mut self,
@@ -629,19 +748,28 @@ pub trait Stream {
         delta: f32,
         min: f32,
     ) -> Result<(), Self::Error> {
-        misuse_check!(
-            max_integer_value >= 1,
-            "serialize_compressed_float_precomputed: max_integer_value must be at least 1"
+        // U16: what can be checked without the declaration the constants came from
+        declaration_check!(
+            Self,
+            self,
+            (1..=4_294_967_040).contains(&max_integer_value),
+            "serialize_compressed_float_precomputed: max_integer_value ({max_integer_value}) must be in [1,4294967040]"
         );
-        misuse_check!(
+        declaration_check!(
+            Self,
+            self,
             bits == bits_required(0, max_integer_value),
             "serialize_compressed_float_precomputed: bits ({bits}) must equal bits_required(0, {max_integer_value})"
         );
-        misuse_check!(
+        declaration_check!(
+            Self,
+            self,
             delta > 0.0,
             "serialize_compressed_float_precomputed: delta must be positive (got {delta})"
         );
-        misuse_check!(
+        declaration_check!(
+            Self,
+            self,
             delta.is_finite(),
             "serialize_compressed_float_precomputed: delta must be finite (got {delta})"
         );
@@ -655,6 +783,16 @@ pub trait Stream {
                 value.is_finite(),
                 "serialize_compressed_float_precomputed: written value must be finite (got {value})"
             );
+            // declaration validity, format 2.0: the decode of max_integer_value, min + delta
+            // rounded once, must be finite. A declaration whose top decodes to an infinity is
+            // non-conforming as a whole, so this asserts even for values that decode finite.
+            // Write path only: a reader with such a declaration refuses its non-finite decode
+            // at runtime instead
+            debug_assert!(
+                (min + delta).is_finite(),
+                "serialize_compressed_float_precomputed: the top decode min + delta must be finite (got {})",
+                min + delta
+            );
             // clamp NaN into range instead of letting it reach the u32 conversion below
             let mut normalized_value = (*value - min) / delta;
             if normalized_value.is_nan() || normalized_value < 0.0 {
@@ -662,7 +800,16 @@ pub trait Stream {
             } else if normalized_value > 1.0 {
                 normalized_value = 1.0;
             }
-            integer_value = (normalized_value * max_integer_value as f32 + 0.5).floor() as u32;
+            // the quantization is float32 arithmetic by the standard, and the floor is in
+            // [0, max_integer_value + 1] because normalized_value is clamped to [0,1] above
+            #[allow(
+                clippy::cast_precision_loss,
+                clippy::cast_possible_truncation,
+                clippy::cast_sign_loss
+            )]
+            {
+                integer_value = (normalized_value * max_integer_value as f32 + 0.5).floor() as u32;
+            }
             // STANDARD.md: the integer clamp is normative (2026-08-23, schema#109). once
             // max_integer_value >= 2^23 the float32 ulp at the top of the range reaches 1,
             // so the rounded sum can exceed max_integer_value itself: the writer emits a
@@ -677,10 +824,22 @@ pub trait Stream {
 
         if Self::IS_READING {
             if integer_value > max_integer_value {
-                return self.refuse(Error::ValueOutOfRange);
+                return self.fail(Error::ValueOutOfRange);
             }
+            // the decode is float32 arithmetic by the standard
+            #[allow(clippy::cast_precision_loss)]
             let normalized_value = integer_value as f32 / max_integer_value as f32;
-            *value = normalized_value * delta + min;
+            let decoded = normalized_value * delta + min;
+            // the decode must be finite (STANDARD.md, format 2.0): every operand is finite
+            // and the integer is in range, and still the final add can round past FLT_MAX —
+            // over [3 * 2^103, FLT_MAX] at resolution 2^104 the top integer decodes to +inf.
+            // Refused whatever the declaration, so no declaration hands NaN or an infinity
+            // to the far side of the wire
+            if !float_bits_are_finite(decoded.to_bits()) && !deleted(Control::CompressedFloatFinite)
+            {
+                return self.fail(Error::NonFiniteFloat);
+            }
+            *value = decoded;
         }
 
         Ok(())
@@ -715,15 +874,16 @@ pub trait Stream {
     /// every storage width: nothing is written, and the reader recovers the value from the
     /// range alone — the raw value `min_units << fraction_bits`.
     ///
-    /// API misuse — the conditions the C++ library rejects with `static_assert`s — is a
-    /// debug assertion on every stream, compiled out in release: `integer_bits` of zero,
+    /// A bad declaration — the conditions the C++ library rejects with `static_assert`s — is
+    /// refused as [`Error::ValueOutOfRange`] on read in every build and a debug assertion on
+    /// write and measure, compiled out in release (U16): `integer_bits` of zero,
     /// `integer_bits + fraction_bits` not equal to the storage width, `min_units >
     /// max_units` (an inverted range), or bounds that do not fit the Q format's whole unit
     /// capacity.
     ///
     /// # Errors
     ///
-    /// On read, [`Error::Overflow`] if the read would pass the end of the buffer, or
+    /// On read, [`Error::PastEnd`] if the read would pass the end of the buffer, or
     /// [`Error::ValueOutOfRange`] if the decoded raw value is outside the raw bounds — a
     /// malicious packet can smuggle a raw value past `raw_max` into the bit headroom of the
     /// offset encoding, and reads reject it, never clamp. Writes and measures cannot error:
@@ -736,35 +896,48 @@ pub trait Stream {
         min_units: i64,
         max_units: i64,
     ) -> Result<(), Self::Error> {
-        misuse_check!(
+        declaration_check!(
+            Self,
+            self,
             integer_bits >= 1,
             "serialize_fixed: at least one integer bit is required (the sign bit counts for signed storage)"
         );
-        misuse_check!(
-            integer_bits + fraction_bits == T::BITS,
+        declaration_check!(
+            Self,
+            self,
+            integer_bits.checked_add(fraction_bits) == Some(T::BITS),
             "serialize_fixed: integer_bits + fraction_bits ({integer_bits} + {fraction_bits}) must equal the storage width ({})",
             T::BITS
         );
-        misuse_check!(
+        declaration_check!(
+            Self,
+            self,
             min_units <= max_units,
             "serialize_fixed: min_units ({min_units}) must not be greater than max_units ({max_units})"
         );
 
         // the whole unit capacity of the Q format (the C++ static asserts: the Q format and
-        // the bounds are constants of the call site, so a violation is API misuse — a hard
-        // panic on read, a debug assertion on the writer-trusted paths)
+        // the bounds are constants of the call site, so a violation is a bad declaration —
+        // refused as value_out_of_range on read, a debug assertion on write and measure, U16)
         if T::SIGNED {
-            let min_representable = (1u128 << (integer_bits - 1)).wrapping_neg() as i128;
-            let max_representable = ((1u128 << (integer_bits - 1)) - 1) as i128;
-            misuse_check!(
+            let min_representable =
+                i128::from_ne_bytes((1u128 << (integer_bits - 1)).wrapping_neg().to_ne_bytes());
+            let max_representable =
+                i128::from_ne_bytes(((1u128 << (integer_bits - 1)) - 1).to_ne_bytes());
+            declaration_check!(
+                Self,
+                self,
                 i128::from(min_units) >= min_representable
                     && i128::from(max_units) <= max_representable,
                 "serialize_fixed: bounds in whole units do not fit the Q format"
             );
         } else {
-            misuse_check!(
+            declaration_check!(
+                Self,
+                self,
                 min_units >= 0
-                    && (integer_bits >= 64 || (max_units as u64) < (1u64 << integer_bits)),
+                    && (integer_bits >= 64
+                        || u64::from_ne_bytes(max_units.to_ne_bytes()) < (1u64 << integer_bits)),
                 "serialize_fixed: bounds in whole units do not fit the Q format"
             );
         }
@@ -772,15 +945,19 @@ pub trait Stream {
         // shift the whole unit bounds into raw fixed point units in the unsigned 128 bit
         // domain, where negative bounds wrap two's complement; the capacity checks above
         // guarantee the raw range fits the storage width, so nothing below can overflow
-        let raw_min = (i128::from(min_units) as u128) << fraction_bits;
-        let raw_range = ((i128::from(max_units) - i128::from(min_units)) as u128) << fraction_bits;
+        let raw_min = u128::from_ne_bytes(i128::from(min_units).to_ne_bytes()) << fraction_bits;
+        let raw_range =
+            u128::from_ne_bytes((i128::from(max_units) - i128::from(min_units)).to_ne_bytes())
+                << fraction_bits;
 
         if min_units == max_units {
             // degenerate range: the value IS the range, nothing to send (STANDARD.md:
             // min == max costs zero bits, on every storage width). nothing reaches the bit
             // level, so the failure gate is taken explicitly, exactly as in the ranged
             // integers above
-            self.refuse_if_failed()?;
+            if !deleted(Control::FixedDegenerateTerminal) {
+                refuse_if_failed(self)?;
+            }
             if Self::IS_WRITING {
                 debug_assert!(
                     value.to_unsigned() == raw_min,
@@ -812,7 +989,7 @@ pub trait Stream {
             // reject raw values outside [raw_min,raw_max] smuggled into the bit headroom of
             // the offset encoding. reject, never clamp
             if offset > raw_range {
-                return self.refuse(Error::ValueOutOfRange);
+                return self.fail(Error::ValueOutOfRange);
             }
             // reconstruct in the unsigned domain, then truncate to the storage width: exact
             // two's complement for signed storage
@@ -830,8 +1007,10 @@ pub trait Stream {
     /// encoding this operation carries.
     ///
     /// `previous` is the caller's own state and never arrives off the wire, so a `previous`
-    /// outside the domain is API misuse — a debug assertion on every stream, compiled out in
-    /// release — exactly as `current <= previous` is on write.
+    /// outside the domain is a bad declaration (IMPLEMENTING.md U16): refused as
+    /// [`Error::ValueOutOfRange`] on read in every build, a debug assertion on write and
+    /// measure, compiled out in release. `current <= previous` on write is a debug
+    /// assertion too.
     ///
     /// On read every tier reconstructs `current` in a width that cannot wrap and then checks
     /// the result, so a reconstruction that leaves the domain or fails to exceed `previous`
@@ -840,11 +1019,16 @@ pub trait Stream {
     /// tier, whose 32 raw bits are read as an **unsigned** value — a top bit set is outside
     /// the domain, not a negative sequence number.
     ///
+    /// The writer takes the first tier the difference fits, and that is the only encoding
+    /// of the value (format 2.0): after the domain rule, the absolute tier carrying a
+    /// `current` no more than 69914 above `previous` is refused as [`Error::NonCanonical`].
+    ///
     /// # Errors
     ///
-    /// On read, [`Error::Overflow`] if the read would pass the end of the buffer, or
+    /// On read, [`Error::PastEnd`] if the read would pass the end of the buffer,
     /// [`Error::ValueOutOfRange`] if the reconstructed value is outside the domain or is not
-    /// greater than `previous`. Writes and measures cannot error: a `previous` or `current`
+    /// greater than `previous`, or [`Error::NonCanonical`] if the absolute tier carries a
+    /// difference a bounded tier takes. Writes and measures cannot error: a `previous` or `current`
     /// outside the contract is a debug assertion.
     #[inline]
     fn serialize_int_relative(
@@ -862,20 +1046,23 @@ pub trait Stream {
             (69914, 4378, 69914),
         ];
 
-        misuse_check!(
+        declaration_check!(
+            Self,
+            self,
             previous >= 0,
             "serialize_int_relative: previous ({previous}) is outside the domain [0,i32::MAX]"
         );
 
         let mut difference = 0u32;
         if Self::IS_WRITING {
-            misuse_check!(
+            debug_assert!(
                 previous < *current,
                 "serialize_int_relative: current ({}) must be greater than previous ({previous})",
                 *current
             );
             // both operands are in the domain, so the difference is exact in 32 bits
-            difference = (*current as u32).wrapping_sub(previous as u32);
+            difference = u32::from_ne_bytes(current.to_ne_bytes())
+                .wrapping_sub(u32::from_ne_bytes(previous.to_ne_bytes()));
         }
 
         let mut one_bit = false;
@@ -899,7 +1086,7 @@ pub trait Stream {
             if in_bucket {
                 let mut bucket_difference = 0i32;
                 if Self::IS_WRITING {
-                    bucket_difference = difference as i32;
+                    bucket_difference = i32::from_ne_bytes(difference.to_ne_bytes());
                 }
                 self.serialize_int(&mut bucket_difference, bucket_min, bucket_max)?;
                 if Self::IS_READING {
@@ -913,17 +1100,61 @@ pub trait Stream {
         // the absolute tier transmits current itself, as 32 raw bits
         let mut value = 0u32;
         if Self::IS_WRITING {
-            value = *current as u32;
+            value = u32::from_ne_bytes(current.to_ne_bytes());
         }
         self.serialize_bits(&mut value, 32)?;
         if Self::IS_READING {
             // the group is UNSIGNED: widening it into i64 (rather than reinterpreting it as
             // i32) is what makes a top bit set read as 2^31 or above, outside the domain,
             // instead of as a negative sequence number
-            return accept_int_relative(self, previous, i64::from(value), current);
+            let reconstructed = i64::from(value);
+            // the domain and ordering rule comes first, so a current outside the domain is
+            // value_out_of_range whatever its difference
+            if !int_relative_in_domain(previous, reconstructed) {
+                return self.fail(Error::ValueOutOfRange);
+            }
+            // the absolute tier is canonical too: a difference a bounded tier would have
+            // taken has a bounded encoding, and this is a second one. The difference is
+            // computed in i64, where it cannot wrap
+            if reconstructed - i64::from(previous) <= 69914
+                && !deleted(Control::IntRelativeCanonical)
+            {
+                return self.fail(Error::NonCanonical);
+            }
+            // in [0,i32::MAX]: the domain check above passed
+            #[allow(clippy::cast_possible_truncation)]
+            {
+                *current = reconstructed as i32;
+            }
         }
 
         Ok(())
+    }
+}
+
+/// The failure gate an operation that touches no bits still passes, crate private
+/// (IMPLEMENTING.md U15 hides it; it was `Stream::refuse_if_failed` before 5.0.0).
+///
+/// STANDARD.md, Reader Obligations: "every read consults the failure state before it does
+/// anything else, zero-bit reads included". Every operation that reaches the bit level gets
+/// the gate for free, because [`crate::ReadStream`] folds the latch into its past-end test.
+/// A degenerate range reaches no bits at all, so it calls this instead. On a write or
+/// measure stream the gate is always `Ok` and the call compiles away.
+#[inline(always)]
+pub(crate) fn refuse_if_failed<S: Stream + ?Sized>(stream: &mut S) -> Result<(), S::Error> {
+    stream.gate().map_err(S::Error::from)
+}
+
+/// Seals [`Stream`]: the three streams are the reference's, and the latch query the gate
+/// reads is internal (IMPLEMENTING.md U15). The module is private, so nothing outside the
+/// crate can name the trait, implement it, or call `gate`.
+pub(crate) mod gate {
+    use crate::Result;
+
+    pub trait Sealed {
+        /// The failure gate: on a read stream the latched reason through the crate's cold
+        /// error constructor, or `Ok`; always `Ok` on write and measure.
+        fn gate(&mut self) -> Result;
     }
 }
 
@@ -937,12 +1168,37 @@ fn accept_int_relative<S: Stream + ?Sized>(
     reconstructed: i64,
     current: &mut i32,
 ) -> Result<(), S::Error> {
-    const DOMAIN: core::ops::RangeInclusive<i64> = 0..=(i32::MAX as i64);
-    if !DOMAIN.contains(&reconstructed) || reconstructed <= i64::from(previous) {
-        return stream.refuse(Error::ValueOutOfRange);
+    if !int_relative_in_domain(previous, reconstructed) {
+        return stream.fail(Error::ValueOutOfRange);
     }
-    *current = reconstructed as i32;
+    // in [0,i32::MAX]: the domain check above passed
+    #[allow(clippy::cast_possible_truncation)]
+    {
+        *current = reconstructed as i32;
+    }
     Ok(())
+}
+
+/// The `int_relative` domain and ordering rule: `reconstructed` lies in `[0,i32::MAX]` and is
+/// strictly greater than `previous`.
+#[inline]
+fn int_relative_in_domain(previous: i32, reconstructed: i64) -> bool {
+    const DOMAIN: core::ops::RangeInclusive<i64> = 0..=(i32::MAX as i64);
+    DOMAIN.contains(&reconstructed) && reconstructed > i64::from(previous)
+}
+
+/// True when a float's exponent field is not all ones: the value is neither NaN (any payload,
+/// either sign, signaling or quiet) nor an infinity. Tested on the raw bits, never on a
+/// converted value.
+#[inline(always)]
+const fn float_bits_are_finite(bits: u32) -> bool {
+    bits & 0x7F80_0000 != 0x7F80_0000
+}
+
+/// The 64 bit twin of [`float_bits_are_finite`].
+#[inline(always)]
+const fn double_bits_are_finite(bits: u64) -> bool {
+    bits & 0x7FF0_0000_0000_0000 != 0x7FF0_0000_0000_0000
 }
 
 /// The wire constants a compressed float declaration derives to, produced by
@@ -984,14 +1240,14 @@ pub fn serialize_compressed_float_params(
     max: f32,
     resolution: f32,
 ) -> CompressedFloatParams {
-    misuse_check!(
+    debug_assert!(
         min < max && resolution > 0.0,
         "serialize_compressed_float_params: requires min < max and resolution > 0"
     );
 
     let delta = max - min;
 
-    // declaration validity (the fork #6 ruling, Glenn, 2026-08-15: "it's non-conforming.
+    // declaration validity (the fork #6 ruling, 2026-08-15: "it's non-conforming.
     // also, attempting to send NaN or INF or anything else through compressed float is
     // non-conforming and should assert out on write too."): a declaration whose delta or
     // quantum count is not finite asserts at the param computation site, in every stream
@@ -1015,6 +1271,8 @@ pub fn serialize_compressed_float_params(
         values = 4_294_967_040.0;
     }
 
+    // values is clamped to [1,4294967040] just above, so the ceil is a u32
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
     let max_integer_value = values.ceil() as u32;
 
     let bits = bits_required(0, max_integer_value);
@@ -1039,6 +1297,10 @@ mod sealed {
 ///
 /// The trait is sealed: the storage set is part of the wire format contract and cannot be
 /// extended outside this crate.
+///
+/// Exported as a language necessity (IMPLEMENTING.md U15, "Exports beyond the reference
+/// operations"): it is the bound that lets one generic [`Stream::serialize_fixed`] take every
+/// storage width, where C++ overloads the operation per integer type.
 pub trait FixedPointStorage: sealed::Sealed + Copy {
     /// The width of the storage type in bits: the width of the Q format.
     const BITS: u32;
@@ -1064,13 +1326,17 @@ macro_rules! impl_fixed_point_storage {
                 const SIGNED: bool = <$t>::MIN != 0;
 
                 // `as u128` sign extends signed storage and zero extends unsigned storage,
-                // which is exactly the conversion the raw offset math needs
+                // which is exactly the conversion the raw offset math needs. The reverse
+                // cast takes the low bits of the raw value, the storage width's own
+                // two's complement rendering.
                 #[inline]
+                #[allow(clippy::cast_lossless, clippy::cast_sign_loss)]
                 fn to_unsigned(self) -> u128 {
                     self as u128
                 }
 
                 #[inline]
+                #[allow(clippy::cast_possible_truncation, clippy::cast_possible_wrap)]
                 fn from_unsigned(raw: u128) -> Self {
                     raw as $t
                 }
@@ -1092,9 +1358,9 @@ fn serialize_offset128<S: Stream + ?Sized>(
     bits: u32,
 ) -> Result<(), S::Error> {
     debug_assert!((1..=128).contains(&bits));
-    let mut group0 = *offset as u32;
-    let mut group1 = (*offset >> 32) as u32;
-    let mut group2 = (*offset >> 64) as u32;
+    let mut group0 = (*offset & 0xFFFF_FFFF) as u32;
+    let mut group1 = ((*offset >> 32) & 0xFFFF_FFFF) as u32;
+    let mut group2 = ((*offset >> 64) & 0xFFFF_FFFF) as u32;
     let mut group3 = (*offset >> 96) as u32;
     if bits <= 32 {
         stream.serialize_bits(&mut group0, bits)?;

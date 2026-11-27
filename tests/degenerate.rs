@@ -5,7 +5,7 @@
 //! C++ and C ports support it, so this was a cross-language divergence: the
 //! same sequence works against one runtime and aborts against this one.
 
-use serialize::{MeasureStream, ReadStream, Stream, WriteStream};
+use serialize::{Error, MeasureStream, ReadStream, Stream, WriteStream};
 
 #[test]
 fn degenerate_range_costs_nothing() {
@@ -26,7 +26,7 @@ fn degenerate_range_costs_nothing() {
         w.serialize_int(&mut after, 0, 7).unwrap();
         bits_after = w.bits_processed();
         w.flush();
-        bytes = w.bytes_processed() as usize;
+        bytes = usize::try_from(w.bytes_processed()).expect("byte count fits usize");
     }
     // the next field must still start at bit 0 -- if the degenerate range
     // consumed bit space, everything downstream shifts and the wire stops
@@ -65,7 +65,7 @@ fn degenerate_range_64_and_128() {
         .unwrap();
         assert_eq!(w.bits_processed(), 0);
         w.flush();
-        bytes = w.bytes_processed().max(1) as usize;
+        bytes = usize::try_from(w.bytes_processed().max(1)).expect("byte count fits usize");
     }
 
     let mut r = ReadStream::new(&buffer, bytes);
@@ -114,30 +114,32 @@ fn degenerate_int128_corpus_vector() {
 }
 
 /// Relaxing the guard was meant to admit the degenerate case, not to stop
-/// validating: an inverted range is still API misuse — a debug assertion on every stream,
-/// compiled out in release per the family standard (minimal runtime checking; misuse
-/// checks match the C++ library's `serialize_assert`).
+/// validating: an inverted range is still a bad declaration. On read it is refused as
+/// `value_out_of_range` in every build, never asserted and never accepted as wrong data
+/// (IMPLEMENTING.md U7, U16; the reference's ranged reads did the same from 2.1).
 #[test]
-#[cfg(debug_assertions)]
-#[should_panic(expected = "must not be greater than max")]
-fn inverted_range_asserts_on_read_in_debug() {
+fn inverted_range_is_refused_on_read_in_every_build() {
     let buffer = [0u8; 64];
+    for (min, max) in [(10, 5), (i32::MAX, i32::MIN)] {
+        let mut r = ReadStream::new(&buffer, 8);
+        let mut v = 77i32;
+        assert_eq!(
+            r.serialize_int(&mut v, min, max),
+            Err(Error::ValueOutOfRange)
+        );
+        assert_eq!(v, 77, "the refused read left its destination alone");
+        assert_eq!(r.bits_processed(), 0, "no bits moved");
+        assert_eq!(r.failure(), Some(Error::ValueOutOfRange));
+    }
     let mut r = ReadStream::new(&buffer, 8);
-    let mut v = 0i32;
-    let _ = r.serialize_int(&mut v, 10, 5);
-}
-
-/// The release twin: with the debug assert compiled out, the same read-side misuse must
-/// NOT panic — the misuse check is gone from the release binary (the enactment's proof),
-/// and the read stays memory safe: garbage in, garbage out, never unsafety. This is the
-/// class representative for every misuse check the 2026-08-16 audit moved.
-#[test]
-#[cfg(not(debug_assertions))]
-fn inverted_range_misuse_check_absent_in_release() {
-    let buffer = [0u8; 64];
+    let mut v = 0i64;
+    assert_eq!(r.serialize_int64(&mut v, 1, 0), Err(Error::ValueOutOfRange));
     let mut r = ReadStream::new(&buffer, 8);
-    let mut v = 0i32;
-    let _ = r.serialize_int(&mut v, 10, 5); // completes without panicking; result is GIGO
+    let mut v = 0i128;
+    assert_eq!(
+        r.serialize_int128(&mut v, 1, 0),
+        Err(Error::ValueOutOfRange)
+    );
 }
 
 /// The write-side twin: the same inverted range is a debug assertion on the trusted write
@@ -182,7 +184,7 @@ fn degenerate_fixed_costs_nothing_on_every_width() {
         w.serialize_int(&mut after, 0, 7).unwrap();
         assert_eq!(w.bits_processed(), 3);
         w.flush();
-        bytes = w.bytes_processed() as usize;
+        bytes = usize::try_from(w.bytes_processed()).expect("byte count fits usize");
     }
     {
         let mut r = ReadStream::new(&buffer, bytes);
@@ -221,7 +223,7 @@ fn degenerate_fixed_costs_nothing_on_every_width() {
             w.serialize_int(&mut after, 0, 7).unwrap();
             assert_eq!(w.bits_processed(), 3);
             w.flush();
-            bytes = w.bytes_processed() as usize;
+            bytes = usize::try_from(w.bytes_processed()).expect("byte count fits usize");
         }
         {
             let mut r = ReadStream::new(&buffer, bytes);
@@ -244,16 +246,19 @@ fn degenerate_fixed_costs_nothing_on_every_width() {
     }
 }
 
-/// An inverted fixed range is still API misuse: a debug assertion on every stream,
-/// compiled out in release.
+/// An inverted fixed range is still a bad declaration: refused as `value_out_of_range` on
+/// read in every build (U16), a debug assertion on write.
 #[test]
-#[cfg(debug_assertions)]
-#[should_panic(expected = "must not be greater than max_units")]
-fn inverted_fixed_range_asserts_on_read_in_debug() {
+fn inverted_fixed_range_is_refused_on_read() {
     let buffer = [0u8; 64];
     let mut r = ReadStream::new(&buffer, 8);
-    let mut v = 0i64;
-    let _ = r.serialize_fixed(&mut v, 48, 16, 7, -7);
+    let mut v = 5i64;
+    assert_eq!(
+        r.serialize_fixed(&mut v, 48, 16, 7, -7),
+        Err(Error::ValueOutOfRange)
+    );
+    assert_eq!(v, 5);
+    assert_eq!(r.bits_processed(), 0);
 }
 
 /// The write-side twin, debug builds only.
@@ -289,7 +294,7 @@ fn degenerate_string_buffer_holds_the_empty_string() {
         w.serialize_string(&mut empty, 1)
             .expect("buffer_size 1 must accept the empty string");
         w.flush();
-        bytes = w.bytes_processed() as usize;
+        bytes = usize::try_from(w.bytes_processed()).expect("byte count fits usize");
     }
 
     let mut r = ReadStream::new(&buffer, bytes);
@@ -317,4 +322,19 @@ fn string_buffer_size_zero_is_still_refused() {
     let mut w = WriteStream::new(&mut buffer);
     let mut empty = String::new();
     let _ = w.serialize_string(&mut empty, 0);
+}
+
+// The read twin of the buffer_size floor: caller misuse on read refuses as value_out_of_range
+// rather than asserting (U7), in every build.
+#[test]
+fn string_buffer_size_zero_is_refused_on_read() {
+    let buffer = [0u8; 64];
+    let mut r = ReadStream::new(&buffer, 8);
+    let mut text = String::from("kept");
+    assert_eq!(
+        r.serialize_string(&mut text, 0),
+        Err(Error::ValueOutOfRange)
+    );
+    assert_eq!(r.bits_processed(), 0);
+    assert_eq!(r.failure(), Some(Error::ValueOutOfRange));
 }

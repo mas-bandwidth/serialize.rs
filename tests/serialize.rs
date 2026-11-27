@@ -13,6 +13,13 @@ use serialize::{
 
 #[test]
 #[allow(clippy::many_single_char_names)] // a..g mirror the C++ test verbatim
+#[allow(
+    clippy::cast_lossless,
+    clippy::cast_possible_truncation,
+    clippy::cast_possible_wrap,
+    clippy::cast_precision_loss,
+    clippy::cast_sign_loss
+)]
 fn test_bitpacker() {
     const BUFFER_SIZE: usize = 256;
 
@@ -74,6 +81,66 @@ fn test_bitpacker() {
 }
 
 #[test]
+#[cfg(debug_assertions)]
+#[should_panic(expected = "write after flush")]
+fn test_write_bits_after_flush_panics() {
+    let mut buffer = [0u8; 16];
+    let mut writer = BitWriter::new(&mut buffer);
+
+    writer.write_bits(0xAB, 8);
+    writer.flush_bits();
+    writer.write_bits(0xCD, 8);
+}
+
+#[test]
+#[cfg(debug_assertions)]
+#[should_panic(expected = "write after flush")]
+fn test_write_bytes_after_flush_panics() {
+    let mut buffer = [0u8; 16];
+    let mut writer = BitWriter::new(&mut buffer);
+
+    writer.write_bits(0xAB, 8);
+    writer.flush_bits();
+    writer.write_bytes(&[0xCD, 0xEF]);
+}
+
+#[test]
+#[cfg(debug_assertions)]
+#[should_panic(expected = "write after flush")]
+fn test_write_zero_bytes_after_flush_panics() {
+    let mut buffer = [0u8; 16];
+    let mut writer = BitWriter::new(&mut buffer);
+
+    writer.write_bits(0xAB, 8);
+    writer.flush_bits();
+    writer.write_bytes(&[]);
+}
+
+#[test]
+#[cfg(debug_assertions)]
+#[should_panic(expected = "write after flush")]
+fn test_serialize_zero_bytes_after_flush_panics() {
+    let mut buffer = [0u8; 16];
+    let mut stream = WriteStream::new(&mut buffer);
+
+    stream.serialize_u8(&mut 0xAB).unwrap();
+    stream.flush();
+    stream.serialize_bytes(&mut []).unwrap();
+}
+
+#[test]
+#[cfg(debug_assertions)]
+#[should_panic(expected = "write after flush")]
+fn test_serialize_empty_string_after_flush_panics() {
+    let mut buffer = [0u8; 16];
+    let mut stream = WriteStream::new(&mut buffer);
+
+    stream.serialize_u8(&mut 0xAB).unwrap();
+    stream.flush();
+    stream.serialize_string(&mut String::new(), 1).unwrap();
+}
+
+#[test]
 fn test_bits_required() {
     assert_eq!(bits_required(0, 0), 0);
     assert_eq!(bits_required(0, 1), 1);
@@ -90,6 +157,13 @@ fn test_bits_required() {
 }
 
 #[test]
+#[allow(
+    clippy::cast_lossless,
+    clippy::cast_possible_truncation,
+    clippy::cast_possible_wrap,
+    clippy::cast_precision_loss,
+    clippy::cast_sign_loss
+)]
 fn test_bits_required64() {
     assert_eq!(bits_required64(0, 0), 0);
     assert_eq!(bits_required64(0, 1), 1);
@@ -106,6 +180,13 @@ fn test_bits_required64() {
 }
 
 #[test]
+#[allow(
+    clippy::cast_lossless,
+    clippy::cast_possible_truncation,
+    clippy::cast_possible_wrap,
+    clippy::cast_precision_loss,
+    clippy::cast_sign_loss
+)]
 fn test_bits_required128() {
     assert_eq!(bits_required128(0, 0), 0);
     assert_eq!(bits_required128(0, 1), 1);
@@ -203,7 +284,6 @@ struct TestData {
     int64_range: i64,
     bytes: [u8; 17],
     string: String,
-    wstring: String,
 }
 
 #[derive(Default, Clone, PartialEq, Debug)]
@@ -215,6 +295,15 @@ impl TestObject {
     // not PI: the C++ test suite writes the literal 3.1415926f, whose f32 bit pattern differs
     // from f32::consts::PI in the last bit, and the wire bytes must match the C++ suite
     #[allow(clippy::approx_constant)]
+    // the test object's counts and indices narrow to the field widths it mirrors from the
+    // C++ suite
+    #[allow(
+        clippy::cast_lossless,
+        clippy::cast_possible_truncation,
+        clippy::cast_possible_wrap,
+        clippy::cast_precision_loss,
+        clippy::cast_sign_loss
+    )]
     fn init() -> Self {
         let mut data = TestData {
             a: 1,
@@ -236,7 +325,6 @@ impl TestObject {
             int64_full: -123456789012345,
             int64_range: 4123456789,
             string: "hello world!".to_string(),
-            wstring: "привіт, світ!".to_string(),
             ..TestData::default()
         };
         for i in 0..data.num_items as usize {
@@ -250,6 +338,15 @@ impl TestObject {
 }
 
 impl Serialize for TestObject {
+    // the item count is the i32 field the C++ suite declares, and the loop takes it as a
+    // length only after serialize_int has bounded it
+    #[allow(
+        clippy::cast_lossless,
+        clippy::cast_possible_truncation,
+        clippy::cast_possible_wrap,
+        clippy::cast_precision_loss,
+        clippy::cast_sign_loss
+    )]
     fn serialize<S: Stream>(&mut self, stream: &mut S) -> Result<(), S::Error> {
         let context = *stream
             .context()
@@ -304,13 +401,19 @@ impl Serialize for TestObject {
         stream.serialize_bytes(&mut self.data.bytes)?;
 
         stream.serialize_string(&mut self.data.string, 256)?;
-        stream.serialize_wide_string(&mut self.data.wstring, 256)?;
 
         Ok(())
     }
 }
 
 #[test]
+#[allow(
+    clippy::cast_lossless,
+    clippy::cast_possible_truncation,
+    clippy::cast_possible_wrap,
+    clippy::cast_precision_loss,
+    clippy::cast_sign_loss
+)]
 fn test_serialize() {
     const BUFFER_SIZE: usize = 1024;
 
@@ -412,10 +515,6 @@ fn read_function<'a>(read_stream: &mut ReadStream<'a>, context: &'a TestContext)
     read_stream.serialize_string(&mut string, 10)?;
     assert_eq!(string, "hello");
 
-    let mut wstring = String::new();
-    read_stream.serialize_wide_string(&mut wstring, 20)?;
-    assert_eq!(wstring, "привіт");
-
     read_stream.serialize_align()?;
 
     read_stream.set_context(context);
@@ -433,6 +532,13 @@ fn read_function<'a>(read_stream: &mut ReadStream<'a>, context: &'a TestContext)
 }
 
 #[test]
+#[allow(
+    clippy::cast_lossless,
+    clippy::cast_possible_truncation,
+    clippy::cast_possible_wrap,
+    clippy::cast_precision_loss,
+    clippy::cast_sign_loss
+)]
 fn test_read_write() {
     const BUFFER_SIZE: usize = 10 * 1024;
 
@@ -463,10 +569,6 @@ fn test_read_write() {
 
         write_stream
             .serialize_string(&mut "hello".to_string(), 10)
-            .unwrap();
-
-        write_stream
-            .serialize_wide_string(&mut "привіт".to_string(), 20)
             .unwrap();
 
         write_stream.serialize_align().unwrap();
@@ -629,6 +731,14 @@ fn test_serialize_int64_full_range() {
 }
 
 #[test]
+// width and sign conversions are the codec's declared field widths
+#[allow(
+    clippy::cast_lossless,
+    clippy::cast_possible_truncation,
+    clippy::cast_possible_wrap,
+    clippy::cast_precision_loss,
+    clippy::cast_sign_loss
+)]
 fn test_serialize_int64_validation() {
     // a malicious packet can smuggle an out of range value into the bit headroom of the two
     // dword path. reads must reject it.
@@ -662,7 +772,7 @@ fn test_serialize_int64_validation() {
         let mut value = 0i64;
         assert_eq!(
             read_stream.serialize_int64(&mut value, i64::MIN, i64::MAX),
-            Err(Error::Overflow)
+            Err(Error::PastEnd)
         );
     }
 }
@@ -675,17 +785,24 @@ fn test_serialize_bytes_validation() {
     {
         let mut read_stream = ReadStream::new(&buffer, 16);
         let mut data = [0u8; 17];
-        assert_eq!(read_stream.serialize_bytes(&mut data), Err(Error::Overflow));
+        assert_eq!(read_stream.serialize_bytes(&mut data), Err(Error::PastEnd));
     }
 
     {
         let mut read_stream = ReadStream::new(&buffer, 16);
         let mut data = vec![0u8; 1 << 20];
-        assert_eq!(read_stream.serialize_bytes(&mut data), Err(Error::Overflow));
+        assert_eq!(read_stream.serialize_bytes(&mut data), Err(Error::PastEnd));
     }
 }
 
 #[test]
+#[allow(
+    clippy::cast_lossless,
+    clippy::cast_possible_truncation,
+    clippy::cast_possible_wrap,
+    clippy::cast_precision_loss,
+    clippy::cast_sign_loss
+)]
 fn test_write_bytes_wire_identical() {
     // WriteStream::write_bytes is the write-path twin of serialize_bytes over a shared
     // slice: byte-identical wire, including the alignment step, from an unaligned start.
@@ -723,6 +840,117 @@ fn test_write_bytes_wire_identical() {
     read_stream.serialize_bytes(&mut read_back).unwrap();
     assert_eq!(bits, 5);
     assert_eq!(read_back, payload);
+}
+
+#[test]
+#[allow(
+    clippy::cast_lossless,
+    clippy::cast_possible_truncation,
+    clippy::cast_possible_wrap,
+    clippy::cast_precision_loss,
+    clippy::cast_sign_loss
+)]
+fn test_write_by_value_wire_identical() {
+    // The by-value write methods are the write-path twins of the unified serialize_*
+    // family: byte-identical wire, field for field, including unaligned starts, a 64 bit
+    // value split across the low dword and the high remainder, the full 64 bit range and a
+    // degenerate range that writes zero bits.
+    let mut via_trait = [0u8; 64];
+    let trait_bytes = {
+        let mut write_stream = WriteStream::new(&mut via_trait);
+        let mut bits = 5u32;
+        let mut bits64 = 0x1_2345_6789u64;
+        let mut int = -17i32;
+        let mut degenerate = 9i32;
+        let mut int64 = i64::MIN + 3;
+        let mut flag = true;
+        let mut u8_value = 0xA5u8;
+        let mut u16_value = 0xBEEFu16;
+        let mut u32_value = 0xDEAD_BEEFu32;
+        let mut u64_value = 0x0123_4567_89AB_CDEFu64;
+        let mut f32_value = f32::from_bits(0x40490FDA);
+        let mut f64_value = -0.0f64;
+        write_stream.serialize_bits(&mut bits, 3).unwrap();
+        write_stream.serialize_bits64(&mut bits64, 33).unwrap();
+        write_stream.serialize_int(&mut int, -100, 100).unwrap();
+        write_stream.serialize_int(&mut degenerate, 9, 9).unwrap();
+        write_stream
+            .serialize_int64(&mut int64, i64::MIN, i64::MAX)
+            .unwrap();
+        write_stream.serialize_bool(&mut flag).unwrap();
+        write_stream.serialize_u8(&mut u8_value).unwrap();
+        write_stream.serialize_u16(&mut u16_value).unwrap();
+        write_stream.serialize_u32(&mut u32_value).unwrap();
+        write_stream.serialize_u64(&mut u64_value).unwrap();
+        write_stream.serialize_f32(&mut f32_value).unwrap();
+        write_stream.serialize_f64(&mut f64_value).unwrap();
+        write_stream.flush();
+        write_stream.bytes_processed() as usize
+    };
+
+    let mut via_write = [0u8; 64];
+    let write_bytes = {
+        let mut write_stream = WriteStream::new(&mut via_write);
+        // no mutable copy of any value, no Result: writes cannot fail
+        write_stream.write_bits(5, 3);
+        write_stream.write_bits64(0x1_2345_6789, 33);
+        write_stream.write_int(-17, -100, 100);
+        write_stream.write_int(9, 9, 9);
+        write_stream.write_int64(i64::MIN + 3, i64::MIN, i64::MAX);
+        write_stream.write_bool(true);
+        write_stream.write_u8(0xA5);
+        write_stream.write_u16(0xBEEF);
+        write_stream.write_u32(0xDEAD_BEEF);
+        write_stream.write_u64(0x0123_4567_89AB_CDEF);
+        write_stream.write_f32(f32::from_bits(0x40490FDA));
+        write_stream.write_f64(-0.0);
+        write_stream.flush();
+        write_stream.bytes_processed() as usize
+    };
+
+    assert_eq!(trait_bytes, write_bytes);
+    assert_eq!(via_trait, via_write);
+
+    // and the read side round trips it
+    let mut read_stream = ReadStream::new(&via_write, write_bytes);
+    let mut bits = 0u32;
+    let mut bits64 = 0u64;
+    let mut int = 0i32;
+    let mut degenerate = 0i32;
+    let mut int64 = 0i64;
+    let mut flag = false;
+    let mut u8_value = 0u8;
+    let mut u16_value = 0u16;
+    let mut u32_value = 0u32;
+    let mut u64_value = 0u64;
+    let mut f32_value = 0.0f32;
+    let mut f64_value = 0.0f64;
+    read_stream.serialize_bits(&mut bits, 3).unwrap();
+    read_stream.serialize_bits64(&mut bits64, 33).unwrap();
+    read_stream.serialize_int(&mut int, -100, 100).unwrap();
+    read_stream.serialize_int(&mut degenerate, 9, 9).unwrap();
+    read_stream
+        .serialize_int64(&mut int64, i64::MIN, i64::MAX)
+        .unwrap();
+    read_stream.serialize_bool(&mut flag).unwrap();
+    read_stream.serialize_u8(&mut u8_value).unwrap();
+    read_stream.serialize_u16(&mut u16_value).unwrap();
+    read_stream.serialize_u32(&mut u32_value).unwrap();
+    read_stream.serialize_u64(&mut u64_value).unwrap();
+    read_stream.serialize_f32(&mut f32_value).unwrap();
+    read_stream.serialize_f64(&mut f64_value).unwrap();
+    assert_eq!(bits, 5);
+    assert_eq!(bits64, 0x1_2345_6789);
+    assert_eq!(int, -17);
+    assert_eq!(degenerate, 9);
+    assert_eq!(int64, i64::MIN + 3);
+    assert!(flag);
+    assert_eq!(u8_value, 0xA5);
+    assert_eq!(u16_value, 0xBEEF);
+    assert_eq!(u32_value, 0xDEAD_BEEF);
+    assert_eq!(u64_value, 0x0123_4567_89AB_CDEF);
+    assert_eq!(f32_value.to_bits(), 0x40490FDA);
+    assert_eq!(f64_value.to_bits(), (-0.0f64).to_bits());
 }
 
 #[test]
@@ -879,19 +1107,24 @@ fn test_int_relative_previous_outside_the_domain_asserts_in_debug() {
     let mut buffer = [0u8; 8];
     let mut write_stream = WriteStream::new(&mut buffer);
     let mut current = 0i32;
-    let Ok(()) = write_stream.serialize_int_relative(-1000, &mut current);
+    write_stream
+        .serialize_int_relative(-1000, &mut current)
+        .unwrap();
 }
 
 #[test]
-#[cfg(debug_assertions)]
-#[should_panic(expected = "is outside the domain")]
-fn test_int_relative_previous_outside_the_domain_asserts_on_read_in_debug() {
-    // the same contract on the read side: the assertion is on the caller's parameter, not
-    // on packet data, so it binds on every stream
+fn test_int_relative_previous_outside_the_domain_is_refused_on_read() {
+    // the same contract on the read side is a bad declaration, refused as value_out_of_range
+    // before any bits move and never asserted (IMPLEMENTING.md U7, U16)
     let buffer = [0u8; 16];
     let mut read_stream = ReadStream::new(&buffer, 8);
-    let mut current = 0i32;
-    let _ = read_stream.serialize_int_relative(-1, &mut current);
+    let mut current = 5i32;
+    assert_eq!(
+        read_stream.serialize_int_relative(-1, &mut current),
+        Err(Error::ValueOutOfRange)
+    );
+    assert_eq!(current, 5);
+    assert_eq!(read_stream.bits_processed(), 0);
 }
 
 #[test]
@@ -942,7 +1175,7 @@ fn test_compressed_float_validation() {
 
 #[test]
 fn test_compressed_float_top_of_range_clamp() {
-    // STANDARD.md's normative integer clamp (2026-08-23, schema#109; ruling: Glenn, live),
+    // STANDARD.md's normative integer clamp (2026-08-23, schema#109),
     // ported from the C++ suite's test_compressed_float_top_of_range_clamp (serialize
     // PR #88). In [2^23, 2^24) the float32 ulp is 1, so scaled + 0.5 lands on a tie and
     // round-to-even can push the code past max_integer_value. Before the clamp, witness A
@@ -1069,7 +1302,9 @@ fn test_write_out_of_range_int_asserts_in_debug() {
     let mut buffer = [0u8; 8];
     let mut write_stream = WriteStream::new(&mut buffer);
     let mut out_of_range = 200i32;
-    let Ok(()) = write_stream.serialize_int(&mut out_of_range, 0, 100);
+    write_stream
+        .serialize_int(&mut out_of_range, 0, 100)
+        .unwrap();
 }
 
 #[test]
@@ -1080,228 +1315,34 @@ fn test_write_too_long_string_asserts_in_debug() {
     // As of 2.0 the write path cannot fail: the same misuse is a debug assertion.
     let mut buffer = [0u8; 64];
     let mut write_stream = WriteStream::new(&mut buffer);
-    let Ok(()) = write_stream.serialize_string(&mut "this string is too long".to_string(), 8);
+    write_stream
+        .serialize_string(&mut "this string is too long".to_string(), 8)
+        .unwrap();
 }
 
 #[test]
 #[cfg(debug_assertions)]
-#[should_panic(expected = "does not fit buffer_size")]
-fn test_write_too_many_wide_units_asserts_in_debug() {
-    // buffer_size bounds the length in UTF-16 CODE UNITS, not chars: four astral chars
-    // are eight units, which do not fit a buffer_size of 8 (the terminator needs one).
-    // Under the old code-point model this string measured four groups and passed.
+#[should_panic(expected = "NUL byte")]
+fn test_write_string_with_nul_asserts_in_debug() {
+    // STANDARD.md, "string": a writer is handed well-formed UTF-8 with no zero byte, as it is
+    // handed an int in its range. A Rust String holds well-formed UTF-8 by construction, so
+    // the NUL is the half of the contract the writer asserts on
     let mut buffer = [0u8; 64];
     let mut write_stream = WriteStream::new(&mut buffer);
-    let Ok(()) = write_stream
-        .serialize_wide_string(&mut "\u{1F600}\u{1F601}\u{1F602}\u{1F603}".to_string(), 8);
-}
-
-// ------------------------------------------------------------------------------------------
-// wstring transmits UTF-16 CODE UNITS (STANDARD.md "wstring", adopted 2026-08-15): an astral
-// code point is a surrogate pair on the wire, and readers refuse malformed payloads in every
-// build mode (the serialize #8 ruling). The tests below mirror the C++ suite's
-// test_wstring_utf16_code_units / test_wstring_read_validation and serialize.c's vectors.
-// ------------------------------------------------------------------------------------------
-
-/// Doctor a wide-string wire image through the primitives: the length as
-/// `serialize_int(length, 0, 7)` (a `buffer_size` of 8), then each group as raw 32 bits.
-/// The public writer's contract makes most of these byte sequences impossible to produce —
-/// which is exactly why the read refusals need doctored streams to be testable.
-fn doctor_wide_stream(units: &[u32], buffer: &mut [u8; 24]) -> usize {
-    let mut stream = WriteStream::new(buffer);
-    let mut length = units.len() as i32;
-    stream.serialize_int(&mut length, 0, 7).unwrap();
-    for &unit in units {
-        let mut group = unit;
-        stream.serialize_bits(&mut group, 32).unwrap();
-    }
-    stream.flush();
-    stream.bytes_processed() as usize
+    write_stream
+        .serialize_string(&mut "a\0b".to_string(), 8)
+        .unwrap();
 }
 
 #[test]
-fn test_wstring_utf16_code_units() {
-    // A FAMILY CONFORMANCE PIN: "a" + U+1F600 in an 8-unit buffer is exactly these
-    // 13 bytes — a 3-bit length of 3 (UNITS: 0x0061, then the surrogate pair 0xD83D
-    // 0xDE00), then three unaligned 32-bit groups. Byte-for-byte the literal serialize.cs
-    // pins (tests/Tests.cs) and the group sequence serialize.go decodes for the same
-    // string. The C++ library and serialize.c exercise the OTHER family vector — emoji
-    // first, then U+0041 — pinned as exact bytes in test_wstring_family_vector_emoji_first
-    // below. Never regenerate these.
-    //
-    // Before the code-unit model this pin was doubly unreachable: the writer emitted
-    // CODE POINTS (a length of 2, groups 0x0061 and 0x1F600), and the reader refused
-    // these very bytes at its char::from_u32 check (0xD83D is not a char) — so a valid
-    // astral wstring from a conforming port could never be read at all.
-    #[rustfmt::skip]
-    const ASTRAL_WIRE_BYTES: [u8; 13] = [
-        0x0B, 0x03, 0x00, 0x00, 0xE8, 0xC1, 0x06, 0x00,
-        0x00, 0xF0, 0x06, 0x00, 0x00,
-    ];
-    const BUFFER_SIZE: usize = 8;
-    let astral = "a\u{1F600}";
-
-    // write side: the writer must emit exactly the conforming bytes
-    let bits_written;
-    {
-        let mut buffer = [0u8; 64];
-        let mut stream = WriteStream::new(&mut buffer);
-        let mut value = astral.to_string();
-        stream
-            .serialize_wide_string(&mut value, BUFFER_SIZE)
-            .unwrap();
-        stream.flush();
-        assert_eq!(stream.bytes_processed() as usize, ASTRAL_WIRE_BYTES.len());
-        bits_written = stream.bits_processed();
-        assert_eq!(buffer[..ASTRAL_WIRE_BYTES.len()], ASTRAL_WIRE_BYTES);
-    }
-
-    // the measure counts the units transmitted, not the chars held: 3 + 3 * 32 = 99
-    {
-        let mut measure_stream = MeasureStream::new();
-        let mut value = astral.to_string();
-        measure_stream
-            .serialize_wide_string(&mut value, BUFFER_SIZE)
-            .unwrap();
-        assert_eq!(measure_stream.bits_processed(), 99);
-        assert_eq!(measure_stream.bits_processed(), bits_written);
-    }
-
-    // read side: the conforming bytes (as any family port would send them) must decode —
-    // the pair recombines into the astral char
-    {
-        let mut buffer = [0u8; 13 + 8]; // + 8: keep reads on the branchless fast path
-        buffer[..13].copy_from_slice(&ASTRAL_WIRE_BYTES);
-        let mut stream = ReadStream::new(&buffer, ASTRAL_WIRE_BYTES.len());
-        let mut value = String::new();
-        stream
-            .serialize_wide_string(&mut value, BUFFER_SIZE)
-            .unwrap();
-        assert_eq!(value, astral);
-    }
-}
-
-#[test]
-fn test_wstring_family_vector_emoji_first() {
-    // THE NORMATIVE-CONTENT PIN, as exact bytes: U+1F600 then U+0041 is the content the
-    // C++ suite (test_wstring_utf16_code_units) and serialize.c (test/roundtrip.c) both
-    // exercise — but each derives its expected bytes through its own primitives, so no
-    // family test pinned that content as a literal. This one does, closing the
-    // exact-vector cross-compare gap: a 3-bit length of 3, then the unaligned 32-bit
-    // groups 0xD83D 0xDE00 0x0041 land as exactly these 13 bytes (99 bits). Derived by
-    // hand from the wire rules and confirmed against the C++ library's own output,
-    // 2026-08-16. Never regenerate these.
-    #[rustfmt::skip]
-    const EMOJI_FIRST_WIRE_BYTES: [u8; 13] = [
-        0xEB, 0xC1, 0x06, 0x00, 0x00, 0xF0, 0x06, 0x00,
-        0x08, 0x02, 0x00, 0x00, 0x00,
-    ];
-    const BUFFER_SIZE: usize = 8;
-    let emoji_first = "\u{1F600}A";
-
-    // write side: the writer must emit exactly the bytes the C++ library emits
-    let bits_written;
-    {
-        let mut buffer = [0u8; 64];
-        let mut stream = WriteStream::new(&mut buffer);
-        let mut value = emoji_first.to_string();
-        stream
-            .serialize_wide_string(&mut value, BUFFER_SIZE)
-            .unwrap();
-        stream.flush();
-        assert_eq!(
-            stream.bytes_processed() as usize,
-            EMOJI_FIRST_WIRE_BYTES.len()
-        );
-        bits_written = stream.bits_processed();
-        assert_eq!(
-            buffer[..EMOJI_FIRST_WIRE_BYTES.len()],
-            EMOJI_FIRST_WIRE_BYTES
-        );
-    }
-
-    // the measure agrees: 3 + 3 * 32 = 99 bits
-    {
-        let mut measure_stream = MeasureStream::new();
-        let mut value = emoji_first.to_string();
-        measure_stream
-            .serialize_wide_string(&mut value, BUFFER_SIZE)
-            .unwrap();
-        assert_eq!(measure_stream.bits_processed(), 99);
-        assert_eq!(measure_stream.bits_processed(), bits_written);
-    }
-
-    // read side: the canonical bytes decode back, the pair recombining ahead of the BMP unit
-    {
-        let mut buffer = [0u8; 13 + 8]; // + 8: keep reads on the branchless fast path
-        buffer[..13].copy_from_slice(&EMOJI_FIRST_WIRE_BYTES);
-        let mut stream = ReadStream::new(&buffer, EMOJI_FIRST_WIRE_BYTES.len());
-        let mut value = String::new();
-        stream
-            .serialize_wide_string(&mut value, BUFFER_SIZE)
-            .unwrap();
-        assert_eq!(value, emoji_first);
-    }
-}
-
-#[test]
-fn test_wstring_read_refusals() {
-    // STANDARD.md "Readers must refuse malformed wstring payloads" (the #8 ruling,
-    // adopted 2026-08-15): a group above 0xFFFF is not a UTF-16 code unit, an unpaired
-    // or misordered surrogate is refused, and so is an interior NUL group (the
-    // two-lengths smuggling primitive: wire length 3, the wcslen a consumer computes 1).
-    // Every stream is doctored — no conforming writer can produce these bytes — and each
-    // refusal class is fenced below by an accepted neighbor as close to the boundary as
-    // the format allows.
-    let refused: &[&[u32]] = &[
-        &[0x10000],                // the OLD code-point model's astral group (was accepted)
-        &[0x10FFFF],               // the old model's ceiling (was accepted)
-        &[0x110000],               // above the ceiling: never a char in any model
-        &[0xFFFFFFFF],             // maximal garbage
-        &[0xD83D],                 // high surrogate dangling as the final group
-        &[0xD83D, 0x0041],         // high surrogate followed by a non-low
-        &[0xD83D, 0xD83D],         // high surrogate followed by another high
-        &[0xDE00],                 // lone low surrogate
-        &[0x0041, 0xDE00],         // low surrogate with no high before it
-        &[0xD83D, 0xDE00, 0xD83D], // valid pair, then the payload ends inside a pair
-        &[0x0041, 0x0000, 0x0042], // interior NUL group
-    ];
-    for units in refused {
-        let mut buffer = [0u8; 24];
-        let bytes = doctor_wide_stream(units, &mut buffer);
-        let mut stream = ReadStream::new(&buffer, bytes);
-        let mut value = String::new();
-        assert_eq!(
-            stream.serialize_wide_string(&mut value, 8),
-            Err(Error::InvalidString),
-            "units {units:X?} must be refused"
-        );
-    }
-
-    // the accepted fence: the boundary units hugging every refusal — 0xD7FF and 0xE000
-    // around the surrogate block, 0xFFFF the last code unit, then a correctly ordered
-    // pair — must be accepted, the pair recombined into its char
-    {
-        let mut buffer = [0u8; 24];
-        let bytes = doctor_wide_stream(&[0xD7FF, 0xE000, 0xFFFF, 0xD83D, 0xDE00], &mut buffer);
-        let mut stream = ReadStream::new(&buffer, bytes);
-        let mut value = String::new();
-        stream.serialize_wide_string(&mut value, 8).unwrap();
-        assert_eq!(value, "\u{D7FF}\u{E000}\u{FFFF}\u{1F600}");
-    }
-
-    // the NUL fence: the same three groups with the zero replaced are accepted
-    {
-        let mut buffer = [0u8; 24];
-        let bytes = doctor_wide_stream(&[0x0041, 0x0020, 0x0042], &mut buffer);
-        let mut stream = ReadStream::new(&buffer, bytes);
-        let mut value = String::new();
-        stream.serialize_wide_string(&mut value, 8).unwrap();
-        assert_eq!(value, "A B");
-    }
-}
-
-#[test]
+// width and sign conversions are the codec's declared field widths
+#[allow(
+    clippy::cast_lossless,
+    clippy::cast_possible_truncation,
+    clippy::cast_possible_wrap,
+    clippy::cast_precision_loss,
+    clippy::cast_sign_loss
+)]
 fn test_string_read_refusals() {
     // STANDARD.md "Readers must refuse malformed string payloads" (the #8 ruling, adopted
     // 2026-08-15). Invalid UTF-8 was already refused by this reader; the interior NUL is
@@ -1310,6 +1351,14 @@ fn test_string_read_refusals() {
     // between the two lengths rides invisibly past whichever side uses the other.
     // Doctored through the primitives: length, then the payload via serialize_bytes
     // (which aligns, exactly as serialize_string does).
+    // the wire length is an i32 field and the buffer is 32 bytes
+    #[allow(
+        clippy::cast_lossless,
+        clippy::cast_possible_truncation,
+        clippy::cast_possible_wrap,
+        clippy::cast_precision_loss,
+        clippy::cast_sign_loss
+    )]
     fn doctor_narrow_stream(payload: &[u8], buffer: &mut [u8; 32]) -> usize {
         let mut stream = WriteStream::new(buffer);
         let mut length = payload.len() as i32;
@@ -1320,23 +1369,29 @@ fn test_string_read_refusals() {
         stream.bytes_processed() as usize
     }
 
-    let refused: &[&[u8]] = &[
-        &[0x41, 0x00, 0x42], // interior NUL: valid UTF-8, refused by its own rule
-        &[0xFF, 0xFE, 0xFF], // 0xFF can never appear in well-formed UTF-8
-        &[0xC0, 0xAF],       // overlong '/': the classic filter bypass
-        &[0xED, 0xA0, 0x80], // U+D800: surrogate as UTF-8
-        &[0x61, 0xE2],       // sequence truncated by the length
+    let refused: &[(&[u8], Error)] = &[
+        (&[0x41, 0x00, 0x42], Error::EmbeddedNul), // interior NUL: valid UTF-8, its own rule
+        (&[0xFF, 0xFE, 0xFF], Error::InvalidUtf8), // 0xFF never appears in well-formed UTF-8
+        (&[0xC0, 0xAF], Error::InvalidUtf8),       // overlong '/': the classic filter bypass
+        (&[0xED, 0xA0, 0x80], Error::InvalidUtf8), // U+D800: surrogate as UTF-8
+        (&[0x61, 0xE2], Error::InvalidUtf8),       // sequence truncated by the length
+        // both rules broken: the NUL scan runs over the whole payload BEFORE the encoding is
+        // checked (format 2.0), so this is embedded_nul. The reversed witness for the order
+        // this reader had in 1.x, UTF-8 first, which reported invalid_utf8 here
+        (&[0xFF, 0x00], Error::EmbeddedNul),
+        (&[0x00, 0xFF], Error::EmbeddedNul),
     ];
-    for payload in refused {
+    for &(payload, reason) in refused {
         let mut buffer = [0u8; 32];
         let bytes = doctor_narrow_stream(payload, &mut buffer);
         let mut stream = ReadStream::new(&buffer, bytes);
         let mut value = String::new();
         assert_eq!(
             stream.serialize_string(&mut value, 32),
-            Err(Error::InvalidString),
-            "payload {payload:X?} must be refused"
+            Err(reason),
+            "payload {payload:X?} must be refused as {reason}"
         );
+        assert_eq!(stream.failure(), Some(reason));
     }
 
     // the NUL fence: the same bytes with the zero replaced are accepted
@@ -1371,7 +1426,7 @@ fn test_string_read_refusals() {
     }
 }
 
-// The fork #6 ruling (Glenn, 2026-08-15): "it's non-conforming. also, attempting to send NaN
+// Fork #6 ruling (2026-08-15): "it's non-conforming. also, attempting to send NaN
 // or INF or anything else through compressed float is non-conforming and should assert out
 // on write too." Value validity is asserted at intake, declaration validity at the param
 // computation site; all compile out in release.
@@ -1383,7 +1438,9 @@ fn test_compressed_float_nan_write_asserts_in_debug() {
     let mut buffer = [0u8; 8];
     let mut write_stream = WriteStream::new(&mut buffer);
     let mut value = f32::from_bits(0x7fc00000); // quiet NaN bit pattern
-    let Ok(()) = write_stream.serialize_compressed_float(&mut value, 0.0, 10.0, 0.01);
+    write_stream
+        .serialize_compressed_float(&mut value, 0.0, 10.0, 0.01)
+        .unwrap();
 }
 
 #[test]
@@ -1393,7 +1450,9 @@ fn test_compressed_float_infinity_write_asserts_in_debug() {
     let mut buffer = [0u8; 8];
     let mut write_stream = WriteStream::new(&mut buffer);
     let mut value = f32::INFINITY;
-    let Ok(()) = write_stream.serialize_compressed_float(&mut value, 0.0, 10.0, 0.01);
+    write_stream
+        .serialize_compressed_float(&mut value, 0.0, 10.0, 0.01)
+        .unwrap();
 }
 
 #[test]
@@ -1404,7 +1463,9 @@ fn test_compressed_float_non_finite_declaration_asserts_in_debug() {
     let mut buffer = [0u8; 8];
     let mut write_stream = WriteStream::new(&mut buffer);
     let mut value = 0.0f32;
-    let Ok(()) = write_stream.serialize_compressed_float(&mut value, -f32::MAX, f32::MAX, 0.01);
+    write_stream
+        .serialize_compressed_float(&mut value, -f32::MAX, f32::MAX, 0.01)
+        .unwrap();
 }
 
 #[test]
@@ -1415,7 +1476,9 @@ fn test_compressed_float_non_finite_quantum_count_asserts_in_debug() {
     let mut buffer = [0u8; 8];
     let mut write_stream = WriteStream::new(&mut buffer);
     let mut value = 0.0f32;
-    let Ok(()) = write_stream.serialize_compressed_float(&mut value, 0.0, f32::MAX, 1.0e-38);
+    write_stream
+        .serialize_compressed_float(&mut value, 0.0, f32::MAX, 1.0e-38)
+        .unwrap();
 }
 
 // The precomputed entry point carries the same write-side contract as
@@ -1430,8 +1493,9 @@ fn test_compressed_float_precomputed_nan_write_asserts_in_debug() {
     let mut buffer = [0u8; 8];
     let mut write_stream = WriteStream::new(&mut buffer);
     let mut value = f32::from_bits(0x7fc00000); // quiet NaN bit pattern
-    let Ok(()) =
-        write_stream.serialize_compressed_float_precomputed(&mut value, 1000, 10, 10.0, 0.0);
+    write_stream
+        .serialize_compressed_float_precomputed(&mut value, 1000, 10, 10.0, 0.0)
+        .unwrap();
 }
 
 #[test]
@@ -1443,8 +1507,9 @@ fn test_compressed_float_precomputed_inconsistent_bits_asserts_in_debug() {
     let mut buffer = [0u8; 8];
     let mut write_stream = WriteStream::new(&mut buffer);
     let mut value = 5.0f32;
-    let Ok(()) =
-        write_stream.serialize_compressed_float_precomputed(&mut value, 1000, 11, 10.0, 0.0);
+    write_stream
+        .serialize_compressed_float_precomputed(&mut value, 1000, 11, 10.0, 0.0)
+        .unwrap();
 }
 
 // the release backstop for non-conforming values: with the debug asserts compiled out, a NaN
@@ -1476,6 +1541,13 @@ fn test_compressed_float_nan_clamps_in_release() {
 // math runs in i128 (every legal configuration's raw values fit) and converts through the
 // storage type, so one helper covers the whole storage matrix the way the C++ templates do.
 
+#[allow(
+    clippy::cast_lossless,
+    clippy::cast_possible_truncation,
+    clippy::cast_possible_wrap,
+    clippy::cast_precision_loss,
+    clippy::cast_sign_loss
+)]
 fn check_fixed_round_trip<T>(
     raw_value: i128,
     integer_bits: u32,
@@ -1533,6 +1605,8 @@ fn check_fixed_round_trip<T>(
     assert_eq!(read_back, written);
 }
 
+// the raw bounds are signed and shift in the unsigned domain, as in the codec
+#[allow(clippy::cast_sign_loss)]
 fn check_fixed_cases<T>(
     one_unit: i128,
     integer_bits: u32,
@@ -1577,6 +1651,14 @@ fn check_fixed_cases<T>(
     }
 }
 
+// the raw range is formed in the unsigned domain, as in the codec
+#[allow(
+    clippy::cast_lossless,
+    clippy::cast_possible_truncation,
+    clippy::cast_possible_wrap,
+    clippy::cast_precision_loss,
+    clippy::cast_sign_loss
+)]
 fn check_fixed_rejects_out_of_range<T>(
     integer_bits: u32,
     fraction_bits: u32,
@@ -1631,12 +1713,279 @@ fn check_fixed_rejects_out_of_range<T>(
     );
 }
 
+// One pairwise-matrix case: write/read/measure agree, the bytes are the canonical
+// little-endian offset, the consumed width is the bit length of the raw range, and a
+// smuggled or truncated read is refused terminally with its destination preserved.
+#[allow(clippy::too_many_lines)]
+// one case shape: splitting it would separate the refusal checks from the round trip they guard
+// the raw bounds are signed and shift in the unsigned domain, and byte counts index locals
+#[allow(
+    clippy::cast_lossless,
+    clippy::cast_possible_truncation,
+    clippy::cast_possible_wrap,
+    clippy::cast_precision_loss,
+    clippy::cast_sign_loss
+)]
+fn check_fixed_matrix_case<T>(integer_bits: u32, fraction_bits: u32, min_units: i64, max_units: i64)
+where
+    T: FixedPointStorage + PartialEq + core::fmt::Debug,
+{
+    // raw bounds in the unsigned domain, as in the codec: negative bounds wrap
+    let raw_min = (i128::from(min_units) as u128) << fraction_bits;
+    let raw_range = ((i128::from(max_units) - i128::from(min_units)) as u128) << fraction_bits;
+    let bits = if min_units == max_units {
+        0
+    } else {
+        128 - raw_range.leading_zeros()
+    };
+    let one_unit = 1u128 << fraction_bits;
+    let mut offsets = vec![0, raw_range, raw_range / 2];
+    if min_units != max_units {
+        offsets.push(1);
+        offsets.push(raw_range - 1);
+        if max_units - min_units > 2 {
+            offsets.push(one_unit);
+            offsets.push(raw_range - one_unit);
+        }
+    }
+    for offset in offsets {
+        let raw_value = raw_min.wrapping_add(offset);
+        let mut buffer = [0u8; 40];
+        let mut written = T::from_unsigned(raw_value);
+        let (bits_written, bytes_written) = {
+            let mut write_stream = WriteStream::new(&mut buffer[..32]);
+            write_stream
+                .serialize_fixed(
+                    &mut written,
+                    integer_bits,
+                    fraction_bits,
+                    min_units,
+                    max_units,
+                )
+                .unwrap();
+            write_stream.flush();
+            (
+                write_stream.bits_processed(),
+                write_stream.bytes_processed() as usize,
+            )
+        };
+        assert_eq!(
+            bits_written,
+            u64::from(bits),
+            "consumed bits for offset {offset}"
+        );
+        // canonical bytes: the offset from raw_min, least-significant bits first
+        assert_eq!(
+            &buffer[..bytes_written],
+            &offset.to_le_bytes()[..bytes_written],
+            "canonical bytes for offset {offset}"
+        );
+        let mut measure_stream = MeasureStream::new();
+        let mut measured = T::from_unsigned(raw_value);
+        measure_stream
+            .serialize_fixed(
+                &mut measured,
+                integer_bits,
+                fraction_bits,
+                min_units,
+                max_units,
+            )
+            .unwrap();
+        assert_eq!(measure_stream.bits_processed(), bits_written);
+        let mut read_stream = ReadStream::new(&buffer, bytes_written);
+        let mut read_back = T::from_unsigned(0);
+        read_stream
+            .serialize_fixed(
+                &mut read_back,
+                integer_bits,
+                fraction_bits,
+                min_units,
+                max_units,
+            )
+            .unwrap();
+        assert_eq!(read_back, written);
+        assert_eq!(read_stream.bits_processed(), bits_written);
+    }
+
+    if min_units == max_units {
+        return;
+    }
+    let sentinel = T::from_unsigned(0xA5A5_A5A5_A5A5_A5A5_A5A5_A5A5_A5A5_A5A5u128);
+    // refusal terminality on a truncated read: destination preserved, latch held
+    {
+        let buffer = [0u8; 40];
+        let mut stream = ReadStream::new(&buffer, 0);
+        let mut value = sentinel;
+        assert_eq!(
+            stream.serialize_fixed(
+                &mut value,
+                integer_bits,
+                fraction_bits,
+                min_units,
+                max_units
+            ),
+            Err(Error::PastEnd)
+        );
+        assert_eq!(
+            value, sentinel,
+            "a refused read must preserve its destination"
+        );
+        assert_eq!(stream.failure(), Some(Error::PastEnd));
+        let position = stream.bits_processed();
+        let mut follow = sentinel;
+        assert_eq!(
+            stream.serialize_fixed(
+                &mut follow,
+                integer_bits,
+                fraction_bits,
+                min_units,
+                max_units
+            ),
+            Err(Error::PastEnd)
+        );
+        assert_eq!(follow, sentinel);
+        assert_eq!(
+            stream.bits_processed(),
+            position,
+            "a latched read consumes nothing"
+        );
+    }
+    // refusal terminality on a smuggled raw_range + 1, where the encoding has headroom
+    let max_encodable = if bits < 128 {
+        (1u128 << bits) - 1
+    } else {
+        u128::MAX
+    };
+    if raw_range != max_encodable {
+        let mut smuggled = raw_range + 1;
+        let mut buffer = [0u8; 40];
+        {
+            let mut write_stream = WriteStream::new(&mut buffer[..32]);
+            let mut bits_left = bits;
+            while bits_left > 0 {
+                let group_bits = bits_left.min(32);
+                let mut group = (smuggled & 0xFFFF_FFFF) as u32;
+                write_stream.serialize_bits(&mut group, group_bits).unwrap();
+                smuggled >>= group_bits;
+                bits_left -= group_bits;
+            }
+            write_stream.flush();
+        }
+        let mut stream = ReadStream::new(&buffer, 32);
+        let mut value = sentinel;
+        assert_eq!(
+            stream.serialize_fixed(
+                &mut value,
+                integer_bits,
+                fraction_bits,
+                min_units,
+                max_units
+            ),
+            Err(Error::ValueOutOfRange)
+        );
+        assert_eq!(
+            value, sentinel,
+            "a refused read must preserve its destination"
+        );
+        assert_eq!(stream.failure(), Some(Error::ValueOutOfRange));
+        let position = stream.bits_processed();
+        let mut follow = 0xABCD_u32;
+        assert_eq!(
+            stream.serialize_bits(&mut follow, 8),
+            Err(Error::ValueOutOfRange)
+        );
+        assert_eq!(follow, 0xABCD);
+        assert_eq!(
+            stream.bits_processed(),
+            position,
+            "a latched read consumes nothing"
+        );
+    }
+}
+
+// Wire widths immediately below, at and above a group boundary, for the boundaries a
+// storage can represent: a one-unit range at fraction_bits = bits - 1 has raw_range
+// 2^(bits-1), so its wire width is exactly `bits`, in the group holding that bit.
+fn check_fixed_group_boundaries<T>(boundaries: &[u32])
+where
+    T: FixedPointStorage + PartialEq + core::fmt::Debug,
+{
+    for &bits in boundaries {
+        let fraction_bits = bits - 1;
+        let integer_bits = T::BITS - fraction_bits;
+        if T::SIGNED {
+            check_fixed_matrix_case::<T>(integer_bits, fraction_bits, -1, 0);
+        } else {
+            check_fixed_matrix_case::<T>(integer_bits, fraction_bits, 0, 1);
+        }
+    }
+}
+
+#[test]
+fn test_serialize_fixed_pairwise_matrix() {
+    // A compact pairwise matrix, not an exhaustive Cartesian product: every signed and
+    // unsigned 8/16/32/64/128-bit storage, zero and nonzero fractional layouts,
+    // degenerate and nondegenerate ranges, bounds and one-step-inside values, and the
+    // representable 32-bit group boundaries. Each case also pins canonical bytes,
+    // consumed bits, refusal terminality and destination preservation (above).
+    check_fixed_matrix_case::<i8>(8, 0, -128, 127);
+    check_fixed_matrix_case::<i8>(4, 4, -7, 7);
+    check_fixed_matrix_case::<i8>(4, 4, 5, 5);
+    check_fixed_matrix_case::<u8>(8, 0, 0, 255);
+    check_fixed_matrix_case::<u8>(4, 4, 0, 15);
+    check_fixed_matrix_case::<u8>(4, 4, 3, 3);
+    check_fixed_matrix_case::<i16>(16, 0, -32768, 32767);
+    check_fixed_matrix_case::<i16>(8, 8, -100, 100);
+    check_fixed_matrix_case::<i16>(8, 8, -9, -9);
+    check_fixed_matrix_case::<u16>(16, 0, 0, 60000);
+    check_fixed_matrix_case::<u16>(8, 8, 0, 200);
+    check_fixed_matrix_case::<u16>(8, 8, 7, 7);
+    check_fixed_matrix_case::<i32>(32, 0, -100000, 100000);
+    check_fixed_matrix_case::<i32>(16, 16, -30000, 30000);
+    check_fixed_matrix_case::<i32>(16, 16, 2, 2);
+    check_fixed_matrix_case::<u32>(32, 0, 0, 4000000000);
+    check_fixed_matrix_case::<u32>(16, 16, 0, 60000);
+    check_fixed_matrix_case::<u32>(16, 16, 9, 9);
+    check_fixed_matrix_case::<i64>(64, 0, -5000000000, 5000000000);
+    check_fixed_matrix_case::<i64>(48, 16, -100000000000, 100000000000);
+    check_fixed_matrix_case::<i64>(48, 16, -3, -3);
+    check_fixed_matrix_case::<u64>(64, 0, 0, 9000000000000000000);
+    check_fixed_matrix_case::<u64>(48, 16, 0, 1000000000);
+    check_fixed_matrix_case::<u64>(48, 16, 11, 11);
+    check_fixed_matrix_case::<i128>(112, 16, -1152921504606846976, 1152921504606846976);
+    check_fixed_matrix_case::<i128>(64, 64, -1000, 1000);
+    check_fixed_matrix_case::<i128>(64, 64, 4, 4);
+    check_fixed_matrix_case::<u128>(112, 16, 0, 2305843009213693952);
+    check_fixed_matrix_case::<u128>(64, 64, 0, 1000);
+    check_fixed_matrix_case::<u128>(64, 64, 6, 6);
+
+    // Group boundaries each storage can represent. A 32-bit storage tops out at 32 wire
+    // bits (33 is not representable), a 64-bit storage at 64, and 8/16-bit storage below
+    // the first boundary, where its own top widths stand in.
+    check_fixed_group_boundaries::<i8>(&[7, 8]);
+    check_fixed_group_boundaries::<u8>(&[7, 8]);
+    check_fixed_group_boundaries::<i16>(&[15, 16]);
+    check_fixed_group_boundaries::<u16>(&[15, 16]);
+    check_fixed_group_boundaries::<i32>(&[31, 32]);
+    check_fixed_group_boundaries::<u32>(&[31, 32]);
+    check_fixed_group_boundaries::<i64>(&[31, 32, 33, 63, 64]);
+    check_fixed_group_boundaries::<u64>(&[31, 32, 33, 63, 64]);
+    check_fixed_group_boundaries::<i128>(&[31, 32, 33, 63, 64, 65, 95, 96, 97, 127, 128]);
+    check_fixed_group_boundaries::<u128>(&[31, 32, 33, 63, 64, 65, 95, 96, 97, 127, 128]);
+}
+
 #[test]
 fn test_serialize_fixed() {
     // the storage x Q format matrix. every configuration runs the full case list in
     // check_fixed_cases: exact raw bounds, one raw step inside each, whole unit values inside
     // each bound, all fraction bits set, the middle of the range, and zero / +1.0 / -1.0
     // units where the bounds allow them.
+
+    // i8 / u8
+    check_fixed_cases::<i8>(16, 4, 4, -7, 7);
+    check_fixed_cases::<i8>(1, 8, 0, -128, 127);
+    check_fixed_cases::<u8>(16, 4, 4, 0, 15);
+    check_fixed_cases::<u8>(1, 8, 0, 0, 255);
 
     // i16
     check_fixed_cases::<i16>(256, 8, 8, -100, 100);
@@ -1656,6 +2005,7 @@ fn test_serialize_fixed() {
     check_fixed_cases::<u16>(1, 16, 0, 0, 60000);
     check_fixed_cases::<u32>(65536, 16, 16, 0, 60000);
     check_fixed_cases::<u64>(65536, 48, 16, 0, 1000000000);
+    check_fixed_cases::<u128>(65536, 112, 16, 0, 2305843009213693952);
 
     // single unit range: the whole wire is the fractional part
     check_fixed_cases::<i32>(65536, 16, 16, 0, 1);
@@ -1691,18 +2041,29 @@ fn test_serialize_fixed() {
 }
 
 // the C++ library refuses these configurations at compile time with static_asserts; the Q
-// format and bounds are runtime arguments here, so the refusals are validated (API misuse,
-// exactly like bits out of range or min >= max): debug assertions on every stream,
-// compiled out in release per the family standard
+// format and bounds are runtime arguments here, so they are validated as declarations
+// (IMPLEMENTING.md U16, exactly like bits out of range or min > max): refused as
+// value_out_of_range on read in every build, debug assertions on write
+
+/// Read a fixed point field with a bad declaration and require the U16 refusal: before any
+/// bits move, with the destination untouched.
+fn assert_fixed_declaration_refused(integer_bits: u32, fraction_bits: u32, min: i64, max: i64) {
+    let buffer = [0u8; 16];
+    let mut stream = ReadStream::new(&buffer, 8);
+    let mut value = 99i32;
+    assert_eq!(
+        stream.serialize_fixed(&mut value, integer_bits, fraction_bits, min, max),
+        Err(Error::ValueOutOfRange)
+    );
+    assert_eq!(value, 99);
+    assert_eq!(stream.bits_processed(), 0);
+}
 
 #[test]
-#[cfg(debug_assertions)]
-#[should_panic(expected = "must equal the storage width")]
 fn test_serialize_fixed_q_format_must_fill_storage() {
-    let buffer = [0u8; 8];
-    let mut stream = ReadStream::new(&buffer, 8);
-    let mut value = 0i32;
-    let _ = stream.serialize_fixed(&mut value, 16, 8, 0, 100); // 16 + 8 != 32
+    assert_fixed_declaration_refused(16, 8, 0, 100); // 16 + 8 != 32
+    assert_fixed_declaration_refused(0, 32, 0, 0); // no integer bit
+    assert_fixed_declaration_refused(u32::MAX, 33, 0, 1); // the sum overflows u32
 }
 
 #[test]
@@ -1716,14 +2077,9 @@ fn test_serialize_fixed_q_format_must_fill_storage_write_debug() {
 }
 
 #[test]
-#[cfg(debug_assertions)]
-#[should_panic(expected = "do not fit the Q format")]
 fn test_serialize_fixed_bounds_must_fit_q_format() {
-    let buffer = [0u8; 8];
-    let mut stream = ReadStream::new(&buffer, 8);
-    let mut value = 0i32;
     // bounds exceed the Q16.16 whole unit capacity [-32768,32767]
-    let _ = stream.serialize_fixed(&mut value, 16, 16, -40000, 40000);
+    assert_fixed_declaration_refused(16, 16, -40000, 40000);
 }
 
 #[test]
@@ -1737,15 +2093,10 @@ fn test_serialize_fixed_bounds_must_fit_q_format_write_debug() {
 }
 
 #[test]
-#[cfg(debug_assertions)]
-#[should_panic(expected = "must not be greater than max_units")]
 fn test_serialize_fixed_min_must_not_exceed_max() {
-    // an INVERTED range is API misuse. a degenerate range (min == max) is NOT:
+    // an INVERTED range is a bad declaration. a degenerate range (min == max) is NOT:
     // it is legal and costs zero bits -- see tests/degenerate.rs
-    let buffer = [0u8; 8];
-    let mut stream = ReadStream::new(&buffer, 8);
-    let mut value = 0i32;
-    let _ = stream.serialize_fixed(&mut value, 16, 16, 200, 100);
+    assert_fixed_declaration_refused(16, 16, 200, 100);
 }
 
 #[test]
@@ -1763,6 +2114,8 @@ fn test_serialize_fixed_validation() {
     // a malicious packet can smuggle a raw value past raw_max into the bit headroom of the
     // offset encoding. reads must reject one raw step past the top of the range, on every
     // configuration in the matrix that has headroom.
+    check_fixed_rejects_out_of_range::<i8>(4, 4, -7, 7);
+    check_fixed_rejects_out_of_range::<u8>(4, 4, 0, 15);
     check_fixed_rejects_out_of_range::<i16>(8, 8, -100, 100);
     check_fixed_rejects_out_of_range::<i16>(12, 4, -2000, 2000);
     check_fixed_rejects_out_of_range::<i32>(16, 16, -30000, 30000);
@@ -1785,7 +2138,7 @@ fn test_serialize_fixed_validation() {
         let mut value = 0i64;
         assert_eq!(
             read_stream.serialize_fixed(&mut value, 48, 16, -100000000000, 100000000000),
-            Err(Error::Overflow)
+            Err(Error::PastEnd)
         );
     }
 }
@@ -2001,12 +2354,19 @@ fn test_serialize_fixed_wide() {
                 -1152921504606846976,
                 1152921504606846976
             ),
-            Err(Error::Overflow)
+            Err(Error::PastEnd)
         );
     }
 }
 
 #[test]
+#[allow(
+    clippy::cast_lossless,
+    clippy::cast_possible_truncation,
+    clippy::cast_possible_wrap,
+    clippy::cast_precision_loss,
+    clippy::cast_sign_loss
+)]
 fn test_serialize_uint128() {
     // round trips across the value patterns: zero, max, each half alone, alternating bits,
     // distinct halves
@@ -2110,6 +2470,13 @@ fn test_serialize_uint128() {
 #[test]
 // the seven numbered sections mirror the C++ test verbatim so the suites stay diffable
 #[allow(clippy::too_many_lines)]
+#[allow(
+    clippy::cast_lossless,
+    clippy::cast_possible_truncation,
+    clippy::cast_possible_wrap,
+    clippy::cast_precision_loss,
+    clippy::cast_sign_loss
+)]
 fn test_serialize_int128() {
     // 1. WIRE IDENTITY WITH serialize_int64 wherever the range fits 64 bits. this is what
     //    lets a schema widen a field without a wire change, so it is pinned by byte compare
@@ -2287,7 +2654,7 @@ fn test_serialize_int128() {
         let mut read_back = 0i128;
         assert_eq!(
             read_stream.serialize_int128(&mut read_back, i128::MIN, i128::MAX),
-            Err(Error::Overflow)
+            Err(Error::PastEnd)
         );
     }
 
@@ -2350,6 +2717,13 @@ fn compressed_float_precomputed_conformance_serialize<S: Stream>(
 }
 
 #[test]
+#[allow(
+    clippy::cast_lossless,
+    clippy::cast_possible_truncation,
+    clippy::cast_possible_wrap,
+    clippy::cast_precision_loss,
+    clippy::cast_sign_loss
+)]
 fn test_compressed_float_precomputed_conformance() {
     const PINNED_BYTES: [u8; 6] = [0x10, 0xA7, 0x06, 0x80, 0x82, 0x06];
 
@@ -2418,6 +2792,14 @@ fn test_compressed_float_precomputed_conformance() {
 // tolerance: the divergence a fused or widened decode produces is one ulp, invisible to any
 // tolerance.
 
+// the pre-split body is pinned verbatim, including its float32 quantization casts
+#[allow(
+    clippy::cast_lossless,
+    clippy::cast_possible_truncation,
+    clippy::cast_possible_wrap,
+    clippy::cast_precision_loss,
+    clippy::cast_sign_loss
+)]
 fn serialize_compressed_float_frozen_reference<S: Stream>(
     stream: &mut S,
     value: &mut f32,
@@ -2483,7 +2865,7 @@ fn serialize_compressed_float_frozen_reference<S: Stream>(
 
     if S::IS_READING {
         if integer_value > max_integer_value {
-            return S::fail(Error::ValueOutOfRange);
+            return stream.fail(Error::ValueOutOfRange);
         }
         let normalized_value = integer_value as f32 / max_integer_value as f32;
         *value = normalized_value * delta + min;
@@ -2546,26 +2928,30 @@ fn check_compressed_float_value_agrees(
     // measure: all three forms agree on cost
     let mut measure_frozen = MeasureStream::new();
     let mut measure_value = value;
-    let Ok(()) = serialize_compressed_float_frozen_reference(
+    serialize_compressed_float_frozen_reference(
         &mut measure_frozen,
         &mut measure_value,
         min,
         max,
         resolution,
-    );
+    )
+    .unwrap();
     let mut measure_legacy = MeasureStream::new();
     measure_value = value;
-    let Ok(()) =
-        measure_legacy.serialize_compressed_float(&mut measure_value, min, max, resolution);
+    measure_legacy
+        .serialize_compressed_float(&mut measure_value, min, max, resolution)
+        .unwrap();
     let mut measure_precomputed = MeasureStream::new();
     measure_value = value;
-    let Ok(()) = measure_precomputed.serialize_compressed_float_precomputed(
-        &mut measure_value,
-        params.max_integer_value,
-        params.bits,
-        params.delta,
-        min,
-    );
+    measure_precomputed
+        .serialize_compressed_float_precomputed(
+            &mut measure_value,
+            params.max_integer_value,
+            params.bits,
+            params.delta,
+            min,
+        )
+        .unwrap();
     differential_check!(
         checks,
         measure_frozen.bits_processed() == measure_legacy.bits_processed(),
@@ -2586,13 +2972,14 @@ fn check_compressed_float_value_agrees(
     {
         let mut stream = WriteStream::new(&mut buffer_frozen[..8]);
         let mut write_value = value;
-        let Ok(()) = serialize_compressed_float_frozen_reference(
+        serialize_compressed_float_frozen_reference(
             &mut stream,
             &mut write_value,
             min,
             max,
             resolution,
-        );
+        )
+        .unwrap();
         stream.flush();
         bits_frozen = stream.bits_processed();
     }
@@ -2600,7 +2987,9 @@ fn check_compressed_float_value_agrees(
     {
         let mut stream = WriteStream::new(&mut buffer_legacy[..8]);
         let mut write_value = value;
-        let Ok(()) = stream.serialize_compressed_float(&mut write_value, min, max, resolution);
+        stream
+            .serialize_compressed_float(&mut write_value, min, max, resolution)
+            .unwrap();
         stream.flush();
         bits_legacy = stream.bits_processed();
     }
@@ -2608,13 +2997,15 @@ fn check_compressed_float_value_agrees(
     {
         let mut stream = WriteStream::new(&mut buffer_precomputed[..8]);
         let mut write_value = value;
-        let Ok(()) = stream.serialize_compressed_float_precomputed(
-            &mut write_value,
-            params.max_integer_value,
-            params.bits,
-            params.delta,
-            min,
-        );
+        stream
+            .serialize_compressed_float_precomputed(
+                &mut write_value,
+                params.max_integer_value,
+                params.bits,
+                params.delta,
+                min,
+            )
+            .unwrap();
         stream.flush();
         bits_precomputed = stream.bits_processed();
     }
@@ -2694,7 +3085,7 @@ fn check_compressed_float_code_agrees(
     {
         let mut stream = WriteStream::new(&mut buffer[..8]);
         let mut raw = code;
-        let Ok(()) = stream.serialize_bits(&mut raw, params.bits);
+        stream.serialize_bits(&mut raw, params.bits).unwrap();
         stream.flush();
     }
 
@@ -2812,8 +3203,17 @@ fn next_lcg(lcg: &mut u64) -> u64 {
 }
 
 #[test]
-#[allow(clippy::too_many_lines)] // one test per the C++ suite's structure: the corpus and the
+#[allow(clippy::too_many_lines)]
+// one test per the C++ suite's structure: the corpus and the
 // sweeps that drive it belong together, exactly as in serialize.h
+// the sweep compares float32 quantization steps, so the float casts are the values under test
+#[allow(
+    clippy::cast_lossless,
+    clippy::cast_possible_truncation,
+    clippy::cast_possible_wrap,
+    clippy::cast_precision_loss,
+    clippy::cast_sign_loss
+)]
 fn test_compressed_float_precomputed_differential() {
     let mut checks: u64 = 0;
     let mut lcg: u64 = 0xC0FFEE1234567890; // fixed seed: failures reproduce
@@ -3066,7 +3466,9 @@ fn test_compressed_float_precomputed_differential() {
 // Golden wire format test. The exact bytes produced by the serializer are pinned down here and
 // must never change. If this test fails, the wire format has changed and data written by the
 // C++ library (or the Go port, or previous versions of this crate) no longer decodes: a
-// breaking change. The bytes are copied verbatim from the C++ test suite.
+// breaking change. The bytes are STANDARD.md's "The whole message" (format 2.0), the 106
+// bytes the C++ suite pins: twenty-nine operations ending in the end, with a string of CJK
+// text where format 1.1 carried the removed wstring.
 
 #[derive(Default, Clone, PartialEq, Debug)]
 struct GoldenWireData {
@@ -3088,7 +3490,7 @@ struct GoldenWireData {
     relative_far: i32,
     bytes: [u8; 7],
     string: String,
-    wstring: String,
+    text: String,
     fixed_q8_8: i16,
     fixed_q16_16: i32,
     fixed_q48_16: i64,
@@ -3121,8 +3523,8 @@ fn golden_wire_init() -> GoldenWireData {
         bytes: [0xDE, 0xAD, 0xBE, 0xEF, 0xCA, 0xFE, 0x01],
         string: "golden".to_string(),
         // built from explicit code points so the source file encoding can never change the
-        // golden bytes: cyrillic, BMP only
-        wstring: "\u{043C}\u{0438}\u{0440}".to_string(),
+        // golden bytes: U+7881 U+77F3, go stones, E7 A2 81 E7 9F B3 on the wire
+        text: "\u{7881}\u{77F3}".to_string(),
         fixed_q8_8: -(3 * 256 + 64),                  // -3.25 in Q8.8
         fixed_q16_16: 1234 * 65536 + 32768,           // 1234.5 in Q16.16
         fixed_q48_16: -(54321i64 * 65536 + 12345),    // -54321.1883... in Q48.16
@@ -3158,7 +3560,7 @@ fn golden_wire_serialize<S: Stream>(
     stream.serialize_align()?;
     stream.serialize_bytes(&mut data.bytes)?;
     stream.serialize_string(&mut data.string, 16)?;
-    stream.serialize_wide_string(&mut data.wstring, 8)?;
+    stream.serialize_string(&mut data.text, 8)?;
     // the fixed point section starts byte aligned, so every byte pinned above it stays put
     stream.serialize_align()?;
     stream.serialize_fixed(&mut data.fixed_q8_8, 8, 8, -100, 100)?;
@@ -3177,27 +3579,34 @@ fn golden_wire_serialize<S: Stream>(
     )?;
     // full unit range: 128 bits, the four group structure
     stream.serialize_fixed(&mut data.fixed_q64_64_wide, 64, 64, i64::MIN, i64::MAX)?;
+    // the end: a packet reader reads it, refusing trailing bytes and set padding
+    stream.serialize_end()?;
     Ok(())
 }
 
-// bytes 0..72 are the original golden vector; the fixed point tail (72..112) was derived
-// from STANDARD.md's stated rules independently of both implementations, and matches the
-// C++ suite's golden_wire_bytes verbatim
+// STANDARD.md, "The whole message": the last field ends at bit 843, so the final byte carries
+// three bits of message and five bits of zero padding, which the reader's end consumes
 #[rustfmt::skip]
-const GOLDEN_WIRE_BYTES: [u8; 112] = [
+const GOLDEN_WIRE_BYTES: [u8; 106] = [
     0x5D, 0xDA, 0xF7, 0xE6, 0xD5, 0x77, 0xDF, 0x56, 0xEF, 0x9F, 0x75, 0x19,
     0x52, 0xBC, 0xDA, 0x0F, 0x49, 0x40, 0xF4, 0x55, 0x55, 0x55, 0x55, 0x55,
     0x55, 0x55, 0xFF, 0xFC, 0xD1, 0x48, 0xE0, 0x59, 0xD1, 0x48, 0xC0, 0x7B,
     0xF3, 0x6A, 0xE2, 0x59, 0xD1, 0x48, 0x84, 0xB7, 0x06, 0xDE, 0xAD, 0xBE,
-    0xEF, 0xCA, 0xFE, 0x01, 0x06, 0x67, 0x6F, 0x6C, 0x64, 0x65, 0x6E, 0xE3,
-    0x21, 0x00, 0x00, 0xC0, 0x21, 0x00, 0x00, 0x00, 0x22, 0x00, 0x00, 0x00,
-    0xC0, 0x60, 0x00, 0x80, 0xA2, 0x7C, 0xFC, 0xEC, 0x26, 0xCB, 0xFF, 0xFF,
-    0x4B, 0x1D, 0x1F, 0xEF, 0xD2, 0x1A, 0x1F, 0x01, 0xE9, 0xFF, 0xFF, 0x09,
-    0x19, 0x2A, 0x3B, 0x4C, 0x5D, 0x6E, 0x7F, 0x78, 0x6F, 0x5E, 0x4D, 0x3C,
-    0x2B, 0x1A, 0x09, 0x04,
+    0xEF, 0xCA, 0xFE, 0x01, 0x06, 0x67, 0x6F, 0x6C, 0x64, 0x65, 0x6E, 0x06,
+    0xE7, 0xA2, 0x81, 0xE7, 0x9F, 0xB3, 0xC0, 0x60, 0x00, 0x80, 0xA2, 0x7C,
+    0xFC, 0xEC, 0x26, 0xCB, 0xFF, 0xFF, 0x4B, 0x1D, 0x1F, 0xEF, 0xD2, 0x1A,
+    0x1F, 0x01, 0xE9, 0xFF, 0xFF, 0x09, 0x19, 0x2A, 0x3B, 0x4C, 0x5D, 0x6E,
+    0x7F, 0x78, 0x6F, 0x5E, 0x4D, 0x3C, 0x2B, 0x1A, 0x09, 0x04,
 ];
 
 #[test]
+#[allow(
+    clippy::cast_lossless,
+    clippy::cast_possible_truncation,
+    clippy::cast_possible_wrap,
+    clippy::cast_precision_loss,
+    clippy::cast_sign_loss
+)]
 fn test_golden_wire_format() {
     // write side: serializing the golden values must produce exactly the golden bytes
     {
@@ -3218,6 +3627,11 @@ fn test_golden_wire_format() {
         let mut stream = ReadStream::new(&buffer, GOLDEN_WIRE_BYTES.len());
         let mut data = GoldenWireData::default();
         golden_wire_serialize(&mut stream, &mut data).unwrap();
+        assert_eq!(
+            stream.bits_processed(),
+            848,
+            "the end consumed the final padding"
+        );
 
         let expected = golden_wire_init();
         assert_eq!(data.bits4, expected.bits4);
@@ -3238,7 +3652,7 @@ fn test_golden_wire_format() {
         assert_eq!(data.relative_far, expected.relative_far);
         assert_eq!(data.bytes, expected.bytes);
         assert_eq!(data.string, expected.string);
-        assert_eq!(data.wstring, expected.wstring);
+        assert_eq!(data.text, expected.text);
         assert_eq!(data.fixed_q8_8, expected.fixed_q8_8);
         assert_eq!(data.fixed_q16_16, expected.fixed_q16_16);
         assert_eq!(data.fixed_q48_16, expected.fixed_q48_16);
@@ -3249,6 +3663,13 @@ fn test_golden_wire_format() {
 }
 
 #[test]
+#[allow(
+    clippy::cast_lossless,
+    clippy::cast_possible_truncation,
+    clippy::cast_possible_wrap,
+    clippy::cast_precision_loss,
+    clippy::cast_sign_loss
+)]
 fn test_unaligned_writer() {
     // the bit writer stores each word with copy_from_slice, so the write buffer needs no
     // particular alignment. exercise every offset within a word, covering the write_bits,
@@ -3294,6 +3715,13 @@ fn test_unaligned_writer() {
 
 #[test]
 #[ignore = "allocates 320 MB; run with --include-ignored"]
+#[allow(
+    clippy::cast_lossless,
+    clippy::cast_possible_truncation,
+    clippy::cast_possible_wrap,
+    clippy::cast_precision_loss,
+    clippy::cast_sign_loss
+)]
 fn test_large_buffer() {
     // bit counts are 64 bit, so buffers larger than the C++ library's old 256 MB limit work.
     // write a bulk block that carries the stream past the 2^31 bit boundary (256 MB), then
@@ -3350,6 +3778,14 @@ fn test_large_buffer() {
 }
 
 #[test]
+// the group test forms raw patterns and compares them against the reference group packing
+#[allow(
+    clippy::cast_lossless,
+    clippy::cast_possible_truncation,
+    clippy::cast_possible_wrap,
+    clippy::cast_precision_loss,
+    clippy::cast_sign_loss
+)]
 fn test_read_bits_group() {
     // group reads must be bit-for-bit identical to sequential read_bits calls, at every
     // bit alignment, with and without buffer slack, including the oversized-group and
@@ -3466,4 +3902,31 @@ fn test_read_bits_group_validates_wide_widths() {
     let buffer = [0u8; 16];
     let mut reader = BitReader::new(&buffer, 16);
     let _ = reader.read_bits_group(&[8, 33]);
+}
+
+#[test]
+fn test_bitpacker_remaining_counts_saturate() {
+    // the counts report zero once the buffer is exhausted, in every build
+    let mut write_buffer = [0u8; 8];
+    let mut writer = BitWriter::new(&mut write_buffer);
+    writer.write_bits(0, 32);
+    writer.write_bits(0, 32);
+    assert_eq!(writer.bits_available(), 0);
+
+    let read_buffer = [0u8; 8];
+    let mut reader = BitReader::new(&read_buffer, 8);
+    assert_eq!(reader.read_bits(32), 0);
+    assert_eq!(reader.read_bits(32), 0);
+    assert_eq!(reader.bits_remaining(), 0);
+
+    // a checked build traps a write or read past the end, so going further is only
+    // expressible in release, where the counts must still report zero rather than wrap
+    #[cfg(not(debug_assertions))]
+    {
+        writer.write_bits(0, 32);
+        assert_eq!(writer.bits_available(), 0);
+
+        assert_eq!(reader.read_bits(32), 0);
+        assert_eq!(reader.bits_remaining(), 0);
+    }
 }

@@ -34,6 +34,7 @@ enum Value {
     Int64 { value: i64, min: i64, max: i64 },
     Bool(bool),
     Float(f32),
+    CompressedFloat(f32),
     Double(f64),
     Bytes(Vec<u8>),
     Align,
@@ -45,6 +46,11 @@ enum Value {
     // [-1e11,+1e11] whole units, and the wide Q112.16 in ±2^60 whole units
     Fixed48 { raw: i64 },
     Fixed112 { raw: i128 },
+    Fixed8 { raw: i8 },
+    Fixed8Unsigned { raw: u8 },
+    Fixed32Unsigned { raw: u32 },
+    Fixed64Unsigned { raw: u64 },
+    Fixed128Unsigned { raw: u128 },
 }
 
 const FIXED48_MIN_UNITS: i64 = -100000000000;
@@ -55,8 +61,17 @@ const FIXED112_MAX_UNITS: i64 = 1152921504606846976;
 // one match arm per op kind, mirroring the C++ fuzz harness's op table; splitting it would
 // separate the ops from the distribution that drives them
 #[allow(clippy::too_many_lines)]
+// each arm narrows the random stream into the op's wire width, or forms a two's complement
+// value from it, exactly as the C++ harness does
+#[allow(
+    clippy::cast_lossless,
+    clippy::cast_possible_truncation,
+    clippy::cast_possible_wrap,
+    clippy::cast_precision_loss,
+    clippy::cast_sign_loss
+)]
 fn random_value(rng: &mut Rng) -> Value {
-    match rng.range(15) {
+    match rng.range(21) {
         0 => {
             let bits = rng.range(32) as u32 + 1;
             let value = (rng.next() as u32) & (((1u64 << bits) - 1) as u32);
@@ -106,8 +121,12 @@ fn random_value(rng: &mut Rng) -> Value {
             Value::Int64 { value, min, max }
         }
         4 => Value::Bool(rng.range(2) == 1),
-        5 => Value::Float(f32::from_bits(rng.next() as u32)),
-        6 => Value::Double(f64::from_bits(rng.next())),
+        // the format carries finite values only (format 2.0): a pattern whose exponent field
+        // is all ones has its top exponent bit cleared, which keeps the draw finite and the
+        // generator's consumption unchanged. Every finite pattern, -0 and the subnormals
+        // included, still round trips bit exact
+        5 => Value::Float(f32::from_bits(finite_float_bits(rng.next() as u32))),
+        6 => Value::Double(f64::from_bits(finite_double_bits(rng.next()))),
         7 => {
             let len = rng.range(32) as usize;
             Value::Bytes((0..len).map(|_| rng.next() as u8).collect())
@@ -156,6 +175,35 @@ fn random_value(rng: &mut Rng) -> Value {
             let raw = (raw_min as u64).wrapping_add(rng.next() % (raw_range + 1)) as i64;
             Value::Fixed48 { raw }
         }
+        15 => {
+            // Q4.4 in [-7,7] whole units: raw in [-112,112]
+            let raw = (rng.range(225) as i16 - 112) as i8;
+            Value::Fixed8 { raw }
+        }
+        16 => {
+            // Q4.4 unsigned in [0,15] whole units: raw in [0,240]
+            let raw = rng.range(241) as u8;
+            Value::Fixed8Unsigned { raw }
+        }
+        17 => {
+            // Q16.16 unsigned in [0,60000] whole units
+            let raw_range = 60000u64 << 16;
+            let raw = (rng.next() % (raw_range + 1)) as u32;
+            Value::Fixed32Unsigned { raw }
+        }
+        18 => {
+            // Q48.16 unsigned in [0,1e9] whole units
+            let raw_range = 1000000000u64 << 16;
+            let raw = rng.next() % (raw_range + 1);
+            Value::Fixed64Unsigned { raw }
+        }
+        19 => {
+            // Q112.16 unsigned in [0,2^61] whole units
+            let raw_range = 2305843009213693952u128 << 16;
+            let raw = rng.next128() % (raw_range + 1);
+            Value::Fixed128Unsigned { raw }
+        }
+        20 => Value::CompressedFloat(rng.range(257) as f32 / 256.0),
         _ => {
             let raw_min = i128::from(FIXED112_MIN_UNITS) << 16;
             let raw_range = ((FIXED112_MAX_UNITS - FIXED112_MIN_UNITS) as u128) << 16;
@@ -176,6 +224,9 @@ fn serialize_value<S: Stream>(
         Value::Int64 { value, min, max } => stream.serialize_int64(value, *min, *max),
         Value::Bool(value) => stream.serialize_bool(value),
         Value::Float(value) => stream.serialize_f32(value),
+        Value::CompressedFloat(value) => {
+            stream.serialize_compressed_float(value, 0.0, 1.0, 1.0 / 256.0)
+        }
         Value::Double(value) => stream.serialize_f64(value),
         Value::Bytes(data) => stream.serialize_bytes(data),
         Value::Align => stream.serialize_align(),
@@ -190,6 +241,13 @@ fn serialize_value<S: Stream>(
         }
         Value::Fixed112 { raw } => {
             stream.serialize_fixed(raw, 112, 16, FIXED112_MIN_UNITS, FIXED112_MAX_UNITS)
+        }
+        Value::Fixed8 { raw } => stream.serialize_fixed(raw, 4, 4, -7, 7),
+        Value::Fixed8Unsigned { raw } => stream.serialize_fixed(raw, 4, 4, 0, 15),
+        Value::Fixed32Unsigned { raw } => stream.serialize_fixed(raw, 16, 16, 0, 60000),
+        Value::Fixed64Unsigned { raw } => stream.serialize_fixed(raw, 48, 16, 0, 1000000000),
+        Value::Fixed128Unsigned { raw } => {
+            stream.serialize_fixed(raw, 112, 16, 0, 2305843009213693952)
         }
     }
 }
@@ -216,6 +274,7 @@ fn blank(value: &Value) -> Value {
         },
         Value::Bool(_) => Value::Bool(false),
         Value::Float(_) => Value::Float(0.0),
+        Value::CompressedFloat(_) => Value::CompressedFloat(0.0),
         Value::Double(_) => Value::Double(0.0),
         Value::Bytes(data) => Value::Bytes(vec![0; data.len()]),
         Value::Align => Value::Align,
@@ -236,14 +295,38 @@ fn blank(value: &Value) -> Value {
         Value::Fixed112 { .. } => Value::Fixed112 {
             raw: i128::from(FIXED112_MIN_UNITS) << 16,
         },
+        Value::Fixed8 { .. } => Value::Fixed8 { raw: -112 },
+        Value::Fixed8Unsigned { .. } => Value::Fixed8Unsigned { raw: 0 },
+        Value::Fixed32Unsigned { .. } => Value::Fixed32Unsigned { raw: 0 },
+        Value::Fixed64Unsigned { .. } => Value::Fixed64Unsigned { raw: 0 },
+        Value::Fixed128Unsigned { .. } => Value::Fixed128Unsigned { raw: 0 },
     }
 }
 
-/// Compare a written value against its read-back. Floats compare by bit pattern so NaN
-/// round trips count as equal.
+/// A random float pattern made finite: an all-ones exponent field loses its top bit.
+fn finite_float_bits(bits: u32) -> u32 {
+    if bits & 0x7F80_0000 == 0x7F80_0000 {
+        bits & !0x4000_0000
+    } else {
+        bits
+    }
+}
+
+/// The 64 bit twin of [`finite_float_bits`].
+fn finite_double_bits(bits: u64) -> u64 {
+    if bits & 0x7FF0_0000_0000_0000 == 0x7FF0_0000_0000_0000 {
+        bits & !0x4000_0000_0000_0000
+    } else {
+        bits
+    }
+}
+
+/// Compare a written value against its read-back. Floats compare by bit pattern, so a
+/// negative zero or a subnormal that came back altered counts as a mismatch.
 fn matches(written: &Value, read: &Value) -> bool {
     match (written, read) {
-        (Value::Float(a), Value::Float(b)) => a.to_bits() == b.to_bits(),
+        (Value::Float(a), Value::Float(b))
+        | (Value::CompressedFloat(a), Value::CompressedFloat(b)) => a.to_bits() == b.to_bits(),
         (Value::Double(a), Value::Double(b)) => a.to_bits() == b.to_bits(),
         _ => written == read,
     }
@@ -255,6 +338,14 @@ const ROUND_TRIP_SEEDS: u64 = if cfg!(miri) { 8 } else { 500 };
 const HOSTILE_SEEDS: u64 = if cfg!(miri) { 16 } else { 2000 };
 
 #[test]
+// the buffer is 4096 bytes, so the processed byte count fits the slice index
+#[allow(
+    clippy::cast_lossless,
+    clippy::cast_possible_truncation,
+    clippy::cast_possible_wrap,
+    clippy::cast_precision_loss,
+    clippy::cast_sign_loss
+)]
 fn test_differential_round_trip() {
     // write a random value sequence, then a read of the same sequence must return exactly the
     // written values, and the measure stream must never under-measure the write
@@ -297,9 +388,28 @@ fn test_differential_round_trip() {
 }
 
 #[test]
+fn compressed_float_uses_quantized_width() {
+    let mut buffer = [0u8; 8];
+    let mut value = Value::CompressedFloat(0.5);
+    let mut stream = WriteStream::new(&mut buffer);
+    serialize_value(&mut stream, &mut value).unwrap();
+    assert_eq!(stream.bits_processed(), 9);
+}
+
+#[test]
+// the hostile length is drawn from a 64 wide range and indexes a local buffer
+#[allow(
+    clippy::cast_lossless,
+    clippy::cast_possible_truncation,
+    clippy::cast_possible_wrap,
+    clippy::cast_precision_loss,
+    clippy::cast_sign_loss
+)]
 fn test_hostile_read() {
     // arbitrary bytes driven through every ReadStream primitive must fail cleanly with an
     // error, never panic. mirrors the hostile pass of the C++ fuzz harness.
+    let mut operations = 0u64;
+    let mut at_offset = 0u64;
     for seed in 0..HOSTILE_SEEDS {
         let mut rng = Rng(!seed);
 
@@ -320,6 +430,15 @@ fn test_hostile_read() {
             // requirement is no panic and no unvalidated value escaping
             let mut op = random_value(&mut rng);
             let op = &mut op;
+
+            // count the operations that start part way into live packet data, so the loop
+            // provably drives the primitives at non-zero bit offsets and not only at the start
+            let start = stream.bits_processed();
+            operations += 1;
+            if start > 0 && start < len as u64 * 8 {
+                at_offset += 1;
+            }
+
             let _ = match op {
                 Value::IntRelative { previous, current } => {
                     stream.serialize_int_relative(*previous, current)
@@ -327,11 +446,15 @@ fn test_hostile_read() {
                 Value::String(value) => stream.serialize_string(value, 64),
                 other => serialize_value(&mut stream, other),
             };
-
-            // wide strings are not in random_value (the write side would need valid chars),
-            // so drive them here against the hostile bytes too
-            let mut wide = String::new();
-            let _ = stream.serialize_wide_string(&mut wide, 64);
         }
+
+        // the end is not in random_value (it carries no value), so drive it here against the
+        // hostile bytes too, once after the ops: ending every iteration latched trailing data
+        // and restarted the stream at bit zero, so no op ever ran part way into the packet
+        let _ = stream.serialize_end();
     }
+    assert!(
+        at_offset * 4 >= operations,
+        "only {at_offset} of {operations} hostile operations started at a non-zero bit offset"
+    );
 }
