@@ -247,6 +247,10 @@ breaks on PRs.
 The repo is public (that flip is done). `cargo publish` is still waiting. The package publishes as `serialize-official`; docs.rs builds automatically on
 publish.
 
+Pushing a `vX.Y.Z` tag runs `.github/workflows/publish.yml`, which publishes to crates.io
+when the `CRATES_IO_TOKEN` secret exists (an org secret in mas-bandwidth); without it the
+workflow skips the upload.
+
 ## Portability notes
 
 - Endianness is handled entirely by `to_le_bytes`/`from_le_bytes`; there is no byte-swap

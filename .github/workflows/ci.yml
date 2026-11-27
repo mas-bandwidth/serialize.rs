@@ -2,10 +2,10 @@ name: ci
 
 on:
   push:
-    branches: [main]
+    branches: [ main, 'sprint/*' ]
     tags: ['v*']
+  # every pull request, whatever its base: sprint landings target sprint/<stream> branches, not main
   pull_request:
-    branches: [main]
   workflow_dispatch:
 
 env:
@@ -93,6 +93,13 @@ jobs:
         env:
           MIRIFLAGS: -Zmiri-disable-isolation
 
+  roadmap:
+    name: ROADMAP.md matches docs/roadmap.sexp
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - run: make roadmap-check
+
   fuzz:
     name: fuzz smoke (60s per target)
     runs-on: ubuntu-latest
@@ -108,6 +115,29 @@ jobs:
         run: cargo +nightly fuzz run hostile_read --target x86_64-unknown-linux-gnu -- -max_total_time=60
       - name: Fuzz round_trip
         run: cargo +nightly fuzz run round_trip --target x86_64-unknown-linux-gnu -- -max_total_time=60
+      - name: Negative controls (hostile_read and round_trip must trap when sabotaged)
+        run: |
+          if SERIALIZE_FUZZ_CONTROL=sentinel cargo +nightly fuzz run hostile_read --target x86_64-unknown-linux-gnu -- -max_total_time=10 > hostile_ctl.log 2>&1; then
+            cat hostile_ctl.log
+            echo "::error::hostile_read negative control did not trap"
+            exit 1
+          fi
+          grep -q "a refused read wrote its destination" hostile_ctl.log
+          for pair in "roundtrip:wrote .*, read " "canary:tight write buffer canary corrupted" "trailing:expected TrailingData one byte past the writer"; do
+            ctl="${pair%%:*}"
+            msg="${pair#*:}"
+            if SERIALIZE_FUZZ_CONTROL=$ctl cargo +nightly fuzz run round_trip --target x86_64-unknown-linux-gnu -- -max_total_time=10 > roundtrip_${ctl}.log 2>&1; then
+              cat roundtrip_${ctl}.log
+              echo "::error::round_trip negative control ($ctl) did not trap"
+              exit 1
+            fi
+            grep -q "$msg" roundtrip_${ctl}.log || {
+              cat roundtrip_${ctl}.log
+              echo "::error::round_trip negative control ($ctl) failed without expected diagnostic: $msg"
+              exit 1
+            }
+          done
+          rm -f fuzz/artifacts/hostile_read/* fuzz/artifacts/round_trip/* || true
       - name: Upload crash reproducers
         if: failure()
         uses: actions/upload-artifact@v7
