@@ -74,6 +74,11 @@ impl<'a> BitWriter<'a> {
     /// surfaces as the language's own slice bounds panic on the word flush.
     #[inline(always)]
     pub fn write_bits(&mut self, value: u32, bits: u32) {
+        debug_assert_eq!(
+            u64::from(self.scratch_bits),
+            self.bits_written % 64,
+            "write after flush"
+        );
         debug_assert!(
             bits.wrapping_sub(1) < 32,
             "bits must be in [1,32] (got {bits})"
@@ -118,6 +123,11 @@ impl<'a> BitWriter<'a> {
     /// aligned when this is called (write an align first — the streams do this for you).
     #[inline]
     pub fn write_bytes(&mut self, data: &[u8]) {
+        debug_assert_eq!(
+            u64::from(self.scratch_bits),
+            self.bits_written % 64,
+            "write after flush"
+        );
         let bytes = data.len();
         debug_assert_eq!(self.align_bits(), 0);
         debug_assert!(self.bits_written + bytes as u64 * 8 <= self.num_bits);
@@ -194,7 +204,7 @@ impl<'a> BitWriter<'a> {
     #[must_use]
     #[inline]
     pub fn bits_available(&self) -> u64 {
-        self.num_bits - self.bits_written
+        self.num_bits.saturating_sub(self.bits_written)
     }
 
     /// The number of bytes flushed to memory. This is effectively the size of the packet you
@@ -208,6 +218,8 @@ impl<'a> BitWriter<'a> {
     /// The data written so far, as a byte slice. Call [`BitWriter::flush_bits`] first.
     #[must_use]
     #[inline]
+    // bytes_written never exceeds the buffer length, a usize
+    #[allow(clippy::cast_possible_truncation)]
     pub fn data(&self) -> &[u8] {
         &self.data[..self.bytes_written() as usize]
     }
@@ -325,6 +337,8 @@ impl<'a> BitReader<'a> {
 
         let window = self.load_window((self.bits_read >> 3) as usize);
 
+        // the truncation to u32 is the bit extraction itself: bits is at most 32
+        #[allow(clippy::cast_possible_truncation)]
         let output = ((window >> (self.bits_read & 7)) as u32) & (((1u64 << bits) - 1) as u32);
 
         self.bits_read += u64::from(bits);
@@ -383,7 +397,11 @@ impl<'a> BitReader<'a> {
                     let window = u64::from_le_bytes(
                         group[off..off + 8].try_into().expect("slice length is 8"),
                     );
-                    *out = ((window >> (local & 7)) as u32) & (((1u64 << bits) - 1) as u32);
+                    // as in read_bits: the truncation is the bit extraction itself
+                    #[allow(clippy::cast_possible_truncation)]
+                    {
+                        *out = ((window >> (local & 7)) as u32) & (((1u64 << bits) - 1) as u32);
+                    }
                     local += bits;
                 }
                 self.bits_read += total;
@@ -461,6 +479,6 @@ impl<'a> BitReader<'a> {
     #[must_use]
     #[inline]
     pub fn bits_remaining(&self) -> u64 {
-        self.num_bits - self.bits_read
+        self.num_bits.saturating_sub(self.bits_read)
     }
 }

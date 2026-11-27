@@ -42,6 +42,13 @@ const fn fill128(b: u8) -> u128 {
 }
 
 #[allow(clippy::too_many_lines, clippy::similar_names)] // one arm per operation: splitting it would scatter the sentinel table
+#[allow(
+    clippy::cast_lossless,
+    clippy::cast_possible_truncation,
+    clippy::cast_possible_wrap,
+    clippy::cast_precision_loss,
+    clippy::cast_sign_loss
+)]
 fn op(stream: &mut ReadStream, k: u64, pattern: u8, ctl: HostileControl) -> bool {
     let s8 = pattern;
     let s16 = fill16(pattern);
@@ -272,6 +279,13 @@ fn op(stream: &mut ReadStream, k: u64, pattern: u8, ctl: HostileControl) -> bool
     }
 }
 
+#[allow(
+    clippy::cast_lossless,
+    clippy::cast_possible_truncation,
+    clippy::cast_possible_wrap,
+    clippy::cast_precision_loss,
+    clippy::cast_sign_loss
+)]
 fn run_hostile_pass(
     buf: &[u8],
     bytes: usize,
@@ -313,6 +327,13 @@ fn run_hostile_pass(
     (stream.failure(), stream.bits_processed())
 }
 
+#[allow(
+    clippy::cast_lossless,
+    clippy::cast_possible_truncation,
+    clippy::cast_possible_wrap,
+    clippy::cast_precision_loss,
+    clippy::cast_sign_loss
+)]
 fn run_hostile_suite(iterations: usize, ctl: HostileControl) {
     // Directed per-operation first-refusal seeds (including every fixed sub-arm and bool).
     let mut refused_mask = 0u32;
