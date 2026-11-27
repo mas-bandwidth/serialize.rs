@@ -13,8 +13,8 @@ pub trait Serialize {
     /// # Errors
     ///
     /// Whatever the serialize implementation propagates — see the [`Stream`] methods it
-    /// calls. On write and measure streams `S::Error` is uninhabited, so the returned
-    /// `Result` is statically `Ok`.
+    /// calls. On write and measure streams `S::Error` is [`enum@Error`] too: only `fail`,
+    /// `reject` (release) or a nested object returning either produces one (U9's false).
     fn serialize<S: Stream>(&mut self, stream: &mut S) -> Result<(), S::Error>;
 }
 
@@ -24,8 +24,8 @@ pub trait Serialize {
 // value_out_of_range in every build, never asserted (U7: a reader never traps), and through
 // `fail`, so a stream that already failed keeps its first reason. On write and measure it is
 // the write-misuse mechanism, a debug assertion compiled out in release exactly like the C++
-// library's serialize_assert (U9), where a violated call contract produces a malformed stream —
-// never memory unsafety.
+// library's serialize_assert (U9), leaving the wire output unspecified — a checked reader may
+// decode arbitrary in-range values rather than rejecting it — though never memory unsafety.
 macro_rules! declaration_check {
     ($stream_type:ty, $stream:expr, $cond:expr, $($arg:tt)+) => {
         let declared: bool = $cond;
@@ -49,9 +49,9 @@ macro_rules! declaration_check {
 ///
 /// The stream also decides fallibility, through [`Stream::Error`]: write the canonical
 /// signature `fn serialize<S: Stream>(&mut self, stream: &mut S) -> Result<(), S::Error>`
-/// and the read instantiation is fully checked while the write and measure instantiations
-/// are statically infallible — their error type is uninhabited, so `?` and every error
-/// branch compile to nothing.
+/// and the read instantiation is fully checked, while the write and measure instantiations
+/// fail only when the caller's own `fail`, `reject` (release) or a nested object returns an
+/// error (U9's false); no built-in operation does.
 ///
 /// On read, every method validates before storing and returns an [`enum@Error`] on malicious
 /// or truncated data. Propagate errors with `?` so the first failure aborts the entire
@@ -201,7 +201,8 @@ pub trait Stream: gate::Sealed {
     /// [`Error::PastEnd`] for a truncated payload, then [`Error::EmbeddedNul`] or
     /// [`Error::InvalidUtf8`]. Writes and measures cannot error: a string that does not fit
     /// in `buffer_size - 1` bytes, or that holds a NUL, is a write-contract violation — a
-    /// debug assertion, and in release a malformed stream that checked readers reject.
+    /// debug assertion, and in release the wire output is unspecified: a checked reader may
+    /// decode it as arbitrary in-range values rather than rejecting it.
     fn serialize_string(
         &mut self,
         value: &mut String,
@@ -286,13 +287,14 @@ pub trait Stream: gate::Sealed {
         }
         // arithmetic is done in the unsigned domain: max - min overflows signed arithmetic
         // when the range is wider than 2^31
-        let range = (max as u32).wrapping_sub(min as u32);
+        let min_bits = u32::from_ne_bytes(min.to_ne_bytes());
+        let range = u32::from_ne_bytes(max.to_ne_bytes()).wrapping_sub(min_bits);
         let bits = bits_required(0, range);
         let mut unsigned_value = 0u32;
         if Self::IS_WRITING {
             debug_assert!(*value >= min);
             debug_assert!(*value <= max);
-            unsigned_value = (*value as u32).wrapping_sub(min as u32);
+            unsigned_value = u32::from_ne_bytes(value.to_ne_bytes()).wrapping_sub(min_bits);
         }
         self.serialize_bits(&mut unsigned_value, bits)?;
         if Self::IS_READING {
@@ -300,9 +302,9 @@ pub trait Stream: gate::Sealed {
                 return self.fail(Error::ValueOutOfRange);
             }
             *value = if deleted(Control::RangedReconstruction) {
-                unsigned_value as i32
+                i32::from_ne_bytes(unsigned_value.to_ne_bytes())
             } else {
-                unsigned_value.wrapping_add(min as u32) as i32
+                i32::from_ne_bytes(unsigned_value.wrapping_add(min_bits).to_ne_bytes())
             };
         }
         Ok(())
@@ -343,16 +345,17 @@ pub trait Stream: gate::Sealed {
         }
         // arithmetic is done in the unsigned domain: max - min overflows signed arithmetic
         // when the range is wider than 2^63
-        let range = (max as u64).wrapping_sub(min as u64);
+        let min_bits = u64::from_ne_bytes(min.to_ne_bytes());
+        let range = u64::from_ne_bytes(max.to_ne_bytes()).wrapping_sub(min_bits);
         let bits = bits_required64(0, range);
         let mut unsigned_value = 0u64;
         if Self::IS_WRITING {
             debug_assert!(*value >= min);
             debug_assert!(*value <= max);
-            unsigned_value = (*value as u64).wrapping_sub(min as u64);
+            unsigned_value = u64::from_ne_bytes(value.to_ne_bytes()).wrapping_sub(min_bits);
         }
         if bits <= 32 {
-            let mut lo = unsigned_value as u32;
+            let mut lo = (unsigned_value & 0xFFFF_FFFF) as u32;
             self.serialize_bits(&mut lo, bits)?;
             unsigned_value = u64::from(lo);
         } else {
@@ -367,7 +370,9 @@ pub trait Stream: gate::Sealed {
             if unsigned_value > range {
                 return self.fail(Error::ValueOutOfRange);
             }
-            *value = unsigned_value.wrapping_add(min as u64) as i64;
+            *value = i64::from_ne_bytes(unsigned_value.wrapping_add(min_bits).to_ne_bytes());
+            // the rounding through f64 is the control's whole point
+            #[allow(clippy::cast_precision_loss, clippy::cast_possible_truncation)]
             if deleted(Control::Int64ThroughDouble) {
                 // a reader backed by a double number type: exact to 2^53, rounded past it
                 let through_double = *value as f64;
@@ -426,20 +431,21 @@ pub trait Stream: gate::Sealed {
         }
         // arithmetic is done in the unsigned domain: max - min overflows signed arithmetic
         // when the range is wider than 2^127
-        let range = (max as u128).wrapping_sub(min as u128);
+        let min_bits = u128::from_ne_bytes(min.to_ne_bytes());
+        let range = u128::from_ne_bytes(max.to_ne_bytes()).wrapping_sub(min_bits);
         let bits = bits_required128(0, range);
         let mut offset = 0u128;
         if Self::IS_WRITING {
             debug_assert!(*value >= min);
             debug_assert!(*value <= max);
-            offset = (*value as u128).wrapping_sub(min as u128);
+            offset = u128::from_ne_bytes(value.to_ne_bytes()).wrapping_sub(min_bits);
         }
         serialize_offset128(self, &mut offset, bits)?;
         if Self::IS_READING {
             if offset > range {
                 return self.fail(Error::ValueOutOfRange);
             }
-            *value = offset.wrapping_add(min as u128) as i128;
+            *value = i128::from_ne_bytes(offset.wrapping_add(min_bits).to_ne_bytes());
         }
         Ok(())
     }
@@ -470,7 +476,7 @@ pub trait Stream: gate::Sealed {
             debug_assert!(u128::from(*value) < (1u128 << bits));
         }
         if bits <= 32 {
-            let mut lo = *value as u32;
+            let mut lo = (*value & 0xFFFF_FFFF) as u32;
             self.serialize_bits(&mut lo, bits)?;
             if Self::IS_READING {
                 *value = u64::from(lo);
@@ -512,7 +518,7 @@ pub trait Stream: gate::Sealed {
         let mut unsigned_value = u32::from(*value);
         self.serialize_bits(&mut unsigned_value, 8)?;
         if Self::IS_READING {
-            *value = unsigned_value as u8;
+            *value = (unsigned_value & 0xFF) as u8;
         }
         Ok(())
     }
@@ -527,7 +533,7 @@ pub trait Stream: gate::Sealed {
         let mut unsigned_value = u32::from(*value);
         self.serialize_bits(&mut unsigned_value, 16)?;
         if Self::IS_READING {
-            *value = unsigned_value as u16;
+            *value = (unsigned_value & 0xFFFF) as u16;
         }
         Ok(())
     }
@@ -565,7 +571,7 @@ pub trait Stream: gate::Sealed {
     /// On read, [`Error::PastEnd`] if the read would pass the end of the buffer. Writes and
     /// measures cannot error.
     fn serialize_u128(&mut self, value: &mut u128) -> Result<(), Self::Error> {
-        let mut lo = *value as u64;
+        let mut lo = (*value & 0xFFFF_FFFF_FFFF_FFFF) as u64;
         let mut hi = (*value >> 64) as u64;
         self.serialize_bits64(&mut lo, 64)?;
         self.serialize_bits64(&mut hi, 64)?;
@@ -794,7 +800,16 @@ pub trait Stream: gate::Sealed {
             } else if normalized_value > 1.0 {
                 normalized_value = 1.0;
             }
-            integer_value = (normalized_value * max_integer_value as f32 + 0.5).floor() as u32;
+            // the quantization is float32 arithmetic by the standard, and the floor is in
+            // [0, max_integer_value + 1] because normalized_value is clamped to [0,1] above
+            #[allow(
+                clippy::cast_precision_loss,
+                clippy::cast_possible_truncation,
+                clippy::cast_sign_loss
+            )]
+            {
+                integer_value = (normalized_value * max_integer_value as f32 + 0.5).floor() as u32;
+            }
             // STANDARD.md: the integer clamp is normative (2026-08-23, schema#109). once
             // max_integer_value >= 2^23 the float32 ulp at the top of the range reaches 1,
             // so the rounded sum can exceed max_integer_value itself: the writer emits a
@@ -811,6 +826,8 @@ pub trait Stream: gate::Sealed {
             if integer_value > max_integer_value {
                 return self.fail(Error::ValueOutOfRange);
             }
+            // the decode is float32 arithmetic by the standard
+            #[allow(clippy::cast_precision_loss)]
             let normalized_value = integer_value as f32 / max_integer_value as f32;
             let decoded = normalized_value * delta + min;
             // the decode must be finite (STANDARD.md, format 2.0): every operand is finite
@@ -903,8 +920,10 @@ pub trait Stream: gate::Sealed {
         // the bounds are constants of the call site, so a violation is a bad declaration —
         // refused as value_out_of_range on read, a debug assertion on write and measure, U16)
         if T::SIGNED {
-            let min_representable = (1u128 << (integer_bits - 1)).wrapping_neg() as i128;
-            let max_representable = ((1u128 << (integer_bits - 1)) - 1) as i128;
+            let min_representable =
+                i128::from_ne_bytes((1u128 << (integer_bits - 1)).wrapping_neg().to_ne_bytes());
+            let max_representable =
+                i128::from_ne_bytes(((1u128 << (integer_bits - 1)) - 1).to_ne_bytes());
             declaration_check!(
                 Self,
                 self,
@@ -917,7 +936,8 @@ pub trait Stream: gate::Sealed {
                 Self,
                 self,
                 min_units >= 0
-                    && (integer_bits >= 64 || (max_units as u64) < (1u64 << integer_bits)),
+                    && (integer_bits >= 64
+                        || u64::from_ne_bytes(max_units.to_ne_bytes()) < (1u64 << integer_bits)),
                 "serialize_fixed: bounds in whole units do not fit the Q format"
             );
         }
@@ -925,8 +945,10 @@ pub trait Stream: gate::Sealed {
         // shift the whole unit bounds into raw fixed point units in the unsigned 128 bit
         // domain, where negative bounds wrap two's complement; the capacity checks above
         // guarantee the raw range fits the storage width, so nothing below can overflow
-        let raw_min = (i128::from(min_units) as u128) << fraction_bits;
-        let raw_range = ((i128::from(max_units) - i128::from(min_units)) as u128) << fraction_bits;
+        let raw_min = u128::from_ne_bytes(i128::from(min_units).to_ne_bytes()) << fraction_bits;
+        let raw_range =
+            u128::from_ne_bytes((i128::from(max_units) - i128::from(min_units)).to_ne_bytes())
+                << fraction_bits;
 
         if min_units == max_units {
             // degenerate range: the value IS the range, nothing to send (STANDARD.md:
@@ -1039,7 +1061,8 @@ pub trait Stream: gate::Sealed {
                 *current
             );
             // both operands are in the domain, so the difference is exact in 32 bits
-            difference = (*current as u32).wrapping_sub(previous as u32);
+            difference = u32::from_ne_bytes(current.to_ne_bytes())
+                .wrapping_sub(u32::from_ne_bytes(previous.to_ne_bytes()));
         }
 
         let mut one_bit = false;
@@ -1063,7 +1086,7 @@ pub trait Stream: gate::Sealed {
             if in_bucket {
                 let mut bucket_difference = 0i32;
                 if Self::IS_WRITING {
-                    bucket_difference = difference as i32;
+                    bucket_difference = i32::from_ne_bytes(difference.to_ne_bytes());
                 }
                 self.serialize_int(&mut bucket_difference, bucket_min, bucket_max)?;
                 if Self::IS_READING {
@@ -1077,7 +1100,7 @@ pub trait Stream: gate::Sealed {
         // the absolute tier transmits current itself, as 32 raw bits
         let mut value = 0u32;
         if Self::IS_WRITING {
-            value = *current as u32;
+            value = u32::from_ne_bytes(current.to_ne_bytes());
         }
         self.serialize_bits(&mut value, 32)?;
         if Self::IS_READING {
@@ -1098,7 +1121,11 @@ pub trait Stream: gate::Sealed {
             {
                 return self.fail(Error::NonCanonical);
             }
-            *current = reconstructed as i32;
+            // in [0,i32::MAX]: the domain check above passed
+            #[allow(clippy::cast_possible_truncation)]
+            {
+                *current = reconstructed as i32;
+            }
         }
 
         Ok(())
@@ -1144,7 +1171,11 @@ fn accept_int_relative<S: Stream + ?Sized>(
     if !int_relative_in_domain(previous, reconstructed) {
         return stream.fail(Error::ValueOutOfRange);
     }
-    *current = reconstructed as i32;
+    // in [0,i32::MAX]: the domain check above passed
+    #[allow(clippy::cast_possible_truncation)]
+    {
+        *current = reconstructed as i32;
+    }
     Ok(())
 }
 
@@ -1216,7 +1247,7 @@ pub fn serialize_compressed_float_params(
 
     let delta = max - min;
 
-    // declaration validity (the fork #6 ruling, Glenn, 2026-08-15: "it's non-conforming.
+    // declaration validity (the fork #6 ruling, 2026-08-15: "it's non-conforming.
     // also, attempting to send NaN or INF or anything else through compressed float is
     // non-conforming and should assert out on write too."): a declaration whose delta or
     // quantum count is not finite asserts at the param computation site, in every stream
@@ -1240,6 +1271,8 @@ pub fn serialize_compressed_float_params(
         values = 4_294_967_040.0;
     }
 
+    // values is clamped to [1,4294967040] just above, so the ceil is a u32
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
     let max_integer_value = values.ceil() as u32;
 
     let bits = bits_required(0, max_integer_value);
@@ -1293,13 +1326,17 @@ macro_rules! impl_fixed_point_storage {
                 const SIGNED: bool = <$t>::MIN != 0;
 
                 // `as u128` sign extends signed storage and zero extends unsigned storage,
-                // which is exactly the conversion the raw offset math needs
+                // which is exactly the conversion the raw offset math needs. The reverse
+                // cast takes the low bits of the raw value, the storage width's own
+                // two's complement rendering.
                 #[inline]
+                #[allow(clippy::cast_lossless, clippy::cast_sign_loss)]
                 fn to_unsigned(self) -> u128 {
                     self as u128
                 }
 
                 #[inline]
+                #[allow(clippy::cast_possible_truncation, clippy::cast_possible_wrap)]
                 fn from_unsigned(raw: u128) -> Self {
                     raw as $t
                 }
@@ -1321,9 +1358,9 @@ fn serialize_offset128<S: Stream + ?Sized>(
     bits: u32,
 ) -> Result<(), S::Error> {
     debug_assert!((1..=128).contains(&bits));
-    let mut group0 = *offset as u32;
-    let mut group1 = (*offset >> 32) as u32;
-    let mut group2 = (*offset >> 64) as u32;
+    let mut group0 = (*offset & 0xFFFF_FFFF) as u32;
+    let mut group1 = ((*offset >> 32) & 0xFFFF_FFFF) as u32;
+    let mut group2 = ((*offset >> 64) & 0xFFFF_FFFF) as u32;
     let mut group3 = (*offset >> 96) as u32;
     if bits <= 32 {
         stream.serialize_bits(&mut group0, bits)?;

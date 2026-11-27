@@ -5,31 +5,24 @@ WHAT: this repo is serialize.rs, the Rust port of mas-bandwidth/serialize — th
 bitpacking library. NOT that upstream itself, NOT the sibling ports (serialize.c,
 serialize.cs, serialize.go), NOT serialize.modern (the experimental C++23 one).
 
-NAME: the crate is `serialize` and as of 2026-08-14 that name is STILL FREE on crates.io
-— unpublished, unclaimed. Unlike netcode (where `netcode` was taken in 2017 by an
-unrelated project, forcing the `netcode-official` crate name), there is no name trap here
-yet. Publishing sooner rather than later is what keeps it that way.
+NAME: the package publishes as `serialize-official` on crates.io; the library and import
+name is `serialize`, matching the C++ namespace
+and the Go port's package name. Unlike netcode (where `netcode` was taken in 2017 by an
+unrelated project, forcing the `netcode-official` crate name), the import name keeps its
+natural spelling.
 
-PUBLISHING (crates.io) — the token is NOT on this bench
-The crates.io token lives at /Users/glenn/.cargo/credentials.toml on GLENN'S personal
-macOS account: mode 0600, owned by glenn, unreadable from the mas account. `cargo publish`
-here fails with "no token found". That is NOT a missing credential and NOT a reason to
-mint a new one — it is the wrong machine account. Either Glenn publishes from his own
-account, or he moves the token into the mas keychain with the prompting form
-(`security add-generic-password -U -a rowan -s crates-io-token -w`, no value after -w).
 
-STATE as verified 2026-08-15 (post infallible-writes-v2): Cargo.toml is at 2.0.0, `cargo
-package` packages and compiles clean, and the crate has still never been published — v1.0.0 through v1.6.0 are git tags and
-GitHub releases only, nothing on crates.io. The repo itself is already public. This is a
-publish-NEW, so a token needs the `publish-new` scope — the other two Rust ports are
-publish-UPDATE.
+STATE as verified 2026-11-10: Cargo.toml is at 5.0.1 and `cargo package`
+packages and compiles clean. crates.io has `serialize-official` 2.2.2, 2.3.0 and 2.4.0
+(2.4.0 the newest, 2026-09-04); 3.0.0 through 5.0.0 are git tags and GitHub releases only.
+The repo itself is already public. The next publish is a publish-UPDATE.
 <!-- HOT:END -->
 
 # serialize.rs
 
-Rust port of the C++ serialize library (github.com/mas-bandwidth/serialize). Crate name
-`serialize` (matches the C++ namespace and the Go port's package name). Zero dependencies,
-zero unsafe, BSD-3.
+Rust port of the C++ serialize library (github.com/mas-bandwidth/serialize). Package name
+`serialize-official` on crates.io; the library and import name is `serialize` (matches the C++ namespace and the Go port's package name). Zero
+dependencies, zero unsafe, BSD-3.
 
 ## Invariants — never break these
 
@@ -37,7 +30,7 @@ zero unsafe, BSD-3.
    `test_golden_wire_format` pins STANDARD.md's 106-byte "whole message", which matches the
    C++ suite's `golden_wire_bytes` verbatim and ends with the end, and the `cpp-interop` CI
    job proves it against the real thing on every push and PR: it builds interop/golden.cpp
-   against the actual C++ library (pinned at v2.1.1, never going back past v2.0.0: the golden
+   against the actual C++ library (pinned at v2.1.4, never going back past v2.0.0: the golden
    message ends with `serialize_end` and drops `wstring` from v2.0.0 on; the build keeps
    asserts live with no -ffp-contract=off), both implementations write a file of two
    packets — the golden one and the harness's extended one (a degenerate 64 bit range,
@@ -79,7 +72,7 @@ zero unsafe, BSD-3.
    error; only the caller's `fail`, `reject` (release) or a nested object returning either
    does, as only they return false in C++ (IMPLEMENTING.md U9), recording nothing. From 2.0
    (the #52 ruling) to 4.x the write error type was `Infallible` and that false could not be
-   expressed; Glenn decided the 5.0.0 major on 2026-10-28 (crates.io only ever had 2.4.0).
+   expressed; the 5.0.0 major was decided on 2026-10-28 (crates.io only ever had 2.4.0).
    `Stream` is sealed (`stream::gate::Sealed`), and `refuse`/`refuse_if_failed`/
    `Error::from_name` are gone from the public surface (U15): `fail(&mut self, reason)` is the
    one latching refusal.
@@ -87,7 +80,7 @@ zero unsafe, BSD-3.
    `BitWriter::new`, the U9 trap, compiled out in release, where a write that reaches the
    short final word stops at the slice bounds panic).
    The reader takes (buffer, bytes) and uses branchless 64 bit window loads when the buffer
-   extends ≥ 8 bytes past the packet data, with a guarded-copy fallback when it doesn't. No
+   extends ≥ 7 bytes past the packet data, with a guarded-copy fallback when it doesn't. No
    unsafe code anywhere — the fast path is `slice.get(i..i+8)` + `u64::from_le_bytes`.
 
 ## Layout
@@ -185,8 +178,6 @@ zero unsafe, BSD-3.
   the C++ library, schema bench, Apple M2). The thin fallible wrappers carry
   `#[inline(always)]` because the hint alone loses to that same cold-callsite
   classification in long serialize functions.
-- Local toolchains on Glenn's Mac: homebrew rustup at `/opt/homebrew/opt/rustup/bin` (not on
-  default PATH), with `1.85` (MSRV) and `nightly` (+miri) installed; cargo-fuzz in ~/.cargo/bin
 - CI (.github/workflows/ci.yml): 3-OS test matrix (debug + release + example), lint
   (pedantic clippy / fmt / rustdoc / zero-dependency guard), MSRV 1.85 check, Miri, 60s fuzz
   smoke per target (uploads crash reproducers on failure), C++ wire interop, cross matrix
@@ -196,7 +187,7 @@ zero unsafe, BSD-3.
   `#![forbid(unsafe_code)]` attribute in lib.rs, and the lint table is the one place to look.
   nightly-fuzz.yml runs 30 min per fuzz target daily with a cumulative cached corpus (free now
   that the repo is public).
-  nightly-conformance.yml runs nightly on a fleet runner: it builds the C++ reference at
+  nightly-conformance.yml runs nightly: it builds the C++ reference at
   mas-bandwidth/serialize main HEAD, certifies the upstream corpus with its ctest conformance
   targets, runs tests/conformance.rs against that corpus via `SERIALIZE_CONFORMANCE_ROOT` (plain
   and under `--cfg serialize_controls`), and fails on any drift of the vendored copies. A
@@ -208,7 +199,8 @@ Accepted: `serialize_f32`/`serialize_f64` naming (type-name consistency with
 `serialize_u8..u64`; `serialize_compressed_float` keeps its name — it's an algorithm, not a
 type mapping); `Debug` on all public types (counters only, never buffer contents); `Clone` on
 `BitReader`/`ReadStream`/`MeasureStream` (position snapshot for speculative reads);
-`first_chunk` instead of `try_into().unwrap()` in the window load.
+`get(..)` plus `try_into()` in the window load, whose single `get` emits one compare with
+the load on the fall-through path (the two-step `get`/`first_chunk` form was longer).
 
 Rejected, with reasons — do not propose again:
 - **serde-style split read/write traits or `-> Result<Self>` construction.** The unified
@@ -242,7 +234,7 @@ Rejected, with reasons — do not propose again:
 ## Releases
 
 v1.0.0 released 2026-07-12 (opened at 1.0.0 deliberately — the wire format is a decade old,
-like the Go port). 3.0.0 (2026-10-22) carries serialize format 2.0 (Glenn, 2026-10-22: "We
+like the Go port). 3.0.0 (2026-10-22) carries serialize format 2.0 (2026-10-22: "We
 change the protocol it's v2.0.0"): the one sanctioned wire change, made in lockstep with the
 C++ reference's v2.0.0 and the whole family; CHANGELOG.md has the migration notes. Release process: bump
 `version` in Cargo.toml, refresh both lockfiles (`cargo update -p serialize-official` at the
@@ -252,10 +244,12 @@ on that commit. New exported API = minor bump; a wire format change happens only
 family-wide format version decided upstream (as 2.0 was), never in this port alone. The cargo-semver-checks CI job flags accidental API
 breaks on PRs.
 
-The repo is public (that flip is done). The one step still waiting on Glenn is `cargo publish`
-— crates.io token via `cargo login`, and see the HOT block for why it cannot happen from the
-mas account. The `serialize` crate name was still unclaimed on 2026-08-14. docs.rs builds
-automatically on publish.
+The repo is public (that flip is done). `cargo publish` is still waiting. The package publishes as `serialize-official`; docs.rs builds automatically on
+publish.
+
+Pushing a `vX.Y.Z` tag runs `.github/workflows/publish.yml`, which publishes to crates.io
+when the `CRATES_IO_TOKEN` secret exists (an org secret in mas-bandwidth); without it the
+workflow skips the upload.
 
 ## Portability notes
 
